@@ -1403,6 +1403,12 @@ async function aiCoder(argv) {
       if (printMode) return;
       continue;
     }
+    // Greeting / trivial message → reply conversationally, never enter the tool loop.
+    if (isChitchat(userMsg)) {
+      let reply = ""; try { reply = await ollamaChat(model, [{ role: "system", content: "You are Nexus, a friendly local AI assistant in a terminal. Reply briefly and warmly. Do NOT use tools or inspect the system." }, { role: "user", content: userMsg }]); } catch (_) {}
+      console.log("  " + ((reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it.") + "\n");
+      if (printMode) return; continue;
+    }
     let didTool = false, nudges = 0;
     for (let step = 1; step <= 40; step++) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); break; }
@@ -2546,6 +2552,13 @@ function nexusTui(engine, cwd, nexusMd) {
           if (!mdl) { mdl = pickCoderModel(await ollamaTags()); }
           sess.model = mdl || engine;
           if (!mdl) { ensureText().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : "No local model found. Install Ollama and pull one, e.g. `ollama pull gpt-oss:120b`, or use /engine claude."; return finish({ output: "" }); }
+          // Greeting / trivial message → reply conversationally and NEVER enter the tool
+          // loop (so "hi" can't make a weak model start probing the system).
+          if (isChitchat(promptText) && !imgAttach.length) {
+            let reply = ""; try { reply = await ollamaChat(mdl, [{ role: "system", content: "You are Nexus, a friendly local AI assistant in a terminal on a security workstation. Reply briefly and warmly. Do NOT use tools or inspect the system." }, { role: "user", content: promptText }], undefined, aSignal(ctl)); } catch (_) {}
+            const t = ensureText(); t.full += (t.full ? "\n\n" : "") + ((reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it.");
+            sess.outTok += Math.ceil((reply || "").length / 4); return finish({ output: "" });
+          }
           let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = {};
           for (let step = 1; step <= 30; step++) {
             if (ctl && ctl.stopped) { ensureText().full += (ensureText().full.trim() ? "\n" : "") + "(interrupted)"; break; }
