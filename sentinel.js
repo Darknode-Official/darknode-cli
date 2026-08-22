@@ -1198,6 +1198,8 @@ function normalizeToolCall(o) {
   const m = orig.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*[\(\{]([\s\S]*)[\)\}]\s*$/);
   if (m) { bare = m[1]; inner = m[2].trim(); }
   name = bare.startsWith("mcp__") ? bare : bare.toLowerCase();
+  // a top-level array of args → map onto the tool's list key so it isn't silently dropped
+  if (Array.isArray(a)) a = { [name === "spawn_agents" ? "tasks" : name === "todo_write" ? "todos" : "items"]: a };
   const haveArgs = a && typeof a === "object" && !Array.isArray(a) && Object.keys(a).length;
   // unknown tool name that is actually a shell command → route to run_command
   if (!KNOWN_TOOLS.has(name) && !name.startsWith("mcp__")) {
@@ -1215,7 +1217,11 @@ function normalizeToolCall(o) {
     if (raw.startsWith("{")) { try { parsed = JSON.parse(raw); } catch (_) {} }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { name, a: parsed };
     const kv = raw.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*([\s\S]+)$/);
-    if (kv && KNOWN_ARGKEYS.has(kv[1].toLowerCase())) a[kv[1].toLowerCase()] = kv[2].trim().replace(/^["']|["']$/g, "");
+    const key1 = kv ? kv[1].toLowerCase() : "";
+    // only treat "word: value" as a key/value pair when the key is THIS tool's arg key
+    // (or the tool has no fixed key) — otherwise a command like "find: /etc" for
+    // run_command would wrongly land under `find` instead of `command`.
+    if (kv && (key1 === TOOL_ARGKEY[name] || (!TOOL_ARGKEY[name] && KNOWN_ARGKEYS.has(key1)))) a[key1] = kv[2].trim().replace(/^["']|["']$/g, "");
     else a[TOOL_ARGKEY[name] || "value"] = raw.replace(/^["']|["']$/g, "");
   }
   return { name, a };
