@@ -750,8 +750,13 @@ group("cost savers — squeeze + response cache");
 
 group("MCP catalog (/mcp add)");
 {
-  const { MCP_CATALOG, catalogGet, catalogList, addServerToConfig, removeServerFromConfig } = require("../lib/nexus/mcp-catalog");
+  const { MCP_CATALOG, DEFAULT_MCP, catalogGet, catalogList, isBundled, bundledSpecs, addServerToConfig, removeServerFromConfig } = require("../lib/nexus/mcp-catalog");
   ok("catalog non-empty + every entry has a valid spec", catalogList().length >= 10 && catalogList().every((k) => { const e = MCP_CATALOG[k]; return e && e.desc && e.spec && typeof e.spec.command === "string" && Array.isArray(e.spec.args); }));
+  ok("expanded catalog has 20+ servers", catalogList().length >= 20);
+  ok("DEFAULT_MCP names all exist in the catalog", DEFAULT_MCP.length >= 4 && DEFAULT_MCP.every((n) => !!MCP_CATALOG[n]));
+  ok("isBundled true for a default, false for a keyed server", isBundled("memory") && isBundled("FETCH") && !isBundled("github"));
+  const bs = bundledSpecs();
+  ok("bundledSpecs returns only no-key servers with runnable specs", Object.keys(bs).length >= 4 && Object.keys(bs).every((n) => !MCP_CATALOG[n].needsEnv && typeof bs[n].command === "string") && !("github" in bs));
   ok("blender is present with the right runner", catalogGet("blender").spec.command === "uvx" && catalogGet("blender").spec.args.includes("blender-mcp"));
   ok("catalogGet is case-insensitive + null on miss", !!catalogGet("BLENDER") && catalogGet("nope") === null);
   const c1 = addServerToConfig({ mcpServers: { keepme: { command: "x" } } }, "playwright");

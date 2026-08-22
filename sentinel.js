@@ -1733,7 +1733,7 @@ function permDecision(perms, name, a) {
 const { allStyles } = require("./lib/cli/styles"); // output styles, built-in + .nexus/styles/*.md (lib/styles.js)
 const { mergeMemory } = require("./lib/nexus/memory"); // agent `remember` dedup (lib/memory.js)
 const { TOOL_CATALOG, discoverTools } = require("./lib/nexus/tools"); // agent tool catalog + discover (lib/tools.js)
-const { MCP_CATALOG, catalogGet, addServerToConfig, removeServerFromConfig } = require("./lib/nexus/mcp-catalog"); // one-command MCP servers (lib/mcp-catalog.js)
+const { MCP_CATALOG, catalogGet, isBundled, bundledSpecs, addServerToConfig, removeServerFromConfig } = require("./lib/nexus/mcp-catalog"); // one-command + bundled MCP servers (lib/mcp-catalog.js)
 const { squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats } = require("./lib/nexus/costsave"); // extra cost savers (lib/costsave.js)
 const CACHE_TTL = 24 * 3600 * 1000; // response-cache entries expire after 24h
 const { TAGS: TODO_TAGS, scanTree: scanTodos, summarizeTodos, rankTodos } = require("./lib/nexus/todos"); // tech-debt marker scanner (lib/nexus/todos.js)
@@ -2846,7 +2846,7 @@ function nexusTui(engine, cwd, nexusMd) {
       else if (cmd === "/mcp") {
         const ps = (argstr || "").trim().split(/\s+/).filter(Boolean); const sub = (ps[0] || "").toLowerCase();
         const writeMcp = (cfg) => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "mcp.json"), JSON.stringify(cfg, null, 2)); return true; } catch (_) { return false; } };
-        if (sub === "catalog" || sub === "list") transcript.push({ role: "system", text: "MCP catalog — one-command connect with /mcp add <name>:\n" + Object.keys(MCP_CATALOG).map((k) => "  " + cyan(k.padEnd(20)) + gray(MCP_CATALOG[k].desc)).join("\n") + "\n  any model then uses them as mcp__<server>__<tool>." });
+        if (sub === "catalog" || sub === "list") transcript.push({ role: "system", text: "MCP catalog — one-command connect with /mcp add <name>  " + green("(★ = bundled, on by default)") + ":\n" + Object.keys(MCP_CATALOG).map((k) => "  " + (isBundled(k) ? green("★") : " ") + " " + cyan(k.padEnd(20)) + gray(MCP_CATALOG[k].desc) + (MCP_CATALOG[k].needsEnv ? yellow("  [needs " + MCP_CATALOG[k].needsEnv.join(", ") + "]") : "")).join("\n") + "\n  any model then uses them as mcp__<server>__<tool>.  Bundled ones auto-connect (SENTINEL_NO_DEFAULT_MCP=1 to disable)." });
         else if (sub === "add") {
           const name = (ps[1] || "").toLowerCase(); const e = catalogGet(name);
           if (!e) transcript.push({ role: "system", text: name ? ("unknown catalog server '" + name + "' — /mcp catalog to browse") : "usage: /mcp add <name>   (see /mcp catalog)" });
@@ -2854,9 +2854,9 @@ function nexusTui(engine, cwd, nexusMd) {
         }
         else if (sub === "remove" || sub === "rm") { const name = (ps[1] || "").toLowerCase(); const cur = loadMcpConfig(cwd) || {}; if (!cur[name]) transcript.push({ role: "system", text: "no server '" + name + "' in .nexus/mcp.json" }); else { writeMcp(removeServerFromConfig({ mcpServers: cur }, name)); mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "removed " + name + " — reconnecting the rest…" }); } }
         else if (sub === "connect" || sub === "reconnect") { mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "reconnecting MCP servers from .nexus/mcp.json…" }); }
-        else if (!loadMcpConfig(cwd)) transcript.push({ role: "system", text: "no MCP servers configured yet.\n  " + cyan("/mcp add blender") + gray("   · or playwright · github · filesystem · fetch · memory · …  ·  /mcp catalog to browse") + "\n  The claude engine AND any local/API model get the tools." });
+        else if (!mcpServers.length && !loadMcpConfig(cwd)) transcript.push({ role: "system", text: (process.env.SENTINEL_NO_DEFAULT_MCP ? "bundled MCP servers are disabled (SENTINEL_NO_DEFAULT_MCP).\n  " : "bundled MCP servers still connecting… (first launch npx/uvx-installs them). Run /mcp again in a moment.\n  ") + cyan("/mcp add github") + gray("   · or playwright · exa · notion · postgres · …  ·  /mcp catalog to browse") + "\n  The claude engine AND any local/API model get the tools." });
         else if (!mcpServers.length) transcript.push({ role: "system", text: "MCP servers are still connecting… run /mcp again in a moment" });
-        else transcript.push({ role: "system", text: "MCP servers:\n" + mcpServers.map((s) => s.error ? ("  " + red("×") + " " + s.name + "  — " + s.error) : ("  " + green("●") + " " + s.name + "  — " + (s.tools || []).length + " tool(s): " + (s.tools || []).map((t) => t.name).slice(0, 8).join(", "))).join("\n") + "\n  any model calls these as mcp__<server>__<tool>  ·  /mcp add <name> · /mcp catalog · /mcp remove <name>" }); }
+        else transcript.push({ role: "system", text: "MCP servers " + green("(★ = bundled with Nexus)") + ":\n" + mcpServers.map((s) => s.error ? ("  " + red("×") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + s.error) : ("  " + green("●") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + (s.tools || []).length + " tool(s): " + (s.tools || []).map((t) => t.name).slice(0, 8).join(", "))).join("\n") + "\n  any model calls these as mcp__<server>__<tool>  ·  /mcp add <name> · /mcp catalog · /mcp remove <name>" }); }
       else if (cmd === "/agents" || cmd === "/parallel") { const tasks = argstr.split(/\s*;;\s*/).map((s) => s.trim()).filter(Boolean); if (tasks.length < 2) transcript.push({ role: "system", text: "usage: /agents <task 1> ;; <task 2> ;; …   — runs each task in parallel on the " + engine + " engine, each in its own isolated git worktree, then merges the changes back" }); else spawnAgents(tasks); }
       else if (cmd === "/hooks") { transcript.push({ role: "system", text: hooks ? ("hooks (.nexus/hooks.json) active for events: " + Object.keys(hooks).join(", ") + "\n  PreToolUse/PostToolUse run for the local engine; UserPromptSubmit & Stop run for every engine") : "no hooks configured. Create .nexus/hooks.json:\n  { \"PreToolUse\": [ { \"matcher\": \"run_command|write_file\", \"command\": \"echo $TOOL_NAME >> .nexus/audit.log\" } ] }\n  events: UserPromptSubmit · PreToolUse · PostToolUse · Stop  (non-zero exit on PreToolUse/UserPromptSubmit blocks the action)" }); }
       else if (cmd === "/status") transcript.push({ role: "system", text: "status:\n  engine   " + engine + (sess.model && sess.model !== engine ? " (" + sess.model + ")" : "") + "\n  dir      " + cwd + "\n  mode     " + MODES[mode].k + "\n  context  " + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "% of " + fmtK(sess.ctxWindow) + "\n  tokens   ↑" + fmtK(sess.inTok) + " ↓" + fmtK(sess.outTok) + (PAID[engine] ? (sess.cost ? " · $" + sess.cost.toFixed(4) : " · billed") : " · local · free") + "\n  budget   " + (costCap ? "$" + costCap.toFixed(2) + " cap" : "none") + "\n  undo     " + checkpoints.length + " checkpoint(s)" });
@@ -3259,8 +3259,20 @@ function nexusTui(engine, cwd, nexusMd) {
     let bootTimer = null, bootDone = false;
     const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); render(); };
     const fastBoot = !!(process.env.SENTINEL_FAST || process.env.NO_MOTION);
-    // auto-connect MCP servers defined in .nexus/mcp.json (non-blocking)
-    const connectMcp = async () => { const cfg = loadMcpConfig(cwd); if (!cfg) return; for (const nm of Object.keys(cfg)) { const c = await mcpConnect(nm, cfg[nm], cwd); mcpServers.push(c); if (!loading) render(); } };
+    // auto-connect MCP servers (non-blocking): the workspace's .nexus/mcp.json PLUS the
+    // no-key servers that ship bundled with Nexus (fetch, memory, sequential-thinking,
+    // context7, time, git) so a fresh download already has them. A bundled server is
+    // skipped silently if its runtime (npx/uvx) isn't installed, or if the workspace
+    // defines its own server of the same name, or if SENTINEL_NO_DEFAULT_MCP is set.
+    const connectMcp = async () => {
+      const seen = new Set();
+      const cfg = loadMcpConfig(cwd);
+      if (cfg) for (const nm of Object.keys(cfg)) { seen.add(nm); const c = await mcpConnect(nm, cfg[nm], cwd); mcpServers.push(c); if (!loading) render(); }
+      if (!process.env.SENTINEL_NO_DEFAULT_MCP && !offline) {
+        const b = bundledSpecs();
+        for (const nm of Object.keys(b)) { if (seen.has(nm) || !hasBin(b[nm].command)) continue; const c = await mcpConnect(nm, b[nm], cwd); c.bundled = true; mcpServers.push(c); if (!loading) render(); }
+      }
+    };
     connectMcp();
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
     if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("⚠ this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export SENTINEL_TRUST_REPO=1)") });
