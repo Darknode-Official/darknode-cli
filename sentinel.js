@@ -1226,6 +1226,19 @@ function normalizeToolCall(o) {
   }
   return { name, a };
 }
+// A conversational / trivial message (a greeting, thanks, or an identity/capability
+// question) needs NO tools — the agent should just reply. Without this gate, the
+// "do the real work first" nudge below forces even "hi" into probing the system
+// (sysinfo, ls, cat /etc/passwd …), which reads as the AI "hacking" unprompted.
+function isChitchat(s) {
+  const t = String(s || "").trim().toLowerCase().replace(/^[\s>#*-]+/, "").replace(/[!.?,\s]+$/, "");
+  if (!t) return true;
+  if (/^(hi+|hey+|hello+|yo+|sup|hiya|heya|howdy|gm|good\s?(morning|afternoon|evening|night)|greetings|hola|namaste|hey there|hello there)$/.test(t)) return true;
+  if (/^(thanks|thank you|ty|thx|cheers|ok|okay|kk|cool|nice|great|awesome|perfect|lol|lmao|bye|goodbye|see ya|later|yep|yeah|yes|no|nope|sure|nvm|never mind)$/.test(t)) return true;
+  if (/^(who|what)\s+(are|is|can|r|u)\s+(you|nexus|u|this|that)\b/.test(t)) return true;
+  if (/^(what can you do|what do you do|how do you work|how does this work|introduce yourself|what is this|what'?s this|who made you|are you (claude|chatgpt|gpt|an ai))\b/.test(t)) return true;
+  return false;
+}
 function coderShell(command, cwd) {
   return new Promise((resolve) => {
     const p = spawn(process.platform === "win32" ? "cmd.exe" : "/bin/sh", [process.platform === "win32" ? "/c" : "-c", command], { cwd });
@@ -1352,7 +1365,7 @@ async function aiCoder(argv) {
     console.log("  " + cyan("╰" + "─".repeat(W) + "╯"));
     console.log("  " + gray("message Nexus below · /help for commands · /exit to quit") + (autoApprove ? gray(" · auto-approve ON") : "") + "\n");
   }
-  const SYS = "You are Nexus, a terminal AI coding agent working in " + cwd + " on the operator's own machine. Accomplish the task by taking ONE action per step and reading the OBSERVATION before the next. TOOLS: read_file{path}, write_file{path,content}, edit_file{path,find,replace} (replace one exact string), list_dir{path?}, run_command{command}. Reply with exactly ONE JSON object per the schema: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Write real, working code; prefer edit_file for small changes. Keep going until the task is fully done, then action:\"final\" with a short summary." + (nexusMd ? "\n\nPROJECT INSTRUCTIONS (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 4000) : "");
+  const SYS = "You are Nexus, a terminal AI coding agent working in " + cwd + " on the operator's own machine. Accomplish the task by taking ONE action per step and reading the OBSERVATION before the next. TOOLS: read_file{path}, write_file{path,content}, edit_file{path,find,replace} (replace one exact string), list_dir{path?}, run_command{command}. Reply with exactly ONE JSON object per the schema: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Write real, working code; prefer edit_file for small changes. If the user is just greeting you or asking a question you can answer directly, reply immediately with action:\"final\" — do NOT run tools for that. Otherwise keep going until the task is fully done, then action:\"final\" with a short summary." + (nexusMd ? "\n\nPROJECT INSTRUCTIONS (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 4000) : "");
   const messages = [{ role: "system", content: SYS }];
   let delegated = false;
   const changed = [];  // session change log for /undo and /diff: {path, before|null, label}
@@ -1397,7 +1410,7 @@ async function aiCoder(argv) {
       messages.push({ role: "assistant", content: raw });
       if (o.thought && !printMode) console.log("  " + gray("- " + o.thought));
       if (o.action === "final") {
-        if (!didTool && nudges++ < 3) { messages.push({ role: "tool", content: "You have not taken any action yet. Do the real work first." }); continue; }
+        if (!didTool && !isChitchat(userMsg) && nudges++ < 3) { messages.push({ role: "tool", content: "You have not taken any action yet. Do the real work first." }); continue; }
         console.log("\n  " + green("done: ") + bold(o.final || "done") + "\n"); break;
       }
       const { name, a } = normalizeToolCall(o); let result;
@@ -1857,7 +1870,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     let o; try { o = JSON.parse(raw); } catch (_) { messages.push({ role: "tool", content: "Reply with valid schema JSON." }); continue; }
     messages.push({ role: "assistant", content: raw });
     if (o.thought) console.log("    " + gray(o.thought));
-    if (o.action === "final") { if (!didTool && step < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; } return { ok: true, output: log + "\n" + (o.final || "") }; }
+    if (o.action === "final") { if (!didTool && !isChitchat(task) && step < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; } return { ok: true, output: log + "\n" + (o.final || "") }; }
     const { name, a } = normalizeToolCall(o); let result;
     try {
       if (name === "read_file") result = { content: fs.readFileSync(path.resolve(cwd, a.path), "utf8").slice(0, 14000) };
@@ -1940,6 +1953,16 @@ async function nexusRun(argv) {
   else {
     const goal = goalParts.join(" ").trim();
     if (!goal) { console.log("  " + red("provide a goal:  sentinel nexus run \"build X\"")); return; }
+    // A greeting / trivial message isn't a goal to decompose — just answer, don't plan or run tools.
+    if (isChitchat(goal)) {
+      banner(); let reply = "";
+      try {
+        if (engine === "ollama" || engine === "hybrid") { if (model) reply = await ollamaChat(model, [{ role: "system", content: "You are Nexus, a friendly terminal AI assistant on a security workstation. Reply briefly and warmly — no tools, no tasks." }, { role: "user", content: goal }]); }
+        else { reply = (await runEngineTask(engine, goal, cwd, false)).output; }
+      } catch (_) {}
+      console.log("  " + bold("nexus") + "  " + ((reply || "").trim() || "Hi! I'm Nexus. Give me a goal — e.g. `sentinel nexus run \"add tests to server.js\"` — and I'll plan and do it.") + "\n");
+      return;
+    }
     banner(); h1("Nexus — planning");
     console.log("  " + gray("engine ") + mag(engine) + (model ? gray("  model " + model) : "") + gray("  workdir " + cwd));
     console.log("  " + gray("decomposing the goal...\n"));
@@ -2512,7 +2535,7 @@ function nexusTui(engine, cwd, nexusMd) {
       } else { // ollama — LOCAL agent with full device access (read/write/edit/list/run_command)
         const mcps = mcpToolList();
         const extra = (mcps.length ? " MCP tools: " + mcps.map((m) => m.full + " — " + oneline(m.desc, 40)).join("; ") + "." : "") + " spawn_agents{tasks:[\"...\",\"...\"]} runs several INDEPENDENT sub-tasks in parallel via sub-agents and returns all their results — use it to split big work.";
-        if (oMsgs.length === 1) oMsgs[0].content = "You are Nexus, a local autonomous coding agent on the operator's own machine (cwd " + cwd + "). Accomplish the TASK by taking ONE action per step and reading each OBSERVATION before the next. TOOLS: read_file{path}, write_file{path,content}, edit_file{path,find,replace}, list_dir{path?}, run_command{command} (full shell, blocks until done), run_background{command} (start a long-running command WITHOUT blocking — returns a jobId), check_background{id?} (poll a background job's output/status, or list all), stop_background{id} (kill a background job), search{pattern,path?} (grep file contents), find{glob,path?} (find files), http_fetch{url,method?} (fetch a URL), web_search{query} (search the web for current info/docs/examples), todo_write{todos:[{content,status:pending|in_progress|done}]} (maintain a live task checklist — plan multi-step work up front and check items off as you finish them), sysinfo{} (OS/CPU/memory/disk), list_processes{filter?}, make_dir{path}, move{from,to}, copy{from,to}, delete{path}, remember{text} (save a DURABLE project convention/preference to NEXUS.md — only for lasting rules, not one-off facts), discover{query} (search available tools by keyword)." + extra + " Reply with exactly ONE JSON object: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Keep going until the task is fully done." + (lean ? " Be terse: short thoughts, minimal final summary." : "") + (styleDir(style) ? " " + styleDir(style) : "") + (hack ? " " + HACK_DIR : "") + (nexusMd ? "\n\nPROJECT (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 4000) : "");
+        if (oMsgs.length === 1) oMsgs[0].content = "You are Nexus, a local autonomous coding agent on the operator's own machine (cwd " + cwd + "). Accomplish the TASK by taking ONE action per step and reading each OBSERVATION before the next. TOOLS: read_file{path}, write_file{path,content}, edit_file{path,find,replace}, list_dir{path?}, run_command{command} (full shell, blocks until done), run_background{command} (start a long-running command WITHOUT blocking — returns a jobId), check_background{id?} (poll a background job's output/status, or list all), stop_background{id} (kill a background job), search{pattern,path?} (grep file contents), find{glob,path?} (find files), http_fetch{url,method?} (fetch a URL), web_search{query} (search the web for current info/docs/examples), todo_write{todos:[{content,status:pending|in_progress|done}]} (maintain a live task checklist — plan multi-step work up front and check items off as you finish them), sysinfo{} (OS/CPU/memory/disk), list_processes{filter?}, make_dir{path}, move{from,to}, copy{from,to}, delete{path}, remember{text} (save a DURABLE project convention/preference to NEXUS.md — only for lasting rules, not one-off facts), discover{query} (search available tools by keyword)." + extra + " Reply with exactly ONE JSON object: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. If the user is just greeting you (\"hi\") or asking a question you can answer directly, reply immediately with action:\"final\" and a helpful answer — do NOT run tools or inspect the system for that. Only use tools when there is an actual task to do, then keep going until it's fully done." + (lean ? " Be terse: short thoughts, minimal final summary." : "") + (styleDir(style) ? " " + styleDir(style) : "") + (hack ? " " + HACK_DIR : "") + (nexusMd ? "\n\nPROJECT (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 4000) : "");
         if (imgAttach.length && apiConfigured()) oMsgs.push({ role: "user", content: [{ type: "text", text: promptText }].concat(imgAttach.map((im) => ({ type: "image_url", image_url: { url: "data:" + im.mime + ";base64," + im.b64 } }))) }); // OpenAI-compatible vision
         else if (imgAttach.length) oMsgs.push({ role: "user", content: promptText, images: imgAttach.map((im) => im.b64) }); // Ollama vision (llava / llama3.2-vision / …)
         else oMsgs.push({ role: "user", content: promptText });
@@ -2531,7 +2554,7 @@ function nexusTui(engine, cwd, nexusMd) {
             let o; try { o = JSON.parse(raw); } catch (_) { oMsgs.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
             oMsgs.push({ role: "assistant", content: raw });
             if (o.thought) { const t = ensureText(); t.full += (t.full ? "\n" : "") + o.thought; render(); }
-            if (o.action === "final") { if (!didTool && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = ensureText(); t.full += (t.full ? "\n\n" : "") + o.final; } break; }
+            if (o.action === "final") { if (!didTool && !isChitchat(promptText) && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = ensureText(); t.full += (t.full ? "\n\n" : "") + o.final; } break; }
             const { name, a } = normalizeToolCall(o);
             const card = { type: "tool", id: "o" + step, name, label: olbl(name, a), status: "run", start: Date.now(), detail: JSON.stringify(a).slice(0, 400) };
             block.items.push(card);
