@@ -1236,7 +1236,7 @@ const NEXUS_DOCS = {
   overview: { title: "Overview", body:
     "Nexus is a terminal AI coding agent built into the Sentinel CLI. It drives one of three\nengines from a single dependency-free binary:\n  claude    — the Claude Code CLI in the cloud (strongest; needs `claude` installed + logged in)\n  ollama    — a free, private, local model on your machine (needs Ollama)\n  opencode  — the OpenCode CLI\n\nIt reads & writes files, runs commands, checkpoints every change, shows real token cost\nlive, saves tokens by delegating cheap work to a weaker/local model, and keeps secrets off\nthe cloud. Launch it with `sentinel nexus --tui`. Type / inside for the command menu." },
   quickstart: { title: "Quick start", body:
-    "  sentinel init                 scaffold .nexus/ (project context Nexus reads each session)\n  sentinel nexus --tui          full-screen agent (Claude if installed, else local)\n  sentinel nexus --tui -e ollama  drive a 100% local, private, free agent\n  sentinel nexus \"add tests to server.js and run them\"   one-shot task\n\nFree local setup:\n  curl -fsSL https://ollama.com/install.sh | sh\n  ollama pull qwen2.5-coder      # or hermes3" },
+    "  sentinel init                 scaffold .nexus/ (project context Nexus reads each session)\n  sentinel nexus --tui          full-screen agent (Claude if installed, else local)\n  sentinel nexus --tui -e ollama  drive a 100% local, private, free agent\n  sentinel nexus \"add tests to server.js and run them\"   one-shot task\n\nFree local setup:\n  curl -fsSL https://ollama.com/install.sh | sh\n  ollama pull gpt-oss:120b     # OpenAI open-weight, strong agent (or :20b, lighter)" },
   engines: { title: "Engines & models", body:
     "  /engine <name>                   switch AI: claude · gemini · codex · opencode · aider · ollama\n  /model [name]                    show/set the model\n  /models                          list cloud tiers + installed local models\n  /fallback <model>                auto-retry on a cheaper model when rate-limited\n  /cowork <strong> <weak>          strong model codes; weak (cheaper Claude tier OR\n                                   a free local model via ollama:<name>) does cheap work\n  Aliases: opus · sonnet · haiku · fable (or full names like claude-haiku-4-5-...)" },
   cost: { title: "Saving cost", body:
@@ -1333,7 +1333,7 @@ async function aiCoder(argv) {
   if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd);
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
   let model = null, modelList = [];
-  if (engine === "ollama") { modelList = await ollamaTags(); if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull hermes3`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.SENTINEL_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull hermes3`.")); return; } }
+  if (engine === "ollama") { modelList = await ollamaTags(); if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:120b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.SENTINEL_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:120b`.")); return; } }
   if (!printMode) {
     banner();
     const W = 56, bx = (s) => cyan("│ ") + s + " ".repeat(Math.max(0, W - 1 - s.length)) + cyan("│");
@@ -2516,7 +2516,7 @@ function nexusTui(engine, cwd, nexusMd) {
           let mdl = process.env.SENTINEL_MODEL || (sess.model && sess.model !== engine ? sess.model : "");
           if (!mdl) { mdl = pickCoderModel(await ollamaTags()); }
           sess.model = mdl || engine;
-          if (!mdl) { ensureText().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : "No local model found. Install Ollama and pull one, e.g. `ollama pull hermes3`, or use /engine claude."; return finish({ output: "" }); }
+          if (!mdl) { ensureText().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : "No local model found. Install Ollama and pull one, e.g. `ollama pull gpt-oss:120b`, or use /engine claude."; return finish({ output: "" }); }
           let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = {};
           for (let step = 1; step <= 30; step++) {
             if (ctl && ctl.stopped) { ensureText().full += (ensureText().full.trim() ? "\n" : "") + "(interrupted)"; break; }
@@ -3046,7 +3046,7 @@ function nexusTui(engine, cwd, nexusMd) {
         ollamaTags().then((ms) => {
           const lines = ENGINE_ORDER.map((e) => {
             const m = ENGINES[e], on = engineAvail(e), cur = e === engine ? "  " + cyan("(current)") : "";
-            const cat = e === "ollama" ? (ms.length ? ms.join(", ") : gray("none — `ollama pull qwen2.5-coder`"))
+            const cat = e === "ollama" ? (ms.length ? ms.join(", ") : gray("none — `ollama pull gpt-oss:120b`"))
               : (m.models && m.models.length) ? m.models.join(" · ") : gray("configured inside the tool itself");
             return "  " + (on ? green("●") : gray("○")) + " " + e + gray(" · " + m.label) + cur + "\n      " + cat;
           }).join("\n");
@@ -3210,7 +3210,7 @@ function nexusTui(engine, cwd, nexusMd) {
         if (API_BASE()) opts.push({ name: (sess.model && sess.model !== engine && !/^claude/i.test(sess.model) ? sess.model : "api-model"), note: API_BASE() + " · likely billed", paid: true, apply: () => { engine = "ollama"; if (!sess.model || /^claude/i.test(sess.model) || sess.model === engine) sess.model = ""; reset(); } });
         const selArg = /^claude\s+\S/i.test(arg) ? "claude" : arg;
         if (!selArg) {
-          if (!opts.length) transcript.push({ role: "system", text: "No AIs connected yet — connect one:\n  local:  " + cyan("ollama pull qwen2.5-coder") + gray("   (then /connect)") + "\n  Claude: " + cyan("/connect claude <sk-ant-...>") + gray("   (or export ANTHROPIC_API_KEY)") + "\n  any:    " + cyan("/api <openai-compatible-url> [model]") });
+          if (!opts.length) transcript.push({ role: "system", text: "No AIs connected yet — connect one:\n  local:  " + cyan("ollama pull gpt-oss:120b") + gray("   (then /connect)") + "\n  Claude: " + cyan("/connect claude <sk-ant-...>") + gray("   (or export ANTHROPIC_API_KEY)") + "\n  any:    " + cyan("/api <openai-compatible-url> [model]") });
           else transcript.push({ role: "system", text: bold("Connect an AI") + gray("   /connect <n|name>") + "\n" + opts.map((o, i) => "  " + cyan((i + 1) + ")") + " " + bold(o.name) + gray("   " + o.note)).join("\n") + "\n  " + gray("current: ") + green(sess.model || engine) });
         } else {
           let sel = /^\d+$/.test(selArg) ? opts[+selArg - 1] : opts.find((o) => o.name.toLowerCase().includes(selArg.toLowerCase()));
