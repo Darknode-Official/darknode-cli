@@ -1,0 +1,108 @@
+name: Build macOS CLI (signed)
+
+# Builds the standalone Nexus / Sentinel CLI binaries for macOS on a native Apple
+# Silicon runner (which also cross-builds the Intel target) and CODE-SIGNS them —
+# so the download runs on macOS without the "killed by kernel" gatekeeper block that
+# an unsigned, Linux-built pkg binary hits.
+#
+# Signing tiers (automatic, based on which repo secrets are set):
+#   • No secrets          → ad-hoc signed (runs; first launch may need right-click → Open)
+#   • MAC_CSC_LINK (+pw)   → Developer ID Application signed (hardened runtime, timestamped)
+#   • + APPLE_ID etc.      → also notarized with Apple (Gatekeeper-clean)
+#
+# Repo secrets:
+#   MAC_CSC_LINK               base64 of your Developer ID Application .p12  (base64 -i cert.p12)
+#   MAC_CSC_KEY_PASSWORD       password for that .p12
+#   APPLE_ID                   Apple ID email (for notarization)
+#   APPLE_APP_SPECIFIC_PASSWORD  app-specific password for that Apple ID
+#   APPLE_TEAM_ID              your Apple Developer Team ID
+#   RELEASE_TOKEN              PAT with repo access to SpartanKing18/sentinel-web (to publish)
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build-mac-cli:
+    runs-on: macos-14   # Apple Silicon — builds arm64 natively and cross-builds x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install deps + test
+        run: |
+          npm ci || npm install --no-audit --no-fund
+          npm test
+
+      - name: Build both macOS binaries (pkg)
+        run: |
+          npx pkg . --targets node18-macos-x64,node18-macos-arm64 --out-path dist
+          mv dist/sentinel-cli-macos-x64   dist/Sentinel-cli-macos-x64
+          mv dist/sentinel-cli-macos-arm64 dist/Sentinel-cli-macos-arm64
+          ls -la dist/
+
+      - name: Code-sign (Developer ID if a cert is configured, else ad-hoc)
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+        run: |
+          set -e
+          BINS="dist/Sentinel-cli-macos-x64 dist/Sentinel-cli-macos-arm64"
+          if [ -n "$MAC_CSC_LINK" ]; then
+            echo "Developer ID cert present → signing with hardened runtime."
+            echo "$MAC_CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            KC="$RUNNER_TEMP/build.keychain"; KCPW="$(openssl rand -hex 16)"
+            security create-keychain -p "$KCPW" "$KC"
+            security set-keychain-settings -lut 3600 "$KC"
+            security unlock-keychain -p "$KCPW" "$KC"
+            security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MAC_CSC_KEY_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
+            security default-keychain -s "$KC"
+            security list-keychains -d user -s "$KC"
+            IDENTITY="$(security find-identity -v -p codesigning "$KC" | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+            [ -n "$IDENTITY" ] || { echo "no Developer ID Application identity in the cert"; exit 1; }
+            echo "identity: $IDENTITY"
+            for b in $BINS; do codesign --force --options runtime --timestamp --sign "$IDENTITY" "$b"; done
+          else
+            echo "No cert secret → ad-hoc signing (runnable; users may right-click → Open on first launch)."
+            for b in $BINS; do codesign --force --sign - "$b"; done
+          fi
+          echo "== verify =="; for b in $BINS; do codesign -dvv "$b" 2>&1 | grep -E 'Authority|Signature|Identifier' | head -3; echo; done
+
+      - name: Notarize with Apple (only if Developer ID signed + Apple ID configured)
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$MAC_CSC_LINK" ] || [ -z "$APPLE_ID" ]; then
+            echo "Skipping notarization (needs both a Developer ID cert and APPLE_ID secrets)."; exit 0
+          fi
+          for b in Sentinel-cli-macos-x64 Sentinel-cli-macos-arm64; do
+            ditto -c -k --keepParent "dist/$b" "$RUNNER_TEMP/$b.zip"
+            xcrun notarytool submit "$RUNNER_TEMP/$b.zip" \
+              --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          done
+          echo "Notarized. (Raw CLI binaries can't be stapled, but Gatekeeper verifies the ticket online.)"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-cli-macos
+          path: dist/Sentinel-cli-macos-*
+          if-no-files-found: error
+
+      - name: Publish to the downloads release (sentinel-web)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::No RELEASE_TOKEN secret — signed binaries are on this run's artifacts only, not published."
+            exit 0
+          fi
+          gh release upload sentinel dist/Sentinel-cli-macos-x64 dist/Sentinel-cli-macos-arm64 \
+            --repo SpartanKing18/sentinel-web --clobber
+          echo "Published signed macOS CLI binaries to the sentinel-web 'sentinel' release."
