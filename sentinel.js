@@ -625,6 +625,7 @@ async function myIp() {
 async function mainMenu() {
   banner();
   const items = [
+    ["a", bold("Nexus — AI coding agent") + gray("  (chat with cloud or free local AI)"), async () => aiCoder("")],
     ["1", "Port scanner", menuScan],
     ["2", "DNS lookup", menuDns],
     ["3", "WHOIS", menuWhois],
@@ -642,12 +643,13 @@ async function mainMenu() {
     ["i", "My public IP", async () => { h1("Public IP"); console.log("  " + await myIp()); }],
     ["g", "GitHub (clone / push)", menuGit],
     ["c", "Cheat sheets", menuCheats],
-    ["a", "Nexus — AI coder (local Ollama)", async () => aiCoder("")],
     ["t", "Tools catalog", async () => listTools()],
     ["0", "Exit", null],
   ];
+  let firstPass = true;
   while (true) {
     console.log("");
+    if (firstPass) { console.log("  " + gray("New here? Press ") + cyan("[a]") + gray(" for the AI coder, or ") + cyan("[1]") + gray(" to scan a host.")); firstPass = false; }
     items.forEach(([k, label]) => console.log("  " + cyan("[" + k + "]") + " " + label));
     const choice = await ask("\n  select:");
     const item = items.find((i) => i[0] === choice);
@@ -1255,7 +1257,7 @@ const NEXUS_DOCS = {
   overview: { title: "Overview", body:
     "Nexus is a terminal AI coding agent built into the Sentinel CLI. It drives one of three\nengines from a single dependency-free binary:\n  claude    — the Claude Code CLI in the cloud (strongest; needs `claude` installed + logged in)\n  ollama    — a free, private, local model on your machine (needs Ollama)\n  opencode  — the OpenCode CLI\n\nIt reads & writes files, runs commands, checkpoints every change, shows real token cost\nlive, saves tokens by delegating cheap work to a weaker/local model, and keeps secrets off\nthe cloud. Launch it with `sentinel nexus --tui`. Type / inside for the command menu." },
   quickstart: { title: "Quick start", body:
-    "  sentinel init                 scaffold .nexus/ (project context Nexus reads each session)\n  sentinel nexus --tui          full-screen agent (Claude if installed, else local)\n  sentinel nexus --tui -e ollama  drive a 100% local, private, free agent\n  sentinel nexus \"add tests to server.js and run them\"   one-shot task\n\nFree local setup:\n  curl -fsSL https://ollama.com/install.sh | sh\n  ollama pull gpt-oss:120b     # OpenAI open-weight, strong agent (or :20b, lighter)" },
+    "  sentinel init                 scaffold .nexus/ (project context Nexus reads each session)\n  sentinel nexus --tui          full-screen agent (Claude if installed, else local)\n  sentinel nexus --tui -e ollama  drive a 100% local, private, free agent\n  sentinel nexus \"add tests to server.js and run them\"   one-shot task\n\nFree local setup:\n  curl -fsSL https://ollama.com/install.sh | sh\n  ollama pull gpt-oss:20b      # fast local agent (~14GB); pull gpt-oss:120b for max power (~63GB)" },
   engines: { title: "Engines & models", body:
     "  /engine <name>                   switch AI: claude · gemini · codex · opencode · aider · ollama\n  /model [name]                    show/set the model\n  /models                          list cloud tiers + installed local models\n  /fallback <model>                auto-retry on a cheaper model when rate-limited\n  /cowork <strong> <weak>          strong model codes; weak (cheaper Claude tier OR\n                                   a free local model via ollama:<name>) does cheap work\n  Aliases: opus · sonnet · haiku · fable (or full names like claude-haiku-4-5-...)" },
   cost: { title: "Saving cost", body:
@@ -1352,7 +1354,7 @@ async function aiCoder(argv) {
   if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd);
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
   let model = null, modelList = [];
-  if (engine === "ollama") { modelList = await ollamaTags(); if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:120b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.SENTINEL_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:120b`.")); return; } }
+  if (engine === "ollama") { modelList = await ollamaTags(); if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.SENTINEL_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
   if (!printMode) {
     banner();
     const W = 56, bx = (s) => cyan("│ ") + s + " ".repeat(Math.max(0, W - 1 - s.length)) + cyan("│");
@@ -2551,7 +2553,7 @@ function nexusTui(engine, cwd, nexusMd) {
           let mdl = process.env.SENTINEL_MODEL || (sess.model && sess.model !== engine ? sess.model : "");
           if (!mdl) { mdl = pickCoderModel(await ollamaTags()); }
           sess.model = mdl || engine;
-          if (!mdl) { ensureText().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : "No local model found. Install Ollama and pull one, e.g. `ollama pull gpt-oss:120b`, or use /engine claude."; return finish({ output: "" }); }
+          if (!mdl) { ensureText().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : "No local model found. Install Ollama and pull one, e.g. `ollama pull gpt-oss:20b`, or use /engine claude."; return finish({ output: "" }); }
           // Greeting / trivial message → reply conversationally and NEVER enter the tool
           // loop (so "hi" can't make a weak model start probing the system).
           if (isChitchat(promptText) && !imgAttach.length) {
@@ -3088,7 +3090,7 @@ function nexusTui(engine, cwd, nexusMd) {
         ollamaTags().then((ms) => {
           const lines = ENGINE_ORDER.map((e) => {
             const m = ENGINES[e], on = engineAvail(e), cur = e === engine ? "  " + cyan("(current)") : "";
-            const cat = e === "ollama" ? (ms.length ? ms.join(", ") : gray("none — `ollama pull gpt-oss:120b`"))
+            const cat = e === "ollama" ? (ms.length ? ms.join(", ") : gray("none — `ollama pull gpt-oss:20b`"))
               : (m.models && m.models.length) ? m.models.join(" · ") : gray("configured inside the tool itself");
             return "  " + (on ? green("●") : gray("○")) + " " + e + gray(" · " + m.label) + cur + "\n      " + cat;
           }).join("\n");
@@ -3252,7 +3254,7 @@ function nexusTui(engine, cwd, nexusMd) {
         if (API_BASE()) opts.push({ name: (sess.model && sess.model !== engine && !/^claude/i.test(sess.model) ? sess.model : "api-model"), note: API_BASE() + " · likely billed", paid: true, apply: () => { engine = "ollama"; if (!sess.model || /^claude/i.test(sess.model) || sess.model === engine) sess.model = ""; reset(); } });
         const selArg = /^claude\s+\S/i.test(arg) ? "claude" : arg;
         if (!selArg) {
-          if (!opts.length) transcript.push({ role: "system", text: "No AIs connected yet — connect one:\n  local:  " + cyan("ollama pull gpt-oss:120b") + gray("   (then /connect)") + "\n  Claude: " + cyan("/connect claude <sk-ant-...>") + gray("   (or export ANTHROPIC_API_KEY)") + "\n  any:    " + cyan("/api <openai-compatible-url> [model]") });
+          if (!opts.length) transcript.push({ role: "system", text: "No AIs connected yet — connect one:\n  local:  " + cyan("ollama pull gpt-oss:20b") + gray("   (then /connect)") + "\n  Claude: " + cyan("/connect claude <sk-ant-...>") + gray("   (or export ANTHROPIC_API_KEY)") + "\n  any:    " + cyan("/api <openai-compatible-url> [model]") });
           else transcript.push({ role: "system", text: bold("Connect an AI") + gray("   /connect <n|name>") + "\n" + opts.map((o, i) => "  " + cyan((i + 1) + ")") + " " + bold(o.name) + gray("   " + o.note)).join("\n") + "\n  " + gray("current: ") + green(sess.model || engine) });
         } else {
           let sel = /^\d+$/.test(selArg) ? opts[+selArg - 1] : opts.find((o) => o.name.toLowerCase().includes(selArg.toLowerCase()));
@@ -3438,7 +3440,15 @@ function nexusInit() {
 function usage() {
   banner();
   console.log(`  ${bold("USAGE")}
-    sentinel [command] [args]         no command opens the interactive menu
+    sentinel [command] [args]         run a command, or just ${cyan("sentinel")} for the interactive menu
+
+  ${bold("QUICK START")} ${gray("— new here? try one of these")}
+    ${cyan("sentinel nexus")}                    ${gray("★ AI coding agent in your terminal (cloud or free local model)")}
+    ${cyan("sentinel scan")} <host>              ${gray("fast port scan of a target you're allowed to test")}
+    ${cyan("sentinel")}                          ${gray("browse every tool from an interactive menu")}
+    ${cyan("sentinel docs quickstart")}          ${gray("the full getting-started guide")}
+${gray("    No AI engine yet? Free & private, runs on your machine:")}
+    ${gray("$")} curl -fsSL https://ollama.com/install.sh | sh  ${gray("&&")}  ollama pull gpt-oss:20b
 
   ${bold("COMMANDS")}
 ${renderCommands(COMMAND_GROUPS, { color: cyan, cheats: Object.keys(CHEATS).join(", ") })}
@@ -3449,9 +3459,10 @@ ${renderCommands(COMMAND_GROUPS, { color: cyan, cheats: Object.keys(CHEATS).join
     NO_COLOR=1                        disable colored output
 
   ${bold("EXAMPLES")}
-    ${gray("$")} sentinel scan 10.10.14.7 top
-    ${gray("$")} sentinel revshell bash 10.10.14.7 4444
-    ${gray("$")} sentinel hash 'S3cr3t!'
+    ${gray("$")} sentinel nexus                            ${gray("# open the AI coder (chat)")}
+    ${gray("$")} sentinel nexus "add tests to server.js"   ${gray("# one-shot AI task")}
+    ${gray("$")} sentinel scan 10.10.14.7 top              ${gray("# port scan")}
+    ${gray("$")} sentinel revshell bash 10.10.14.7 4444    ${gray("# reverse-shell one-liner")}
 
   ${gray("Use only on systems you are authorized to test.")}
 `);
