@@ -33,15 +33,20 @@ jobs:
 
       - name: Install deps + test
         run: |
-          npm ci || npm install --no-audit --no-fund
+          npm install --no-audit --no-fund
           npm test
 
       - name: Build both macOS binaries (pkg)
         run: |
           npx pkg . --targets node18-macos-x64,node18-macos-arm64 --out-path dist
-          mv dist/sentinel-cli-macos-x64   dist/Sentinel-cli-macos-x64
-          mv dist/sentinel-cli-macos-arm64 dist/Sentinel-cli-macos-arm64
-          ls -la dist/
+          echo "pkg produced:"; ls -la dist/
+          # pkg omits the OS from the filename when every target shares one OS, so the
+          # names can be sentinel-cli-x64 / -arm64 OR -macos-x64 — rename by arch, not name.
+          for f in dist/sentinel-cli-*; do
+            case "$f" in *arm64*) mv -f "$f" dist/Sentinel-cli-macos-arm64;; *) mv -f "$f" dist/Sentinel-cli-macos-x64;; esac
+          done
+          echo "renamed to:"; ls -la dist/Sentinel-cli-macos-*
+          test -f dist/Sentinel-cli-macos-x64 && test -f dist/Sentinel-cli-macos-arm64
 
       - name: Code-sign (Developer ID if a cert is configured, else ad-hoc)
         env:
