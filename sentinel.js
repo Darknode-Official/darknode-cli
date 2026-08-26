@@ -15,7 +15,7 @@ const crypto = require("crypto");
 const readline = require("readline");
 const os = require("os");
 const dnsp = require("dns").promises;
-const VERSION = "2.43.0";
+const VERSION = "2.44.0";
 
 // ---------- colors ----------
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -3335,7 +3335,7 @@ function nexusTui(engine, cwd, nexusMd) {
       if (s === "\x1b[F" || s === "\x1b[4~" || s === "\x1bOF") { scroll = 0; render(); return; } // End -> latest
       if (s === "\x1b[1~" || s === "\x1bOH" || s === "\x1b[H") { scroll += 100000; render(); return; } // Home -> top (clamped in render)
       if (s.charCodeAt(0) === 27 && s[1] === "[" && s[2] === "<") { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); if (btn === 64) { if (mm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (mm.length) menuSel = Math.min(mm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; input = ""; menuSel = 0; scroll = 0; handleSlash(z.cmd); render(); } } } } return; } // SGR mouse: wheel scrolls / moves the slash menu · left-click toggles the ⋯ menu / runs an action
-      if (busy) return;                                                  // ignore typing mid-turn (scroll/interrupt/mode still work above)
+      if (busy) { for (const ch of s) { if (ch === "\x7f" || ch === "\b") input = input.slice(0, -1); else if (ch >= " ") input += ch; } return; } // buffer typing mid-turn
       // ---- bracketed paste (handles multi-line pastes, possibly split across chunks) ----
       if (pasteBuf !== null || s.indexOf("\x1b[200~") !== -1) {
         let chunk = s;
