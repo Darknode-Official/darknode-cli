@@ -1341,10 +1341,9 @@ async function aiCoder(argv) {
   const avail = {}; for (const e of ENGINE_ORDER) avail[e] = engineAvail(e);
   // "api" is an alias for the local tool loop pointed at the configured API.
   if (enginePref === "api") { enginePref = "ollama"; if (!apiConfigured() && !cfg.apiModel) console.log("  " + yellow("note: no API configured — set SENTINEL_API_BASE (+ SENTINEL_API_KEY) or run /api <url> [model]")); }
-  // Default to the FREE local engine (never auto-spend on a paid API). Claude / any
-  // paid engine is opt-in only: -e claude, /connect, or cfg.engine in .nexus/config.json.
-  let engine = enginePref || cfg.engine || "ollama";
-  if (engine !== "ollama" && !avail[engine]) engine = "ollama";
+  // Default to Claude headless when installed, fall back to Ollama.
+  let engine = enginePref || cfg.engine || (avail.claude ? "claude" : "ollama");
+  if (engine !== "ollama" && !avail[engine]) engine = avail.claude ? "claude" : "ollama";
   // The full-screen TUI is the default interactive experience now — the old
   // line-based `sentinel nexus` REPL has been retired for interactive use. Fall
   // through to the non-TUI path only for a one-shot task (`sentinel nexus
