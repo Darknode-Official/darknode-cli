@@ -36,7 +36,7 @@ const { COMMAND_GROUPS, renderCommands, documentedVerbs } = require("./lib/cli/r
 // Documented sentinel verbs NOT bridged into the Nexus TUI as /commands: they
 // block (server/listener), prompt for input, or already have a richer in-TUI
 // handler. Everything else documented becomes a slash command automatically.
-const NEXUS_NO_BRIDGE = new Set(["nexus", "code", "ai", "serve", "listen", "login", "setup", "git", "lab"]);
+const NEXUS_NO_BRIDGE = new Set(["nexus", "code", "ai", "serve", "listen", "login", "setup", "git", "lab", "api"]);
 const { parsePorts, idHash, parseCve } = require("./lib/toolkit/scanutil"); // security-console core logic (lib/scanutil.js)
 
 const { SHELLS, revshell } = require("./lib/toolkit/revshell"); // reverse-shell payloads (lib/revshell.js)
@@ -833,6 +833,25 @@ async function cli(args) {
   else if (cmd === "myip") console.log(await myIp());
   else if (cmd === "ipinfo") await ipInfo(rest[0] || "");
   else if (cmd === "hashfile") fileHash(rest[0]);
+  else if (cmd === "api") {
+    const sub = (rest[0] || "").toLowerCase();
+    if (sub === "start") {
+      const { createAPIServer } = require("./lib/cli/api-server");
+      const portArg = rest.indexOf("--port"); const apiPort = portArg >= 0 ? parseInt(rest[portArg + 1], 10) || 8080 : 8080;
+      const apiToken = process.env.SENTINEL_API_TOKEN || null;
+      const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken });
+      srv.listen(apiPort, "0.0.0.0", () => {
+        h1("Sentinel API Server"); console.log("  " + green("listening ") + cyan("http://0.0.0.0:" + apiPort));
+        if (t) console.log("  token     " + bold(t)); else console.log("  " + yellow("no API key required (set SENTINEL_API_TOKEN to require one)"));
+        console.log("\n  " + gray("health  ") + "curl http://localhost:" + apiPort + "/health");
+        console.log("  " + gray("scan    ") + "curl -s http://localhost:" + apiPort + "/api/v1/scan/url -H 'Content-Type: application/json' -d '{\"url\":\"https://target.com\"}'");
+        console.log("\n  " + gray("Ctrl-C to stop"));
+      });
+      srv.on("error", (e) => { console.log(red("  api server failed: " + (e && e.message || e))); process.exit(1); });
+      await new Promise(() => {});
+    } else if (sub === "stop") { console.log(gray("  send SIGTERM to the sentinel api process to stop it")); }
+    else { console.log("sentinel api start [--port 8080]   start the REST API server\nsentinel api stop                  stop the server"); }
+  }
   else if (cmd === "serve") { serveDir(rest[0], rest[1]); await new Promise(() => {}); }
   else if (cmd === "listen") { listen(rest[0]); await new Promise(() => {}); }
   else if (cmd === "tools") { h1("Tools"); TOOLS.forEach(([n, cat, inst]) => console.log("  " + bold(n.padEnd(14)) + gray(cat.padEnd(10)) + (inst.split(" ").slice(0,3).join(" ")))); console.log("\n  " + gray("configure any tool with: ") + "sentinel setup <name>"); }
