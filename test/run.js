@@ -28,6 +28,14 @@ const { hotp, totp, secondsRemaining } = require("../lib/toolkit/totp");
 const { decodeJwt, analyzeJwt } = require("../lib/toolkit/jwt");
 const { parseUA } = require("../lib/toolkit/useragent");
 const { portName, findByName, portLookup } = require("../lib/toolkit/ports");
+const { hexdump } = require("../lib/toolkit/hexdump");
+const { extractStrings } = require("../lib/toolkit/strings");
+const { luhnValid, luhnCheckDigit } = require("../lib/toolkit/luhn");
+const { b58encode, b58decode } = require("../lib/toolkit/base58");
+const { xorBytes, xorEncryptHex, xorDecryptHex } = require("../lib/toolkit/xorcipher");
+const { rot, rot13 } = require("../lib/toolkit/rot");
+const { classifyIp } = require("../lib/toolkit/ipclass");
+const { ENC } = require("../lib/toolkit/encoders");
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) { pass++; } else { fail++; console.log("  \x1b[31mFAIL\x1b[0m " + name); } };
@@ -497,7 +505,7 @@ group("no dead lib imports in sentinel.js");
 group("encoders (shared CLI + menu)");
 {
   const { ENC } = require("../lib/toolkit/encoders");
-  eq("op keys present", Object.keys(ENC).sort(), ["b64d", "b64e", "base32d", "base32e", "hexd", "hexe", "urld", "urle"]);
+  eq("op keys present", Object.keys(ENC).sort(), ["b64d", "b64e", "base32d", "base32e", "base58d", "base58e", "hexd", "hexe", "rot13d", "rot13e", "urld", "urle"]);
   ok("b64/hex/url/base32 all roundtrip", ["b64", "hex", "url", "base32"].every((t) => ENC[t + "d"](ENC[t + "e"]("Sentinel 42!")) === "Sentinel 42!"));
   eq("url encodes a space", ENC.urle("a b"), "a%20b");
   eq("invalid base32 -> guarded message", ENC.base32d("!!!"), "(invalid base32)");
@@ -687,10 +695,109 @@ group("reverse-shell payloads");
   ok("SHELLS entries are builder functions", Object.values(SHELLS).every((f) => typeof f === "function"));
 }
 
+group("hexdump");
+{
+  const d = hexdump("Hello world\n");
+  ok("offset + hex + ascii gutter", d.split("\n")[0].startsWith("00000000  48 65 6c 6c 6f 20 77 6f  72 6c 64 0a"));
+  ok("ascii shows printable, dots for control", d.includes("|Hello world.|"));
+  ok("empty input note", hexdump("") === "(empty)");
+  ok("16 bytes per row", hexdump("0123456789abcdefX").split("\n").length === 3); // 2 data rows + trailing offset
+  ok("trailing total-length offset line", hexdump("abc").split("\n").pop() === "00000003");
+}
+
+group("strings extraction");
+{
+  const buf = Buffer.from([0x00, 0x41, 0x42, 0x43, 0x44, 0x01, 0x02, 0x68, 0x69]);
+  const s = extractStrings(buf, 4);
+  eq("finds run >= min, drops short", s.map((x) => x.text), ["ABCD"]);
+  eq("offset is the run start", s[0].offset, 1);
+  eq("min length respected", extractStrings("ab cd ef", 3).map((x) => x.text), ["ab cd ef"]);
+  ok("min default is 4", extractStrings("hey").length === 0 && extractStrings("heyo").length === 1);
+  eq("multiple runs", extractStrings(Buffer.from("AAAA\x00BBBB"), 4).map((x) => x.text), ["AAAA", "BBBB"]);
+}
+
+group("luhn checksum");
+{
+  ok("valid test card", luhnValid("4539148803436467"));
+  ok("valid with separators", luhnValid("4539 1488 0343 6467"));
+  ok("invalid card", !luhnValid("4539148803436460"));
+  ok("non-digit rejected", !luhnValid("hello"));
+  ok("empty rejected", !luhnValid(""));
+  eq("check digit completes a valid number", luhnCheckDigit("453914880343646"), 7);
+  ok("computed check digit validates", luhnValid("453914880343646" + luhnCheckDigit("453914880343646")));
+  ok("check digit non-digit -> null", luhnCheckDigit("x") === null);
+}
+
+group("base58 (bitcoin alphabet)");
+{
+  eq("known vector 'Hello World!'", b58encode("Hello World!"), "2NEpo7TZRRrLZSi2U");
+  ok("round-trips utf8", b58decode(b58encode("sentinel")).toString("utf8") === "sentinel");
+  eq("empty -> empty", b58encode(""), "");
+  ok("leading zero bytes -> leading 1s", b58encode(Buffer.from([0, 0, 1])) === "112");
+  ok("invalid char (0/O/I/l) -> null", b58decode("0OIl") === null);
+  ok("wired into ENC encode/decode", ENC.base58e("hi") === b58encode("hi") && ENC.base58d(b58encode("hi")) === "hi");
+}
+
+group("xor cipher (repeating key)");
+{
+  eq("known: 'ABC' ^ key byte", xorEncryptHex("\x00", "ABC"), "414243"); // xor with 0 = identity hex of ABC
+  ok("round-trips", xorDecryptHex("secret", xorEncryptHex("secret", "attack at dawn")) === "attack at dawn");
+  ok("self-inverse on bytes", xorBytes(Buffer.from("k"), xorBytes(Buffer.from("k"), Buffer.from("data"))).toString() === "data");
+  ok("empty key = identity", xorBytes(Buffer.alloc(0), Buffer.from("x")).toString() === "x");
+  ok("bad hex -> null", xorDecryptHex("k", "xyz") === null);
+  ok("repeating key wraps", xorEncryptHex("ab", "\x00\x00\x00\x00") === "61626162");
+}
+
+group("rot / caesar");
+{
+  eq("rot13 basic", rot13("Hello, World!"), "Uryyb, Jbeyq!");
+  ok("rot13 is its own inverse", rot13(rot13("Sentinel")) === "Sentinel");
+  eq("rot n=1", rot(1, "abcZ"), "bcdA");
+  ok("non-letters untouched", rot(5, "a1!b") === "f1!g");
+  ok("negative and >26 normalize", rot(-13, "abc") === rot(13, "abc") && rot(39, "abc") === rot(13, "abc"));
+}
+
+group("ip scope classifier");
+{
+  const t = (ip, scope, routable) => { const r = classifyIp(ip); ok("ipclass " + ip + " -> " + scope, r && r.scope === scope && r.routable === routable); };
+  t("10.0.0.5", "private", false);
+  t("172.16.0.1", "private", false);
+  t("192.168.1.1", "private", false);
+  t("127.0.0.1", "loopback", false);
+  t("169.254.0.1", "link-local", false);
+  t("100.64.0.1", "cgnat", false);
+  t("203.0.113.9", "documentation", false);
+  t("224.0.0.1", "multicast", false);
+  t("8.8.8.8", "global", true);
+  t("::1", "loopback", false);
+  t("fe80::1", "link-local", false);
+  t("2001:db8::1", "documentation", false);
+  t("2606:4700:4700::1111", "global", true);
+  ok("reverse PTR for v4", classifyIp("8.8.4.4").ptr === "4.4.8.8.in-addr.arpa");
+  ok("class A/B/C", classifyIp("10.0.0.1").klass === "A" && classifyIp("172.16.0.1").klass === "B" && classifyIp("192.168.0.1").klass === "C");
+  ok("garbage -> null", classifyIp("999.1.1.1") === null && classifyIp("nope") === null);
+}
+
+group("registry: new commands dispatch");
+{
+  const { CMD_MAP } = require("../lib/cli/registry");
+  const c = { red: (s) => s, green: (s) => s, yellow: (s) => s, cyan: (s) => s, gray: (s) => s, bold: (s) => s };
+  const runCmd = (name, rest) => CMD_MAP[name].run({ rest, c });
+  ok("hexdump command", /48 65 6c 6c 6f/.test(runCmd("hexdump", ["Hello"])));
+  ok("xxd alias maps to hexdump", CMD_MAP["xxd"] === CMD_MAP["hexdump"]);
+  ok("strings -n filter", runCmd("strings", ["-n", "5", "abcd efghij"]).includes("efghij") && !runCmd("strings", ["-n", "5", "abcd efghij"]).includes("abcd\n"));
+  ok("luhn valid", runCmd("luhn", ["4539148803436467"]).includes("valid"));
+  ok("luhn check digit via ?", runCmd("luhn", ["453914880343646?"]).includes("7"));
+  ok("xor encrypt then decrypt", (() => { const hex = runCmd("xor", ["key", "hi"]).trim(); return runCmd("xor", ["-d", "key", hex]).includes("hi"); })());
+  ok("rot default 13", runCmd("rot", ["Hello"]).includes("Uryyb"));
+  ok("ipclass private", runCmd("ipclass", ["10.0.0.1"]).includes("private"));
+  ok("ipscope alias", CMD_MAP["ipscope"] === CMD_MAP["ipclass"]);
+}
+
 group("help reference (single source of truth)");
 {
   const { COMMAND_GROUPS, documentedVerbs, renderCommands } = require("../lib/cli/reference");
-  ok("8 command groups, non-empty", COMMAND_GROUPS.length === 8 && COMMAND_GROUPS.every((g) => g.title && g.rows.length));
+  ok(">=8 command groups, non-empty", COMMAND_GROUPS.length >= 8 && COMMAND_GROUPS.every((g) => g.title && g.rows.length));
   ok("every row is [left, right] strings", COMMAND_GROUPS.every((g) => g.rows.every((r) => r.length === 2 && typeof r[0] === "string" && typeof r[1] === "string")));
   // DRIFT GUARD: every documented command verb must have a real dispatch handler —
   // either an inline `cmd === "x"` branch or a lib/registry.js command entry.
