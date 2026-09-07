@@ -1,11 +1,11 @@
 {
-  "name": "sentinel-cli",
+  "name": "darknode-cli",
   "version": "2.45.0",
-  "description": "Sentinel — terminal edition. A dependency-free security console CLI/TUI for Windows and Linux: native port scanner, reverse shells, encoders, payloads, and cheat sheets.",
+  "description": "Darknode — AI security platform CLI. AI-powered security platform with Nexus AI engine for Windows and Linux: native port scanner, reverse shells, encoders, payloads, and cheat sheets.",
   "bin": {
-    "sentinel": "sentinel.js"
+    "darknode": "darknode.js"
   },
-  "main": "sentinel.js",
+  "main": "darknode.js",
   "type": "commonjs",
   "engines": {
     "node": ">=18"
