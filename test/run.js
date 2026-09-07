@@ -442,15 +442,15 @@ group("command registry (batch 1)");
   eq("defang output matches", CMD_MAP.defang.run({ rest: ["http://evil.com/path"], c: plain }), "hxxp[://]evil[.]com/path");
   eq("incidr yes", CMD_MAP.incidr.run({ rest: ["10.0.0.5", "10.0.0.0/24"], c: plain }), "  yes — 10.0.0.5 is inside 10.0.0.0/24");
   eq("incidr no", CMD_MAP.incidr.run({ rest: ["10.0.9.9", "10.0.0.0/24"], c: plain }), "  no — 10.0.9.9 is NOT inside 10.0.0.0/24");
-  ok("entropy usage on empty", CMD_MAP.entropy.run({ rest: [], c: plain }).includes("usage: sentinel entropy"));
+  ok("entropy usage on empty", CMD_MAP.entropy.run({ rest: [], c: plain }).includes("usage: darknode entropy"));
   eq("port number lookup (plain)", CMD_MAP.port.run({ rest: ["3306"], c: plain }), "  3306  mysql");
   ok("port name lookup returns multi-line joined string", (() => { const s = CMD_MAP.port.run({ rest: ["http"], c: plain }); return s.split("\n").length >= 4 && s.includes("80") && s.includes("443"); })());
   ok("url returns a multi-line block ending in a blank line", (() => { const s = CMD_MAP.url.run({ rest: ["https://h.com:8443/p?a=1"], c: plain }); return s.endsWith("\n") && s.includes("scheme") && s.includes("8443") && s.includes("query params:"); })());
-  ok("url usage on empty", CMD_MAP.url.run({ rest: [], c: plain }).includes("usage: sentinel url"));
+  ok("url usage on empty", CMD_MAP.url.run({ rest: [], c: plain }).includes("usage: darknode url"));
   ok("useragent + ua alias resolve to one entry", CMD_MAP.ua === CMD_MAP.useragent);
   ok("useragent parses a Chrome UA", (() => { const s = CMD_MAP.useragent.run({ rest: ["Mozilla/5.0 (Windows NT 10.0) Chrome/120.0 Safari/537.36"], c: plain }); return s.includes("Chrome 120.0") && s.includes("Windows 10/11") && s.endsWith("\n"); })());
   ok("cidr computes a /30", (() => { const s = CMD_MAP.cidr.run({ rest: ["10.0.0.0/30"], c: plain }); return s.includes("Network") && s.includes("Hosts") && s.includes("2"); })());
-  ok("cidr usage on garbage", CMD_MAP.cidr.run({ rest: ["nope"], c: plain }).includes("usage: sentinel cidr"));
+  ok("cidr usage on garbage", CMD_MAP.cidr.run({ rest: ["nope"], c: plain }).includes("usage: darknode cidr"));
   ok("epoch + time + ts aliases share one entry", CMD_MAP.time === CMD_MAP.epoch && CMD_MAP.ts === CMD_MAP.epoch);
   ok("epoch converts a fixed unix ts deterministically", (() => { const s = CMD_MAP.epoch.run({ rest: ["1700000000"], c: plain }); return s.includes("2023-11-14T22:13:20") && s.includes("epoch (ms)  1700000000000"); })());
   {
@@ -470,7 +470,7 @@ group("command registry (batch 1)");
   eq("status 404 (plain)", CMD_MAP.status.run({ rest: ["404"], c: plain }), "404 Not Found  · 4xx client error");
   ok("status unknown code -> usage", CMD_MAP.status.run({ rest: ["999"], c: plain }).includes("unknown status code"));
   ok("dorks builds a block per dork + h1", (() => { const s = CMD_MAP.dorks.run({ rest: ["example.com"], c: plain }); return s.includes("Google dorks for example.com") && s.includes("google.com/search?q=") && s.includes(encodeURIComponent("site:example.com")); })());
-  ok("dorks usage on empty", CMD_MAP.dorks.run({ rest: [], c: plain }).includes("usage: sentinel dorks"));
+  ok("dorks usage on empty", CMD_MAP.dorks.run({ rest: [], c: plain }).includes("usage: darknode dorks"));
   ok("cheats no-arg lists topics", CMD_MAP.cheats.run({ rest: [], c: plain }).startsWith("topics: "));
   ok("cheats topic returns its lines", (() => { const s = CMD_MAP.cheats.run({ rest: ["nmap"], c: plain }); return s.includes("nmap") && !s.startsWith("topics:"); })());
   ok("cheats unknown topic falls back to topic list", CMD_MAP.cheats.run({ rest: ["zzz"], c: plain }).startsWith("topics: "));
@@ -801,7 +801,8 @@ group("help reference (single source of truth)");
   ok("every row is [left, right] strings", COMMAND_GROUPS.every((g) => g.rows.every((r) => r.length === 2 && typeof r[0] === "string" && typeof r[1] === "string")));
   // DRIFT GUARD: every documented command verb must have a real dispatch handler —
   // either an inline `cmd === "x"` branch or a lib/registry.js command entry.
-  const src = fs.readFileSync(path.join(__dirname, "..", "sentinel.js"), "utf8");
+  const srcFiles = ["sentinel.js", "darknode.js"].map((f) => { try { return fs.readFileSync(path.join(__dirname, "..", f), "utf8"); } catch (_) { return ""; } });
+  const src = srcFiles.join("\n");
   const dispatched = new Set();
   for (const m of src.matchAll(/cmd === "([^"]+)"/g)) dispatched.add(m[1]);
   const { CMDS: REG } = require("../lib/cli/registry");
@@ -952,14 +953,14 @@ group("compliance bundle (SOC2 export)");
   fs.writeFileSync(path.join(d, ".nexus", "usage.jsonl"), JSON.stringify({ ts: "2026-08-12T10:00:00Z", engine: "claude", model: "opus", inTok: 100, outTok: 50, cost: 0.02, operator: "alice", team: "platform" }) + "\n");
   fs.writeFileSync(path.join(d, ".nexus", "policy.json"), JSON.stringify({ protectedPaths: [".env"], audit: true }));
   const b = buildBundle(d, { operator: "alice", team: "platform", now: "2026-08-12T12:00:00Z", signingKey: "secret" });
-  eq("bundle metadata", [b.kind, b.version, b.generatedAt, b.operator, b.team], ["sentinel.compliance.bundle", 1, "2026-08-12T12:00:00Z", "alice", "platform"]);
+  eq("bundle metadata", [b.kind, b.version, b.generatedAt, b.operator, b.team], ["darknode.compliance.bundle", 1, "2026-08-12T12:00:00Z", "alice", "platform"]);
   ok("bundle carries usage + manifest digests", b.usage.turns === 1 && b.manifest["usage.jsonl"].sha256.length === 64 && b.manifest["policy.json"]);
   ok("integrity + signature present", b.integrity.algo === "sha256" && b.integrity.hash.length === 64 && b.signature.algo === "hmac-sha256");
   eq("verify a good signed bundle", verifyBundle(b, "secret"), { hashOk: true, sigOk: true });
   ok("wrong key fails signature but hash still ok", (() => { const v = verifyBundle(b, "nope"); return v.hashOk === true && v.sigOk === false; })());
   ok("tampering breaks integrity + signature", (() => { const t = JSON.parse(JSON.stringify(b)); t.usage.cost = 999; const v = verifyBundle(t, "secret"); return v.hashOk === false && v.sigOk === false; })());
   ok("unsigned bundle: sigOk is null", (() => { const u = buildBundle(d, { operator: "alice", now: "2026-08-12T12:00:00Z" }); return u.signature === undefined && verifyBundle(u).sigOk === null && verifyBundle(u).hashOk === true; })());
-  ok("markdown render has the key sections", (() => { const md = renderBundleMd(b); return md.includes("# Sentinel compliance report") && md.includes("Operator:** alice") && md.includes("Manifest (SHA-256)") && md.includes(b.integrity.hash); })());
+  ok("markdown render has the key sections", (() => { const md = renderBundleMd(b); return md.includes("# Darknode compliance report") && md.includes("Operator:** alice") && md.includes("Manifest (SHA-256)") && md.includes(b.integrity.hash); })());
   ok("deterministic with fixed now + injected key", buildBundle(d, { operator: "alice", team: "platform", now: "2026-08-12T12:00:00Z", signingKey: "secret" }).integrity.hash === b.integrity.hash);
   try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
 }

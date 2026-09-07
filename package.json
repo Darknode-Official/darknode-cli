@@ -11,7 +11,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "start": "node sentinel.js",
+    "start": "node darknode.js",
     "build": "pkg . --out-path dist",
     "test": "node test/run.js",
     "postinstall": "node scripts/postinstall.js"
@@ -37,9 +37,10 @@
     "recon",
     "terminal"
   ],
-  "author": "Sentinel",
+  "author": "Darknode",
   "license": "UNLICENSED",
   "files": [
+    "darknode.js",
     "sentinel.js",
     "lib/",
     "test/",
