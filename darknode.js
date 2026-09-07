@@ -17,6 +17,9 @@ const os = require("os");
 const dnsp = require("dns").promises;
 const VERSION = "2.45.0";
 
+// ---- backward compat: accept old SENTINEL_* env vars as DARKNODE_* ----
+for (const k of Object.keys(process.env)) { if (k.startsWith("SENTINEL_") && !process.env["DARKNODE_" + k.slice(9)]) process.env["DARKNODE_" + k.slice(9)] = process.env[k]; }
+
 // ---------- colors ----------
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 let tuiActive = false; // set while the full-screen TUI owns the terminal, so the global SIGINT handler defers to the TUI's own cleanup
@@ -229,7 +232,7 @@ async function cveSearch(q) {
 
 // ---------- GitHub (system git + token) ----------
 function sh(args, opts) { return new Promise((res) => execFile("git", args, { maxBuffer: 1e7, ...opts }, (err, stdout, stderr) => res({ err, stdout, stderr }))); }
-const ghToken = () => process.env.SENTINEL_GH_TOKEN || process.env.GITHUB_TOKEN || "";
+const ghToken = () => process.env.DARKNODE_GH_TOKEN || process.env.GITHUB_TOKEN || "";
 const ghAuth = (url, t) => (t && /^https:\/\//i.test(url)) ? url.replace(/^https:\/\//i, "https://" + t + "@") : url;
 const ghScrub = (s, t) => String(s || "").split(t || " __none__").join("***").trim();
 async function gitClone(url) {
@@ -386,7 +389,7 @@ async function menuSubs() {
 }
 async function menuGit() {
   h1("GitHub");
-  console.log("  token: " + (ghToken() ? green("set (env)") : red("not set — export SENTINEL_GH_TOKEN=ghp_...")));
+  console.log("  token: " + (ghToken() ? green("set (env)") : red("not set — export DARKNODE_GH_TOKEN=ghp_...")));
   console.log("  actions: clone push pull status log diff branch checkout repos new issues prs issue pr comment gists gist\n");
   const act = await ask("action:");
   console.log("");
@@ -463,7 +466,7 @@ function setupTool(name) {
     const t = TOOLS.find((x) => x[0].toLowerCase() === String(name).toLowerCase());
     if (!t) { console.log("  " + red("unknown tool. see: darknode tools")); return resolve(); }
     let inst = t[2];
-    if (process.platform !== "win32" && inst.startsWith("sudo ") && process.getuid && process.getuid() !== 0 && process.env.SENTINEL_NO_PKEXEC !== "1") {
+    if (process.platform !== "win32" && inst.startsWith("sudo ") && process.getuid && process.getuid() !== 0 && process.env.DARKNODE_NO_PKEXEC !== "1") {
       // prefer a graphical prompt if available, else sudo will prompt in the terminal
     }
     h1("Configuring " + t[0]);
@@ -685,8 +688,8 @@ function fileHash(f) {
 // 127.0.0.1 only + Bearer token. `darknode nexus serve [port]`.
 async function nexusServe(args, ctx) {
   const crypto = require("crypto");
-  const port = parseInt((args || []).find((a) => /^\d+$/.test(a)) || process.env.SENTINEL_SERVE_PORT || "", 10) || 8765;
-  const token = process.env.SENTINEL_SERVE_TOKEN || crypto.randomBytes(24).toString("base64url");
+  const port = parseInt((args || []).find((a) => /^\d+$/.test(a)) || process.env.DARKNODE_SERVE_PORT || "", 10) || 8765;
+  const token = process.env.DARKNODE_SERVE_TOKEN || crypto.randomBytes(24).toString("base64url");
   const engineDefault = (ctx && ctx.engine) || "claude";
   const srv = http.createServer((req, res) => {
     const send = (code, obj) => { const b = JSON.stringify(obj); res.writeHead(code, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(b) }); res.end(b); };
@@ -783,7 +786,7 @@ function nexusUpdate(opts) {
   if (pull.status !== 0) { L.push("update failed: " + (((pull.stderr || "") + (pull.error ? pull.error.message : "")).trim() || "git pull error")); return L.join("\n"); }
   const changed = (run("git", ["diff", "--name-only", local, "HEAD"]).stdout) || "";
   if (/package(-lock)?\.json/.test(changed) && hasBin("npm")) { const ni = cp.spawnSync("npm", ["install", "--silent", "--no-audit", "--no-fund"], { cwd: dir, encoding: "utf8", timeout: 600000 }); if (ni.status !== 0) L.push("note: npm install after update reported an issue — run `npm install` in " + dir); }
-  let newV = VERSION; try { const m = fs.readFileSync(path.join(dir, "sentinel.js"), "utf8").match(/const VERSION = "([^"]+)"/); if (m) newV = m[1]; } catch (_) {}
+  let newV = VERSION; try { const m = fs.readFileSync(path.join(dir, "darknode.js"), "utf8").match(/const VERSION = "([^"]+)"/); if (m) newV = m[1]; } catch (_) {}
   L.push(green("updated") + " v" + VERSION + " → v" + newV + " — restart Nexus (" + cyan("/exit") + ", then " + cyan("darknode nexus") + ") to load it.");
   return L.join("\n");
 }
@@ -822,7 +825,7 @@ async function cli(args) {
     else if (sub === "comment") await ghComment(rest[1], rest[2], rest.slice(3).join(" "));
     else if (sub === "gists") await ghGists();
     else if (sub === "gist") await ghNewGist(rest[1], rest.slice(2).join(" "));
-    else console.log("git clone|push|pull|status|log|diff|branch|checkout|repos|new|issues|prs|issue|pr|comment|gists|gist  (token: SENTINEL_GH_TOKEN)");
+    else console.log("git clone|push|pull|status|log|diff|branch|checkout|repos|new|issues|prs|issue|pr|comment|gists|gist  (token: DARKNODE_GH_TOKEN)");
   }
   else if (cmd === "totp") { const secret = rest.join(" ").replace(/\s+/g, ""); const code = totp(secret); if (!code) { console.log(red("usage: darknode totp <base32-secret>   — generate a TOTP 2FA code")); } else { console.log(bold(cyan(code))); const left = secondsRemaining(30); console.log(gray("  valid " + left + "s" + (left <= 5 ? " (expiring — a new code is imminent)" : ""))); } }
   else if (cmd === "hash") console.log(hashes(rest.join(" ")));
@@ -838,11 +841,11 @@ async function cli(args) {
     if (sub === "start") {
       const { createAPIServer } = require("./lib/cli/api-server");
       const portArg = rest.indexOf("--port"); const apiPort = portArg >= 0 ? parseInt(rest[portArg + 1], 10) || 8080 : 8080;
-      const apiToken = process.env.SENTINEL_API_TOKEN || null;
+      const apiToken = process.env.DARKNODE_API_TOKEN || null;
       const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken });
       srv.listen(apiPort, "0.0.0.0", () => {
         h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://0.0.0.0:" + apiPort));
-        if (t) console.log("  token     " + bold(t)); else console.log("  " + yellow("no API key required (set SENTINEL_API_TOKEN to require one)"));
+        if (t) console.log("  token     " + bold(t)); else console.log("  " + yellow("no API key required (set DARKNODE_API_TOKEN to require one)"));
         console.log("\n  " + gray("health  ") + "curl http://localhost:" + apiPort + "/health");
         console.log("  " + gray("scan    ") + "curl -s http://localhost:" + apiPort + "/api/v1/scan/url -H 'Content-Type: application/json' -d '{\"url\":\"https://target.com\"}'");
         console.log("\n  " + gray("Ctrl-C to stop"));
@@ -872,7 +875,7 @@ async function cli(args) {
     if (rest[0] === "init") { const fs = require("fs"), path = require("path"); const dir = path.join(process.cwd(), ".nexus"), f = path.join(dir, "policy.json"); if (fs.existsSync(f)) console.log("  " + yellow(".nexus/policy.json already exists — not overwriting")); else { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, JSON.stringify(POLICY_DEFAULTS, null, 2) + "\n"); console.log("  " + green("created ") + ".nexus/policy.json" + gray(" — a starting policy; tighten protected paths, denied commands, and limits, then ") + cyan("darknode policy") + gray(" to review")); } return; }
     const p = loadPolicy(process.cwd());
     if (rest[0] === "--json") { console.log(JSON.stringify(p, null, 2)); }
-    else { banner(); h1("Effective security policy" + (p.org ? "  (ORG-ENFORCED)" : "")); const row = (k, v) => console.log("  " + k.padEnd(22) + v); row("source", p.org ? "org floor (~/.sentinel/policy.json) + local .nexus/policy.json" : ".nexus/policy.json (or defaults)"); row("protected paths", (p.protectedPaths || []).length + "  " + gray((p.protectedPaths || []).slice(0, 6).join(", ") + ((p.protectedPaths || []).length > 6 ? " …" : ""))); row("denied commands", (p.deniedCommands || []).length ? p.deniedCommands.join(", ") : gray("(built-in destructive guard only)")); row("max files / turn", p.maxFilesPerTurn || gray("unlimited")); row("block secret writes", p.blockSecrets ? green("on") : red("off")); row("network", p.allowNetwork ? "allowed" : red("blocked")); row("audit", p.audit ? "on (.nexus/audit.jsonl, hash-chained)" : gray("off")); const warns = policyWarnings(process.cwd()); if (warns.length) { console.log("\n  " + yellow("config warnings:")); warns.forEach((wn) => console.log("    " + yellow("• " + wn))); } console.log("\n  " + gray("machine-readable: ") + cyan("darknode policy --json") + "\n"); }
+    else { banner(); h1("Effective security policy" + (p.org ? "  (ORG-ENFORCED)" : "")); const row = (k, v) => console.log("  " + k.padEnd(22) + v); row("source", p.org ? "org floor (~/.darknode/policy.json) + local .nexus/policy.json" : ".nexus/policy.json (or defaults)"); row("protected paths", (p.protectedPaths || []).length + "  " + gray((p.protectedPaths || []).slice(0, 6).join(", ") + ((p.protectedPaths || []).length > 6 ? " …" : ""))); row("denied commands", (p.deniedCommands || []).length ? p.deniedCommands.join(", ") : gray("(built-in destructive guard only)")); row("max files / turn", p.maxFilesPerTurn || gray("unlimited")); row("block secret writes", p.blockSecrets ? green("on") : red("off")); row("network", p.allowNetwork ? "allowed" : red("blocked")); row("audit", p.audit ? "on (.nexus/audit.jsonl, hash-chained)" : gray("off")); const warns = policyWarnings(process.cwd()); if (warns.length) { console.log("\n  " + yellow("config warnings:")); warns.forEach((wn) => console.log("    " + yellow("• " + wn))); } console.log("\n  " + gray("machine-readable: ") + cyan("darknode policy --json") + "\n"); }
   }
   else if (cmd === "audit") {
     if (rest[0] === "verify") { const v = auditVerify(process.cwd()); if (v.empty) { console.log("  " + gray("audit trail is empty — nothing to verify")); process.exit(0); } console.log(v.ok ? "  " + green("OK") + " audit trail intact — " + v.count + " record(s), hash chain verified" : "  " + red("TAMPERED") + " — " + v.reason + " at record #" + v.badLine + " of " + v.count); process.exit(v.ok ? 0 : 1); } // CI gate: non-zero exit on tamper
@@ -970,14 +973,14 @@ async function cli(args) {
     const fs = require("fs");
     if (rest[0] === "verify") {
       const f = rest[1]; if (!f) { console.log(red("usage: darknode compliance verify <bundle.json>")); process.exit(2); }
-      try { const b = JSON.parse(fs.readFileSync(f, "utf8")); const key = process.env.SENTINEL_SIGNING_KEY || ""; const v = verifyBundle(b, key || undefined);
-        const sig = v.sigOk === null ? (b.signature ? gray("signature present — set SENTINEL_SIGNING_KEY to verify it") : gray("unsigned")) : (v.sigOk ? green("signature valid") : red("signature INVALID"));
+      try { const b = JSON.parse(fs.readFileSync(f, "utf8")); const key = process.env.DARKNODE_SIGNING_KEY || ""; const v = verifyBundle(b, key || undefined);
+        const sig = v.sigOk === null ? (b.signature ? gray("signature present — set DARKNODE_SIGNING_KEY to verify it") : gray("unsigned")) : (v.sigOk ? green("signature valid") : red("signature INVALID"));
         console.log("  integrity  " + (v.hashOk ? green("OK — bundle not altered") : red("TAMPERED")) + "\n  signature  " + sig);
         process.exit(v.hashOk && v.sigOk !== false ? 0 : 1); // CI gate
       } catch (e) { console.log(red("could not read/parse bundle: " + (e && e.message || e))); process.exit(2); }
     }
     const id = resolveOperator({ cwd: process.cwd() });
-    const key = process.env.SENTINEL_SIGNING_KEY || "";
+    const key = process.env.DARKNODE_SIGNING_KEY || "";
     const b = buildBundle(process.cwd(), { operator: id.operator, team: id.team, signingKey: key || undefined });
     if (rest.includes("--json")) console.log(JSON.stringify(b, null, 2));
     else console.log("\n" + renderBundleMd(b) + "\n");
@@ -1037,11 +1040,11 @@ async function cli(args) {
 
 // ========== global config, auth (Firebase-backed /login) & first-run setup ==========
 // Nexus keeps machine-wide state (login tokens, Firebase keys, setup marker) in
-// ~/.sentinel/ so a signed-in session and installed models persist across every
+// ~/.darknode/ so a signed-in session and installed models persist across every
 // project, unlike the per-project .nexus/ dir.
-function sentinelHome() { const os = require("os"), path = require("path"), fs = require("fs"); const d = path.join(os.homedir(), ".sentinel"); try { fs.mkdirSync(d, { recursive: true }); } catch (_) {} return d; }
-function readGlobal(name, def) { const fs = require("fs"), path = require("path"); try { return JSON.parse(fs.readFileSync(path.join(sentinelHome(), name), "utf8")); } catch (_) { return def === undefined ? null : def; } }
-function writeGlobal(name, obj) { const fs = require("fs"), path = require("path"); try { const p = path.join(sentinelHome(), name); fs.writeFileSync(p, JSON.stringify(obj, null, 2)); try { fs.chmodSync(p, 0o600); } catch (_) {} return true; } catch (_) { return false; } } // 0600: tokens are secrets
+function darknodeHome() { const os = require("os"), path = require("path"), fs = require("fs"); const d = path.join(os.homedir(), ".darknode"); try { fs.mkdirSync(d, { recursive: true }); } catch (_) {} if (!fs.existsSync(d)) { const old = path.join(os.homedir(), ".sentinel"); if (fs.existsSync(old)) return old; } return d; }
+function readGlobal(name, def) { const fs = require("fs"), path = require("path"); try { return JSON.parse(fs.readFileSync(path.join(darknodeHome(), name), "utf8")); } catch (_) { return def === undefined ? null : def; } }
+function writeGlobal(name, obj) { const fs = require("fs"), path = require("path"); try { const p = path.join(darknodeHome(), name); fs.writeFileSync(p, JSON.stringify(obj, null, 2)); try { fs.chmodSync(p, 0o600); } catch (_) {} return true; } catch (_) { return false; } } // 0600: tokens are secrets
 
 // Minimal dependency-free HTTP(S) JSON client (the whole CLI ships with zero deps).
 function httpReq(opts) {
@@ -1067,10 +1070,10 @@ function openBrowser(url) {
 }
 
 // ---- Firebase Identity Toolkit REST (verifies the user against the project) ----
-// Bundled PUBLIC config for the Sentinel web project — a Firebase web apiKey only
+// Bundled PUBLIC config for the Darknode web project — a Firebase web apiKey only
 // identifies the project, it is not a secret (it ships in the website's JS too).
 // This makes `darknode login` work out-of-the-box with the website's accounts; a
-// ~/.sentinel/firebase.json overrides any field (e.g. to point at your own project).
+// ~/.darknode/firebase.json overrides any field (e.g. to point at your own project).
 const DEFAULT_FIREBASE = { apiKey: "AIzaSyD3CJO7PLQdRvPOWDqehSlRwEeA5odCTDE", authDomain: "sentinel-b4194.firebaseapp.com", projectId: "sentinel-b4194" };
 function firebaseCfg() { return Object.assign({}, DEFAULT_FIREBASE, readGlobal("firebase.json", {}) || {}); }
 function firebaseReady(c) { c = c || firebaseCfg(); return !!(c && c.apiKey); }
@@ -1131,11 +1134,11 @@ async function googleLoopbackFlow(clientId, clientSecret, log) {
 }
 
 function nexusAuth() { return readGlobal("auth.json", null); }
-function nexusLogout() { const fs = require("fs"), path = require("path"); try { fs.unlinkSync(path.join(sentinelHome(), "auth.json")); return true; } catch (_) { return false; } }
+function nexusLogout() { const fs = require("fs"), path = require("path"); try { fs.unlinkSync(path.join(darknodeHome(), "auth.json")); return true; } catch (_) { return false; } }
 async function nexusLogin(provider, log) {
   log = log || ((s) => console.log("  " + s));
   const c = firebaseCfg();
-  if (!firebaseReady(c)) { log(red("Firebase isn't configured yet.")); log("Save your web config to " + cyan(require("path").join(sentinelHome(), "firebase.json")) + " — see " + cyan("darknode login --help")); return { ok: false, needConfig: true }; }
+  if (!firebaseReady(c)) { log(red("Firebase isn't configured yet.")); log("Save your web config to " + cyan(require("path").join(darknodeHome(), "firebase.json")) + " — see " + cyan("darknode login --help")); return { ok: false, needConfig: true }; }
   provider = (provider || "").toLowerCase();
   let idpToken, providerId;
   if (provider === "github" || provider === "gh") {
@@ -1180,9 +1183,9 @@ function loginHelp() {
   console.log("  " + bold("2.") + " Open " + bold("Settings → Nexus CLI") + " and copy your code.");
   console.log("  " + bold("3.") + " Here, run " + cyan("darknode login") + gray(" (it will prompt) — or ") + cyan("darknode login <code>") + gray(" — and paste it."));
   console.log("     " + gray("In the Nexus TUI: type ") + cyan("/login <code>") + gray(". Check with ") + cyan("darknode whoami") + gray("."));
-  console.log("\n  " + gray("Advanced: ") + cyan("darknode login google") + gray(" / ") + cyan("github") + gray(" do a direct OAuth flow — that path needs your own keys in ") + require("path").join(sentinelHome(), "firebase.json") + gray(" (googleClientId/Secret, githubClientId). Most people should use the code above instead.") + "\n");
+  console.log("\n  " + gray("Advanced: ") + cyan("darknode login google") + gray(" / ") + cyan("github") + gray(" do a direct OAuth flow — that path needs your own keys in ") + require("path").join(darknodeHome(), "firebase.json") + gray(" (googleClientId/Secret, githubClientId). Most people should use the code above instead.") + "\n");
 }
-function loginConfigWrite(kv) { const cur = firebaseCfg() || {}; let n = 0; for (const p of kv) { const i = p.indexOf("="); if (i > 0) { cur[p.slice(0, i)] = p.slice(i + 1); n++; } } writeGlobal("firebase.json", cur); console.log("  " + green("saved " + n + " field(s) → ") + require("path").join(sentinelHome(), "firebase.json")); }
+function loginConfigWrite(kv) { const cur = firebaseCfg() || {}; let n = 0; for (const p of kv) { const i = p.indexOf("="); if (i > 0) { cur[p.slice(0, i)] = p.slice(i + 1); n++; } } writeGlobal("firebase.json", cur); console.log("  " + green("saved " + n + " field(s) → ") + require("path").join(darknodeHome(), "firebase.json")); }
 
 // ---- Ollama auto-install + model pull (first-run "download everything" flow) ----
 function ollamaReachable() { return new Promise((res) => { const r = require("http").get({ host: process.env.OLLAMA_HOST || "127.0.0.1", port: +(process.env.OLLAMA_PORT || 11434), path: "/api/tags", timeout: 1500 }, () => res(true)); r.on("error", () => res(false)); r.on("timeout", () => { r.destroy(); res(false); }); }); }
@@ -1193,7 +1196,7 @@ async function ollamaPull(model, log) { log("pulling " + bold(model) + gray(" �
 function firstRunPending() { const st = readGlobal("state.json", null); return !st || !st.setupDone; }
 // The local models Nexus ships with — a strong coding model + an agentic/security
 // model. Override per-call via opts.models. Kept small so first-run stays sane.
-const USEFUL_MODELS = (process.env.SENTINEL_MODELS ? process.env.SENTINEL_MODELS.split(",").map((s) => s.trim()).filter(Boolean) : ["qwen2.5-coder", "hermes3"]);
+const USEFUL_MODELS = (process.env.DARKNODE_MODELS ? process.env.DARKNODE_MODELS.split(",").map((s) => s.trim()).filter(Boolean) : ["qwen2.5-coder", "hermes3"]);
 async function nexusSetup(opts) {
   opts = opts || {}; const log = opts.log || ((s) => console.log("  " + s)); const models = opts.models || USEFUL_MODELS;
   log(bold("Nexus setup"));
@@ -1315,7 +1318,7 @@ const NEXUS_DOCS = {
   config: { title: "Project config (.nexus/)", body:
     "  NEXUS.md        project instructions loaded every session (given to ALL engines)\n  config.json     { engine, model }\n  mcp.json        MCP servers: { mcpServers: { name: { command, args } } }\n  hooks.json      shell hooks: UserPromptSubmit · PreToolUse · PostToolUse · Stop\n  commands/*.md   custom /commands (body = prompt, $ARGUMENTS substituted)\n  snippets.json · plan.json · index.json · session.json   (auto-managed; gitignored)" },
   env: { title: "Environment", body:
-    "  SENTINEL_MODEL   default local model for the ollama engine\n  OLLAMA_HOST / OLLAMA_PORT   point at a remote Ollama (default 127.0.0.1:11434)\n  OLLAMA_TIMEOUT   local request timeout ms (default 300000)\n  NO_COLOR=1       disable colored output" },
+    "  DARKNODE_MODEL   default local model for the ollama engine\n  OLLAMA_HOST / OLLAMA_PORT   point at a remote Ollama (default 127.0.0.1:11434)\n  OLLAMA_TIMEOUT   local request timeout ms (default 300000)\n  NO_COLOR=1       disable colored output" },
 };
 const DOC_ORDER = ["overview", "quickstart", "engines", "cost", "multiengine", "build", "git", "safety", "context", "session", "keys", "config", "env"];
 function docList() { return DOC_ORDER.map((k) => "  " + k.padEnd(12) + gray(NEXUS_DOCS[k].title)).join("\n"); }
@@ -1347,8 +1350,8 @@ function nexusHelp() {
   console.log("    /undo          revert last file change  /diff          list files changed this session");
   console.log("    /exit          quit\n");
   console.log("  " + gray("Attach a file to a task with @path  —  e.g.  fix the bug in @src/app.js") + "\n");
-  console.log("  " + bold("ENV") + "   SENTINEL_MODEL (default model) · OLLAMA_HOST / OLLAMA_PORT (remote Ollama)");
-  console.log("        " + gray("Any model: SENTINEL_API_BASE + SENTINEL_API_KEY point Nexus at any OpenAI-compatible API (OpenRouter, Groq, DeepSeek, vLLM…), or use /api in the TUI") + "\n");
+  console.log("  " + bold("ENV") + "   DARKNODE_MODEL (default model) · OLLAMA_HOST / OLLAMA_PORT (remote Ollama)");
+  console.log("        " + gray("Any model: DARKNODE_API_BASE + DARKNODE_API_KEY point Nexus at any OpenAI-compatible API (OpenRouter, Groq, DeepSeek, vLLM…), or use /api in the TUI") + "\n");
   console.log("  " + gray("Nexus reads & writes files and runs commands in the current folder. Local models only — private.") + "\n");
 }
 
@@ -1371,12 +1374,12 @@ async function aiCoder(argv) {
   let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8")); } catch (_) {}
   // Any-model support: an OpenAI-compatible endpoint (from .nexus/config.json or
   // env) turns the local engine into a driver for ANY model. Env wins over config.
-  if (cfg.apiBase && !process.env.SENTINEL_API_BASE) process.env.SENTINEL_API_BASE = cfg.apiBase;
-  if (cfg.apiKey && !process.env.SENTINEL_API_KEY) process.env.SENTINEL_API_KEY = cfg.apiKey;
+  if (cfg.apiBase && !process.env.DARKNODE_API_BASE) process.env.DARKNODE_API_BASE = cfg.apiBase;
+  if (cfg.apiKey && !process.env.DARKNODE_API_KEY) process.env.DARKNODE_API_KEY = cfg.apiKey;
   let nexusMd = ""; try { nexusMd = fs.readFileSync(path.join(cwd, ".nexus", "NEXUS.md"), "utf8"); } catch (_) {}
   const avail = {}; for (const e of ENGINE_ORDER) avail[e] = engineAvail(e);
   // "api" is an alias for the local tool loop pointed at the configured API.
-  if (enginePref === "api") { enginePref = "ollama"; if (!apiConfigured() && !cfg.apiModel) console.log("  " + yellow("note: no API configured — set SENTINEL_API_BASE (+ SENTINEL_API_KEY) or run /api <url> [model]")); }
+  if (enginePref === "api") { enginePref = "ollama"; if (!apiConfigured() && !cfg.apiModel) console.log("  " + yellow("note: no API configured — set DARKNODE_API_BASE (+ DARKNODE_API_KEY) or run /api <url> [model]")); }
   // Default to Claude headless when installed, fall back to Ollama.
   let engine = enginePref || cfg.engine || (avail.claude ? "claude" : "ollama");
   if (engine !== "ollama" && !avail[engine]) engine = avail.claude ? "claude" : "ollama";
@@ -1389,7 +1392,7 @@ async function aiCoder(argv) {
   if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd);
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
   let model = null, modelList = [];
-  if (engine === "ollama") { modelList = await ollamaTags(); if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.SENTINEL_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
+  if (engine === "ollama") { modelList = await ollamaTags(); if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
   if (!printMode) {
     banner();
     const W = 56, bx = (s) => cyan("│ ") + s + " ".repeat(Math.max(0, W - 1 - s.length)) + cyan("│");
@@ -1636,11 +1639,11 @@ function nexusRestore(cwd, tree, paths) {
 // A repo's .nexus/mcp.json (MCP servers) and hooks.json BOTH run commands, so merely
 // launching Nexus inside an untrusted clone could execute arbitrary code. We only honor
 // them for repos the operator has explicitly trusted. Trust lives OUTSIDE the repo
-// (~/.sentinel/trusted-repos.json) so a malicious repo can't mark itself trusted.
+// (~/.darknode/trusted-repos.json) so a malicious repo can't mark itself trusted.
 let _untrustedRepoConfig = false;
-function trustFile() { return require("path").join(sentinelHome(), "trusted-repos.json"); }
+function trustFile() { return require("path").join(darknodeHome(), "trusted-repos.json"); }
 function isRepoTrusted(cwd) {
-  if (process.env.SENTINEL_TRUST_REPO === "1") return true;
+  if (process.env.DARKNODE_TRUST_REPO === "1") return true;
   try { const list = JSON.parse(require("fs").readFileSync(trustFile(), "utf8")); return Array.isArray(list) && list.includes(require("path").resolve(cwd)); } catch (_) { return false; }
 }
 function trustRepo(cwd) {
@@ -1689,15 +1692,15 @@ const { appendUsage, loadUsage, summarize, renderReport, analyzeSavings, renderS
 const { resolveOperator } = require("./lib/governance/identity"); // operator/team attribution — SSO env → config → OS user (lib/identity.js)
 const { buildBundle, verifyBundle, renderBundleMd } = require("./lib/governance/compliance"); // signed audit+usage compliance bundle (lib/compliance.js)
 const { validatePolicy, validateTeam } = require("./lib/cli/validate"); // config validation (lib/validate.js)
-// Read + validate the raw .nexus/policy.json and ~/.sentinel/policy.json; returns warning strings.
-function policyWarnings(cwd) { const fs = require("fs"), path = require("path"); const w = []; for (const [label, p] of [["local .nexus/policy.json", path.join(cwd, ".nexus", "policy.json")], ["org ~/.sentinel/policy.json", path.join(sentinelHome(), "policy.json")]]) { let raw; try { raw = fs.readFileSync(p, "utf8"); } catch (_) { continue; } let obj; try { obj = JSON.parse(raw); } catch (e) { w.push(label + ": invalid JSON (" + e.message + ")"); continue; } for (const m of validatePolicy(obj)) w.push(label + ": " + m); } return w; }
-// Two-tier policy: an ORG floor at ~/.sentinel/policy.json (set by an admin) that a
+// Read + validate the raw .nexus/policy.json and ~/.darknode/policy.json; returns warning strings.
+function policyWarnings(cwd) { const fs = require("fs"), path = require("path"); const w = []; for (const [label, p] of [["local .nexus/policy.json", path.join(cwd, ".nexus", "policy.json")], ["org ~/.darknode/policy.json", path.join(darknodeHome(), "policy.json")]]) { let raw; try { raw = fs.readFileSync(p, "utf8"); } catch (_) { continue; } let obj; try { obj = JSON.parse(raw); } catch (e) { w.push(label + ": invalid JSON (" + e.message + ")"); continue; } for (const m of validatePolicy(obj)) w.push(label + ": " + m); } return w; }
+// Two-tier policy: an ORG floor at ~/.darknode/policy.json (set by an admin) that a
 // local .nexus/policy.json can only make STRICTER, never weaken — protected paths and
 // denied commands union, boolean guards ratchet on, and the file limit takes the min.
 function loadPolicy(cwd) {
   const fs = require("fs"), path = require("path");
   const read = (p) => { try { return JSON.parse(fs.readFileSync(p, "utf8")) || {}; } catch (_) { return {}; } };
-  const org = read(path.join(sentinelHome(), "policy.json"));
+  const org = read(path.join(darknodeHome(), "policy.json"));
   const local = read(path.join(cwd, ".nexus", "policy.json"));
   const uniq = (a) => [...new Set(a.filter(Boolean))];
   const p = Object.assign({}, POLICY_DEFAULTS, local, org); // org wins on any scalar it sets
@@ -1885,7 +1888,7 @@ async function deviceTool(name, a, cwd) {
 // whether delegating a task to a cheaper model saves more than the delegation overhead.
 const { priceOf, isMechanical, shouldDelegate } = require("./lib/nexus/pricing"); // cost model (lib/pricing.js)
 // Darknode preflight — classify a shell command's destructive intent (inspired by Glitch's
-// Sentinel, improved: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
+// Darknode guard: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
 const { oneline, extractJson } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
 async function planGoal(engine, model, goal, memory) {
   const prompt = "You are a senior engineer planning autonomous work. Break the GOAL into an ordered list of concrete, independently-verifiable tasks (about 5-15). Return ONLY a JSON array of short task strings — no prose, no markdown.\n\nGOAL: " + goal + (memory ? "\n\nPROJECT MEMORY:\n" + memory : "");
@@ -1956,7 +1959,7 @@ async function nexusAgents(argv) {
   if (!tasks.length) { banner(); console.log("  " + bold("Nexus agents") + " — run independent tasks in parallel\n\n  " + gray("usage: ") + cyan("darknode nexus agents \"add tests\" \"write docs\" \"fix lint\"") + gray("  [-e claude|gemini|codex|opencode|aider|ollama]") + "\n"); return; }
   let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8")); } catch (_) {}
   engine = engine || cfg.engine || (hasBin("claude") ? "claude" : "ollama");
-  let model = cfg.model || process.env.SENTINEL_MODEL || "";
+  let model = cfg.model || process.env.DARKNODE_MODEL || "";
   if (engine === "ollama" && !model) { const ms = await ollamaTags(); model = pickCoderModel(ms); }
   banner(); console.log("  " + bold(tasks.length + " agents") + gray("  ·  engine " + engine + (model ? " (" + model + ")" : "")) + "\n");
   tasks.forEach((t, i) => console.log("  " + cyan("agent " + (i + 1)) + gray("  " + t)));
@@ -1989,7 +1992,7 @@ async function nexusRun(argv) {
   if (engine === "ollama" || engine === "hybrid") {
     const ms = await ollamaTags();
     if (!ms.length) { if (engine === "hybrid") { console.log("  " + gray("no local model; hybrid falling back to Claude only")); engine = "claude"; } else { console.log("  " + red("no local model; install Ollama or use --engine claude")); return; } }
-    else model = modelOverride || process.env.SENTINEL_MODEL || pickCoderModel(ms);
+    else model = modelOverride || process.env.DARKNODE_MODEL || pickCoderModel(ms);
   }
   let state;
   if (resume && fs.existsSync(stateFile)) { try { state = JSON.parse(fs.readFileSync(stateFile, "utf8")); } catch (_) { console.log("  " + red("can't resume — the saved run state is unreadable")); return; } banner(); h1("Nexus — resuming run"); }
@@ -2077,7 +2080,7 @@ function nexusTui(engine, cwd, nexusMd) {
     const sess = { model: engine, ctxWindow: CTXW[engine] || 200000, ctxUsed: 0, inTok: 0, outTok: 0, cost: 0, liveOut: 0 };
     const ident = resolveOperator({ cwd }); // operator/team for chargeback attribution + audit provenance
     const oMsgs = nexusMd ? [{ role: "system", content: "You are Nexus, a concise expert coding assistant.\n" + nexusMd }] : [{ role: "system", content: "You are Nexus, a concise expert coding assistant." }];
-    let input = "", busy = false, cont = false, busyStart = 0, busyWord = "", tick = null;
+    let input = "", curPos = 0, busy = false, cont = false, busyStart = 0, busyWord = "", tick = null;
     let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = true, hack = false; // mode: 0 normal, 1 auto-accept, 2 plan; scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
     let gitBranch = ""; // cached "branch" (+ "*" when the tree is dirty), shown in the status bar
     const refreshGit = async () => { try { const b = await sh(["rev-parse", "--abbrev-ref", "HEAD"]); if (b.err) { gitBranch = ""; return; } const st = await sh(["status", "--porcelain"]); const next = (b.stdout || "").trim() + ((st.stdout || "").trim() ? "*" : ""); if (next !== gitBranch) { gitBranch = next; try { render(); } catch (_) {} } } catch (_) { gitBranch = ""; } };
@@ -2295,22 +2298,30 @@ function nexusTui(engine, cwd, nexusMd) {
         if (m.role === "user") { const w = wrap(m.text); L.push(mag("› ") + (w[0] || "")); for (let i = 1; i < w.length; i++) L.push("  " + w[i]); L.push(""); continue; }
         // nexus turn: ordered items (text + tool cards)
         L.push(cyan("● ") + (useColor ? "nexus".split("").map((ch, k) => "\x1b[1;" + GRAD[k % GRAD.length] + "m" + ch).join("") + "\x1b[0m" : "nexus") + gray("  " + engine + (cowork.on ? " +" + cowork.weak.replace(/^claude-|-\d.*$/g, "") : "")));
-        for (const it of (m.items || [])) {
+        { let prevType = "";
+        for (let ii = 0; ii < (m.items || []).length; ii++) { const it = m.items[ii];
           if (it.type === "text") {
+            if (prevType === "tool") L.push("");
             const vis = it.full.slice(0, it.shown);
             let inCode = false;
             for (const ln of wrap(vis)) { if (/^```/.test(ln.trim())) { inCode = !inCode; L.push("  " + gray(ln)); continue; } L.push("  " + colorMd(ln, inCode)); }
+            prevType = "text";
           } else if (it.type === "thinking") {
             L.push("  " + dim(gray("● thinking" + (expanded ? ":" : " (ctrl+o to show)"))));
             if (expanded) for (const ln of wrap(it.full).slice(0, 24)) L.push("    " + dim(gray(ln)));
+            prevType = "thinking";
           } else if (it.type === "tool") {
+            if (prevType === "text") L.push("");
             const dot = it.status === "run" ? yellow(spin[Math.floor(Date.now() / 90) % spin.length]) : it.status === "err" ? red("●") : green("●");
             const rawSec = it.end ? (it.end - it.start) / 1000 : (Date.now() - it.start) / 1000;
             const secs = rawSec < 0.1 ? "<0.1s" : rawSec < 60 ? rawSec.toFixed(1) + "s" : fmtElapsed(Math.round(rawSec));
-            L.push("  " + dot + " " + bold(it.label) + gray("  " + secs));
-            if (expanded && it.detail) for (const ln of wrap(stripA(it.detail)).slice(0, 6)) L.push("    " + gray("⎿ " + ln));
+            const isLast = !m.items.slice(ii + 1).some((x) => x.type === "tool");
+            const bar = isLast ? "╰" : "├";
+            L.push("  " + dot + " " + dim(gray(bar)) + " " + bold(it.label) + gray("  " + secs));
+            if (expanded && it.detail) for (const ln of wrap(stripA(it.detail)).slice(0, 6)) L.push("    " + dim(gray((isLast ? " " : "│") + " ⎿ " + ln)));
+            prevType = "tool";
           }
-        }
+        } }
         // live status line while this turn is running
         if (busy && m === cur()) {
           const el = Math.round((Date.now() - busyStart) / 1000);
@@ -2440,7 +2451,10 @@ function nexusTui(engine, cwd, nexusMd) {
     let modelPick = []; // last catalog shown by /model, so /model <number> can pick from it
     const render = () => {
       const C = cols(), R = rows(), iw = Math.max(4, C - 3);
-      const wrapped = []; for (const seg of input.split("\n")) { let s = seg; if (!s.length) { wrapped.push(""); continue; } while (s.length > iw) { wrapped.push(s.slice(0, iw)); s = s.slice(iw); } wrapped.push(s); } if (!wrapped.length) wrapped.push("");
+      if (curPos > input.length) curPos = input.length;
+      if (curPos < 0) curPos = 0;
+      const dispInput = input.slice(0, curPos) + "\x00" + input.slice(curPos);
+      const wrapped = []; for (const seg of dispInput.split("\n")) { let s = seg; if (!s.length) { wrapped.push(""); continue; } while (s.length > iw) { wrapped.push(s.slice(0, iw)); s = s.slice(iw); } wrapped.push(s); } if (!wrapped.length) wrapped.push("");
       const menu = slashMatches();
       const amenu = menu.length ? [] : argMatches();
       const combined = menu.length ? menu : amenu;
@@ -2491,7 +2505,7 @@ function nexusTui(engine, cwd, nexusMd) {
       for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(nm)) : cyan(nm)) + gray("  " + (ds || "")) + pos, C - 2)); }
       frame.push(gray("─".repeat(C)));
       const shown = wrapped.slice(Math.max(0, wrapped.length - inRows));
-      for (let i = 0; i < inRows; i++) { const c = (i === inRows - 1 && !busy) ? "█" : ""; frame.push((i === 0 ? bold(mag("❯ ")) : "  ") + colorInput(shown[i] || "") + c); }
+      for (let i = 0; i < inRows; i++) { const raw = (shown[i] || "").replace("\x00", "█"); frame.push((i === 0 ? bold(mag("❯ ")) : "  ") + colorInput(raw)); }
       frame.push(gray("─".repeat(C)));
       frame.push(hint());
       const b = frameDiff(lastLines, frame, ESC);
@@ -2580,13 +2594,14 @@ function nexusTui(engine, cwd, nexusMd) {
         // Chargeback ledger: one non-sensitive metrics line per turn (no prompt text, no paths).
         try { appendUsage(cwd, { ts: new Date().toISOString(), operator: ident.operator, team: ident.team, engine, model: sess.model || engine, mode: ["normal", "auto", "plan"][mode] || "normal", inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), seconds: +dt, files: stat.files.size, commands: stat.cmds, interrupted: !!(res && res.interrupted) }); } catch (_) {}
         const bits = [];
-        if (stat.files.size) bits.push(stat.files.size + " file" + (stat.files.size > 1 ? "s" : ""));
-        if (stat.cmds) bits.push(stat.cmds + " cmd" + (stat.cmds > 1 ? "s" : ""));
+        const recap = [];
+        if (stat.files.size) { bits.push(stat.files.size + " file" + (stat.files.size > 1 ? "s" : "")); recap.push((res && res.interrupted ? "Touched" : "Wrote") + " " + [...stat.files].slice(0, 4).join(", ") + (stat.files.size > 4 ? " +" + (stat.files.size - 4) + " more" : "")); }
+        if (stat.cmds) { bits.push(stat.cmds + " cmd" + (stat.cmds > 1 ? "s" : "")); recap.push("Ran " + stat.cmds + " command" + (stat.cmds > 1 ? "s" : "")); }
         bits.push("↑" + fmtK(din) + " ↓" + fmtK(dout) + " tok");
         if (PAID[engine] && dcost > 0) bits.push("$" + dcost.toFixed(4));
         bits.push(dt + "s");
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); }
-        block.summary = bits.join("  ·  ");
+        block.summary = (recap.length ? recap.join(". ") + "." + gray("  ") : "") + bits.join("  ·  ");
         // Cache read-only answers (no file/command side-effects) so an exact repeat is free.
         if (ckey && !(res && res.interrupted) && stat.files.size === 0 && stat.cmds === 0) { try { const ft = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").trim(); if (ft && ft !== "(no output)") cachePut(cwd, ckey, { text: ft, inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), readonly: true, hits: 0, ts: Date.now() }); } catch (_) {} }
         if (!(res && res.interrupted)) { try { const answerText = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").slice(0, 2000); nexusLearn(text, answerText); } catch (_) {} }
@@ -2664,7 +2679,7 @@ function nexusTui(engine, cwd, nexusMd) {
         sess.inTok += Math.ceil(promptText.length / 4);
         const olbl = (n, a) => n === "read_file" ? "Read(" + base(a.path) + ")" : n === "write_file" ? "Write(" + base(a.path) + ")" : n === "edit_file" ? "Update(" + base(a.path) + ")" : n === "run_command" ? "Bash(" + oneline(a.command, 40) + ")" : n === "run_background" ? "Background(" + oneline(a.command, 32) + ")" : n === "check_background" ? "CheckJob(" + (a.id || "all") + ")" : n === "stop_background" ? "StopJob(" + (a.id || "?") + ")" : n === "list_dir" ? "List(" + (a.path || ".") + ")" : (n === "search" || n === "grep") ? "Search(" + oneline(a.pattern || a.query, 30) + ")" : (n === "find" || n === "find_files" || n === "glob") ? "Find(" + oneline(a.glob || a.pattern || a.name, 30) + ")" : (n === "http_fetch" || n === "web_fetch" || n === "fetch_url" || n === "http") ? "Fetch(" + oneline(a.url, 36) + ")" : (n === "web_search" || n === "search_web" || n === "google") ? "WebSearch(" + oneline(a.query || a.q, 30) + ")" : (n === "todo_write" || n === "todos" || n === "todo_list" || n === "write_todos") ? "Todo(" + ((a.todos || a.items || a.tasks || []).filter((t) => /done|complete/i.test((t && t.status) || "")).length) + "/" + ((a.todos || a.items || a.tasks || []).length) + ")" : (n === "sysinfo" || n === "system_info") ? "Sysinfo()" : (n === "list_processes" || n === "ps") ? "Processes()" : (n === "make_dir" || n === "mkdir") ? "Mkdir(" + base(a.path) + ")" : (n === "move" || n === "rename" || n === "move_file") ? "Move(" + base(a.to || a.dest) + ")" : (n === "copy" || n === "copy_file") ? "Copy(" + base(a.to || a.dest) + ")" : (n === "delete" || n === "delete_file" || n === "rm") ? "Delete(" + base(a.path) + ")" : n === "spawn_agents" ? "Task(" + ((a.tasks || []).length) + " agents)" : n === "remember" ? "Remember(" + oneline(a.text || a.note || "", 34) + ")" : n === "discover" ? "Discover(" + oneline(a.query || a.q || "", 30) + ")" : String(n).startsWith("mcp__") ? String(n).replace(/^mcp__/, "").replace("__", ":") + "()" : n + "()";
         (async () => {
-          let mdl = process.env.SENTINEL_MODEL || (sess.model && sess.model !== engine ? sess.model : "");
+          let mdl = process.env.DARKNODE_MODEL || (sess.model && sess.model !== engine ? sess.model : "");
           if (!mdl) { mdl = pickCoderModel(await ollamaTags()); }
           sess.model = mdl || engine;
           if (!mdl) { ensureText().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : "No local model found. Install Ollama and pull one, e.g. `ollama pull gpt-oss:20b`, or use /engine claude."; return finish({ output: "" }); }
@@ -3004,7 +3019,7 @@ function nexusTui(engine, cwd, nexusMd) {
       else if (cmd === "/mcp") {
         const ps = (argstr || "").trim().split(/\s+/).filter(Boolean); const sub = (ps[0] || "").toLowerCase();
         const writeMcp = (cfg) => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "mcp.json"), JSON.stringify(cfg, null, 2)); return true; } catch (_) { return false; } };
-        if (sub === "catalog" || sub === "list") transcript.push({ role: "system", text: "MCP catalog — one-command connect with /mcp add <name>  " + green("(★ = bundled, on by default)") + ":\n" + Object.keys(MCP_CATALOG).map((k) => "  " + (isBundled(k) ? green("★") : " ") + " " + cyan(k.padEnd(20)) + gray(MCP_CATALOG[k].desc) + (MCP_CATALOG[k].needsEnv ? yellow("  [needs " + MCP_CATALOG[k].needsEnv.join(", ") + "]") : "")).join("\n") + "\n  any model then uses them as mcp__<server>__<tool>.  Bundled ones auto-connect (SENTINEL_NO_DEFAULT_MCP=1 to disable)." });
+        if (sub === "catalog" || sub === "list") transcript.push({ role: "system", text: "MCP catalog — one-command connect with /mcp add <name>  " + green("(★ = bundled, on by default)") + ":\n" + Object.keys(MCP_CATALOG).map((k) => "  " + (isBundled(k) ? green("★") : " ") + " " + cyan(k.padEnd(20)) + gray(MCP_CATALOG[k].desc) + (MCP_CATALOG[k].needsEnv ? yellow("  [needs " + MCP_CATALOG[k].needsEnv.join(", ") + "]") : "")).join("\n") + "\n  any model then uses them as mcp__<server>__<tool>.  Bundled ones auto-connect (DARKNODE_NO_DEFAULT_MCP=1 to disable)." });
         else if (sub === "add") {
           const name = (ps[1] || "").toLowerCase(); const e = catalogGet(name);
           if (!e) transcript.push({ role: "system", text: name ? ("unknown catalog server '" + name + "' — /mcp catalog to browse") : "usage: /mcp add <name>   (see /mcp catalog)" });
@@ -3012,7 +3027,7 @@ function nexusTui(engine, cwd, nexusMd) {
         }
         else if (sub === "remove" || sub === "rm") { const name = (ps[1] || "").toLowerCase(); const cur = loadMcpConfig(cwd) || {}; if (!cur[name]) transcript.push({ role: "system", text: "no server '" + name + "' in .nexus/mcp.json" }); else { writeMcp(removeServerFromConfig({ mcpServers: cur }, name)); mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "removed " + name + " — reconnecting the rest…" }); } }
         else if (sub === "connect" || sub === "reconnect") { mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "reconnecting MCP servers from .nexus/mcp.json…" }); }
-        else if (!mcpServers.length && !loadMcpConfig(cwd)) transcript.push({ role: "system", text: (process.env.SENTINEL_NO_DEFAULT_MCP ? "bundled MCP servers are disabled (SENTINEL_NO_DEFAULT_MCP).\n  " : "bundled MCP servers still connecting… (first launch npx/uvx-installs them). Run /mcp again in a moment.\n  ") + cyan("/mcp add github") + gray("   · or playwright · exa · notion · postgres · …  ·  /mcp catalog to browse") + "\n  The claude engine AND any local/API model get the tools." });
+        else if (!mcpServers.length && !loadMcpConfig(cwd)) transcript.push({ role: "system", text: (process.env.DARKNODE_NO_DEFAULT_MCP ? "bundled MCP servers are disabled (DARKNODE_NO_DEFAULT_MCP).\n  " : "bundled MCP servers still connecting… (first launch npx/uvx-installs them). Run /mcp again in a moment.\n  ") + cyan("/mcp add github") + gray("   · or playwright · exa · notion · postgres · …  ·  /mcp catalog to browse") + "\n  The claude engine AND any local/API model get the tools." });
         else if (!mcpServers.length) transcript.push({ role: "system", text: "MCP servers are still connecting… run /mcp again in a moment" });
         else transcript.push({ role: "system", text: "MCP servers " + green("(★ = bundled with Nexus)") + ":\n" + mcpServers.map((s) => s.error ? ("  " + red("×") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + s.error) : ("  " + green("●") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + (s.tools || []).length + " tool(s): " + (s.tools || []).map((t) => t.name).slice(0, 8).join(", "))).join("\n") + "\n  any model calls these as mcp__<server>__<tool>  ·  /mcp add <name> · /mcp catalog · /mcp remove <name>" }); }
       else if (cmd === "/agents" || cmd === "/parallel") { const tasks = argstr.split(/\s*;;\s*/).map((s) => s.trim()).filter(Boolean); if (tasks.length < 2) transcript.push({ role: "system", text: "usage: /agents <task 1> ;; <task 2> ;; …   — runs each task in parallel on the " + engine + " engine, each in its own isolated git worktree, then merges the changes back" }); else spawnAgents(tasks); }
@@ -3062,7 +3077,7 @@ function nexusTui(engine, cwd, nexusMd) {
       else if (cmd === "/budget") { const v = parseFloat(arg); if (arg && !isNaN(v) && v > 0) { costCap = v; transcript.push({ role: "system", text: "budget cap set to $" + v.toFixed(2) + " — turns pause when session cost reaches it" }); } else if (arg === "off" || arg === "0") { costCap = 0; transcript.push({ role: "system", text: "budget cap removed" }); } else transcript.push({ role: "system", text: "usage: /budget <usd>  (e.g. /budget 5.00, or /budget off)" }); }
       else if (cmd === "/report") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet" + (since ? " since " + since : "") + " (.nexus/usage.jsonl fills up as you run turns)" }); } else { const s = summarize(recs); if (parts[0] === "json") transcript.push({ role: "system", text: JSON.stringify(s, null, 2) }); else { const rep = renderReport(s, { project: path.basename(cwd) }); if (parts[0] === "save") { try { const f = path.join(cwd, ".nexus", "usage-report.md"); fs.writeFileSync(f, "```\n" + rep + "\n```\n"); transcript.push({ role: "system", text: "saved usage report to " + f }); } catch (e) { transcript.push({ role: "system", text: "could not save report: " + (e && e.message || e) }); } } else transcript.push({ role: "system", text: rep + "\n\n  /report json · /report save · /report since 2026-08-01 · headless: darknode report" }); } } }
       else if (cmd === "/savings") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet — the savings analysis needs some Nexus turns in .nexus/usage.jsonl first" }); } else { const a = analyzeSavings(recs); transcript.push({ role: "system", text: (parts[0] === "json" ? JSON.stringify(a, null, 2) : renderSavings(a, { project: path.basename(cwd) }) + "\n\n  headless: darknode savings") }); } }
-      else if (cmd === "/compliance") { try { const key = process.env.SENTINEL_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (SENTINEL_SIGNING_KEY)" : "\n  tip: set SENTINEL_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: darknode compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
+      else if (cmd === "/compliance") { try { const key = process.env.DARKNODE_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (DARKNODE_SIGNING_KEY)" : "\n  tip: set DARKNODE_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: darknode compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
       else if (cmd === "/undo") { if (!checkpoints.length) transcript.push({ role: "system", text: "nothing to undo (no checkpoints this session, or not a git repo)" }); else { const ck = checkpoints.pop(); const nowTree = nexusCheckpoint(cwd); const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok && nowTree) redoStack.push({ tree: nowTree, label: ck.label, paths: ck.paths }); transcript.push({ role: "system", text: ok ? ("undid \"" + ck.label + "\" — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed this turn (unrelated edits untouched)" : "the working tree") + " (/redo to reapply)") : "undo failed (git error)" }); } }
       else if (cmd === "/redo") { const r = redoStack.pop(); if (!r) transcript.push({ role: "system", text: "nothing to redo" }); else { const ok = nexusRestore(cwd, r.tree, r.paths); if (ok) checkpoints.push({ tree: r.tree, label: r.label, ts: Date.now(), paths: r.paths }); transcript.push({ role: "system", text: ok ? ("redid — reapplied the changes from \"" + r.label + "\"") : "redo failed (git error)" }); } }
       else if (cmd === "/race") { if (!argstr) transcript.push({ role: "system", text: "usage: /race <prompt>  — runs it on every available engine (claude/local/opencode) at once and shows all answers" }); else raceEngines(argstr); }
@@ -3223,7 +3238,7 @@ function nexusTui(engine, cwd, nexusMd) {
             const improved = (out || "").trim().replace(/^["'`]+|["'`]+$/g, "").trim();
             if (!improved || /^error:/i.test(improved)) { blk.text = "couldn't improve the prompt (" + (improved || "no response") + ")"; render(); return; }
             blk.text = "sharpened prompt " + gray("(loaded into your input — edit, or press ↵ to run it)") + ":\n" + improved;
-            input = improved; render();
+            input = improved; curPos = input.length; render();
           });
         }
       }
@@ -3309,7 +3324,7 @@ function nexusTui(engine, cwd, nexusMd) {
         setMouse(on); const st = readGlobal("state.json", {}) || {}; st.mouse = on; writeGlobal("state.json", st);
         transcript.push({ role: "system", text: on ? "mouse capture ON — wheel scrolls the transcript & slash menu. To select/copy text: /mouse off (or hold Shift while dragging)." : "mouse capture OFF — select & copy text natively now. Scroll with PgUp/PgDn · Home/End · ↑/↓ in the menu. /mouse on to re-enable wheel." });
       }
-      else if (cmd === "/offline") { offline = !offline; if (offline && (PAID[engine] || apiConfigured())) { if (apiConfigured()) delete process.env.SENTINEL_API_BASE; engine = "ollama"; sess.model = "ollama"; sess.ctxWindow = CTXW.ollama || 8192; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; cont = false; oMsgs.length = 1; transcript.push({ role: "system", text: "offline lock ON — switched to the local engine; cloud engines and remote APIs are blocked, nothing leaves this machine" }); } else transcript.push({ role: "system", text: offline ? "offline lock ON — cloud engines & remote APIs blocked; nothing leaves this machine" : "offline lock off — cloud engines allowed again" }); }
+      else if (cmd === "/offline") { offline = !offline; if (offline && (PAID[engine] || apiConfigured())) { if (apiConfigured()) delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = "ollama"; sess.ctxWindow = CTXW.ollama || 8192; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; cont = false; oMsgs.length = 1; transcript.push({ role: "system", text: "offline lock ON — switched to the local engine; cloud engines and remote APIs are blocked, nothing leaves this machine" }); } else transcript.push({ role: "system", text: offline ? "offline lock ON — cloud engines & remote APIs blocked; nothing leaves this machine" : "offline lock off — cloud engines allowed again" }); }
       else if (cmd === "/checkpoints") { transcript.push({ role: "system", text: checkpoints.length ? ("checkpoints (newest last):\n" + checkpoints.map((c, i) => "  #" + (i + 1) + "  " + c.label).join("\n") + "\n/undo restores the most recent") : "no checkpoints yet" }); }
       else if (cmd === "/init") { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"), cfg = path.join(dir, "config.json"); const made = []; if (!fs.existsSync(md)) { fs.writeFileSync(md, "# Nexus project instructions\n\nNexus loads this file every session.\n\n## Project\n- (describe your project)\n\n## Conventions\n- (style, patterns to follow)\n\n## Build / run / test\n- (commands)\n"); made.push("NEXUS.md"); } if (!fs.existsSync(cfg)) { fs.writeFileSync(cfg, JSON.stringify({ engine, model: "" }, null, 2) + "\n"); made.push("config.json"); } if (gitignoreNexus(cwd)) made.push(".gitignore"); transcript.push({ role: "system", text: made.length ? "initialized .nexus/ (" + made.join(", ") + ") — edit NEXUS.md to give Nexus project context" : ".nexus/ already exists" }); } catch (e) { transcript.push({ role: "system", text: "init failed: " + e.message }); } }
       else if (cmd === "/login") {
@@ -3489,18 +3504,18 @@ function nexusTui(engine, cwd, nexusMd) {
         const ps = (argstr || "").trim().split(/\s+/).filter(Boolean);
         if (!ps.length) {
           transcript.push({ role: "system", text: apiConfigured()
-            ? "Any-model API is ON\n  base   " + API_BASE() + "\n  model  " + (sess.model && sess.model !== engine ? sess.model : gray("(none — /model <name>)")) + "\n  key    " + (process.env.SENTINEL_API_KEY ? green("set") : yellow("not set — /api key <k>")) + "\n  /api off to go back to local Ollama"
-            : "Drive ANY model via an OpenAI-compatible API (OpenAI · OpenRouter · Groq · DeepSeek · Together · Mistral · LM Studio · vLLM · llama.cpp).\n  /api <base-url> [model]   e.g. /api https://openrouter.ai/api/v1 anthropic/claude-3.5-sonnet\n  /api key <your-key>       set the key for this session (or export SENTINEL_API_KEY)\n  /api off                  back to local Ollama\nCurrently: " + (engine === "ollama" ? "local Ollama" : engine) });
+            ? "Any-model API is ON\n  base   " + API_BASE() + "\n  model  " + (sess.model && sess.model !== engine ? sess.model : gray("(none — /model <name>)")) + "\n  key    " + (process.env.DARKNODE_API_KEY ? green("set") : yellow("not set — /api key <k>")) + "\n  /api off to go back to local Ollama"
+            : "Drive ANY model via an OpenAI-compatible API (OpenAI · OpenRouter · Groq · DeepSeek · Together · Mistral · LM Studio · vLLM · llama.cpp).\n  /api <base-url> [model]   e.g. /api https://openrouter.ai/api/v1 anthropic/claude-3.5-sonnet\n  /api key <your-key>       set the key for this session (or export DARKNODE_API_KEY)\n  /api off                  back to local Ollama\nCurrently: " + (engine === "ollama" ? "local Ollama" : engine) });
         } else if (ps[0] === "off") {
-          delete process.env.SENTINEL_API_BASE; transcript.push({ role: "system", text: "API off — back to local Ollama." });
+          delete process.env.DARKNODE_API_BASE; transcript.push({ role: "system", text: "API off — back to local Ollama." });
         } else if (ps[0] === "key") {
-          if (ps[1]) { process.env.SENTINEL_API_KEY = ps[1]; transcript.push({ role: "system", text: "API key set for this session." }); }
+          if (ps[1]) { process.env.DARKNODE_API_KEY = ps[1]; transcript.push({ role: "system", text: "API key set for this session." }); }
           else transcript.push({ role: "system", text: "usage: /api key <your-key>" });
         } else {
           let url = ps[0]; if (!/^https?:\/\//i.test(url)) url = "https://" + url;
-          process.env.SENTINEL_API_BASE = url; engine = "ollama"; sess.ctxWindow = CTXW.ollama || 32768;
+          process.env.DARKNODE_API_BASE = url; engine = "ollama"; sess.ctxWindow = CTXW.ollama || 32768;
           sess.model = ps[1] || "ollama"; // clear any stale cloud model so the API auto-picks (or asks)
-          transcript.push({ role: "system", text: "Any-model API set → " + url + (ps[1] ? "  · model " + ps[1] : "  " + yellow("(set one with /model <name>)")) + (process.env.SENTINEL_API_KEY ? "" : "\n  " + yellow("no key yet — /api key <your-key> or export SENTINEL_API_KEY")) });
+          transcript.push({ role: "system", text: "Any-model API set → " + url + (ps[1] ? "  · model " + ps[1] : "  " + yellow("(set one with /model <name>)")) + (process.env.DARKNODE_API_KEY ? "" : "\n  " + yellow("no key yet — /api key <your-key> or export DARKNODE_API_KEY")) });
         }
         render();
       }
@@ -3513,8 +3528,8 @@ function nexusTui(engine, cwd, nexusMd) {
         const opts = [];
         // switching AI starts a fresh conversation + resets the cost/context meters (like /engine)
         const reset = () => { sess.userModel = false; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; oMsgs.length = 1; };
-        locals.forEach((m) => opts.push({ name: m, note: "local · free", paid: false, apply: () => { delete process.env.SENTINEL_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = CTXW.ollama || 32768; reset(); } }));
-        if (hasAnthropic()) ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"].forEach((m) => opts.push({ name: m, note: "Claude · API — BILLED to your Anthropic key", paid: true, apply: () => { delete process.env.SENTINEL_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = 200000; reset(); } }));
+        locals.forEach((m) => opts.push({ name: m, note: "local · free", paid: false, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = CTXW.ollama || 32768; reset(); } }));
+        if (hasAnthropic()) ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"].forEach((m) => opts.push({ name: m, note: "Claude · API — BILLED to your Anthropic key", paid: true, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = 200000; reset(); } }));
         if (API_BASE()) opts.push({ name: (sess.model && sess.model !== engine && !/^claude/i.test(sess.model) ? sess.model : "api-model"), note: API_BASE() + " · likely billed", paid: true, apply: () => { engine = "ollama"; if (!sess.model || /^claude/i.test(sess.model) || sess.model === engine) sess.model = ""; reset(); } });
         const selArg = /^claude\s+\S/i.test(arg) ? "claude" : arg;
         if (!selArg) {
@@ -3546,7 +3561,7 @@ function nexusTui(engine, cwd, nexusMd) {
         transcript.push(blk); scroll = 0; render();
         try {
           const child = _cp.spawn(process.execPath, [__filename, verb].concat(argstr ? argstr.split(/\s+/).filter(Boolean) : []),
-            { cwd, env: Object.assign({}, process.env, { NO_COLOR: "1", SENTINEL_IN_NEXUS: "1" }) });
+            { cwd, env: Object.assign({}, process.env, { NO_COLOR: "1", DARKNODE_IN_NEXUS: "1" }) });
           let buf = "";
           const cap = (b) => { buf += b; if (buf.length > 2e5) buf = buf.slice(-2e5); };
           child.stdout.on("data", cap); child.stderr.on("data", cap);
@@ -3563,27 +3578,27 @@ function nexusTui(engine, cwd, nexusMd) {
     try { process.stdin.setRawMode(true); } catch (_) {}
     process.stdin.resume(); process.stdin.setEncoding("utf8");
     let loading = true;
-    // Boot animation control: any key skips it; SENTINEL_FAST / NO_MOTION goes straight to the chat.
+    // Boot animation control: any key skips it; DARKNODE_FAST / NO_MOTION goes straight to the chat.
     let bootTimer = null, bootDone = false;
     const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); render(); };
-    const fastBoot = !!(process.env.SENTINEL_FAST || process.env.NO_MOTION);
+    const fastBoot = !!(process.env.DARKNODE_FAST || process.env.NO_MOTION);
     // auto-connect MCP servers (non-blocking): the workspace's .nexus/mcp.json PLUS the
     // no-key servers that ship bundled with Nexus (fetch, memory, sequential-thinking,
     // context7, time, git) so a fresh download already has them. A bundled server is
     // skipped silently if its runtime (npx/uvx) isn't installed, or if the workspace
-    // defines its own server of the same name, or if SENTINEL_NO_DEFAULT_MCP is set.
+    // defines its own server of the same name, or if DARKNODE_NO_DEFAULT_MCP is set.
     const connectMcp = async () => {
       const seen = new Set();
       const cfg = loadMcpConfig(cwd);
       if (cfg) for (const nm of Object.keys(cfg)) { seen.add(nm); const c = await mcpConnect(nm, cfg[nm], cwd); mcpServers.push(c); if (!loading) render(); }
-      if (!process.env.SENTINEL_NO_DEFAULT_MCP && !offline) {
+      if (!process.env.DARKNODE_NO_DEFAULT_MCP && !offline) {
         const b = bundledSpecs();
         for (const nm of Object.keys(b)) { if (seen.has(nm) || !hasBin(b[nm].command)) continue; const c = await mcpConnect(nm, b[nm], cwd); c.bundled = true; mcpServers.push(c); if (!loading) render(); }
       }
     };
     connectMcp();
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
-    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("⚠ this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export SENTINEL_TRUST_REPO=1)") });
+    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("⚠ this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
     let imgCounter = 0; // for [Image#N] display on pasted image paths
     let nextQueue = []; // /next queue — prompts to run after current turn
@@ -3591,7 +3606,9 @@ function nexusTui(engine, cwd, nexusMd) {
       if (loading) { finishBoot(); return; }   // any key skips the intro
       let s = String(d);
       // ---- sanitize: strip bracketed-paste markers (ESC may be stripped by intermediary) ----
+      const isPaste = /\x1b?\[200~/.test(s) || (s.length > 1 && /[\r\n]/.test(s) && !/^\x1b/.test(s));
       s = s.replace(/\x1b?\[200~/g, "").replace(/\x1b?\[201~/g, "");
+      if (isPaste) s = s.replace(/\r\n?|\n/g, " ").replace(/\s+$/, "");
       // ---- sanitize: convert pasted image paths to [Image#N] ----
       s = s.replace(/'([^']+\.(png|jpe?g|gif|webp|bmp|svg))'/gi, () => { imgCounter++; return "[Image#" + imgCounter + "]"; });
       if (!s) return;
@@ -3599,45 +3616,46 @@ function nexusTui(engine, cwd, nexusMd) {
       if (s === "\x1b[Z") { mode = (mode + 1) % MODES.length; render(); return; } // shift+tab
       if (s === "\x0f") { expanded = !expanded; render(); return; }      // ctrl+o
       if (s === "\x1b" && navOpen) { navOpen = false; render(); return; } // Esc closes the ⋯ status menu
-      if (s === "\x1b" && argMatches().length) { const sp = input.indexOf(" "); if (sp > 0) input = input.slice(0, sp) + " "; menuSel = 0; render(); return; } // Esc dismisses arg dropdown
+      if (s === "\x1b" && argMatches().length) { const sp = input.indexOf(" "); if (sp > 0) { input = input.slice(0, sp) + " "; curPos = input.length; } menuSel = 0; render(); return; } // Esc dismisses arg dropdown
       // ---- scrollback (works during a turn too) ----
       const page = Math.max(1, rows() - 6);
       // Arrow keys: handle both with and without ESC prefix (some terminals strip it)
       const isUp = s === "\x1b[A" || s === "[A", isDown = s === "\x1b[B" || s === "[B";
       const isRight = s === "\x1b[C" || s === "[C", isLeft = s === "\x1b[D" || s === "[D";
       if (isUp || isDown || isLeft || isRight) {
-        if (isUp) { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.max(0, menuSel - 1); render(); return; } if (history.length) { hIdx = Math.max(0, hIdx - 1); input = history[hIdx] || ""; render(); } return; }
-        if (isDown) { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.min(cm.length - 1, menuSel + 1); render(); return; } if (history.length) { hIdx = Math.min(history.length, hIdx + 1); input = history[hIdx] || ""; render(); } return; }
-        return; // left/right: ignore (no cursor movement in this input model)
+        if (isUp) { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.max(0, menuSel - 1); render(); return; } if (history.length) { hIdx = Math.max(0, hIdx - 1); input = history[hIdx] || ""; curPos = input.length; render(); } return; }
+        if (isDown) { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.min(cm.length - 1, menuSel + 1); render(); return; } if (history.length) { hIdx = Math.min(history.length, hIdx + 1); input = history[hIdx] || ""; curPos = input.length; render(); } return; }
+        if (isLeft) { if (curPos > 0) { curPos--; render(); } return; }
+        if (isRight) { if (curPos < input.length) { curPos++; render(); } return; }
       }
       if (s === "\x1b[5~" || s === "[5~") { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.max(0, menuSel - page); render(); return; } scroll += page; render(); return; }         // PageUp
       if (s === "\x1b[6~" || s === "[6~") { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.min(cm.length - 1, menuSel + page); render(); return; } scroll = Math.max(0, scroll - page); render(); return; } // PageDown
       if (s === "\x1b[F" || s === "\x1b[4~" || s === "\x1bOF" || s === "[F") { scroll = 0; render(); return; } // End -> latest
       if (s === "\x1b[1~" || s === "\x1bOH" || s === "\x1b[H" || s === "[H") { scroll += 100000; render(); return; } // Home -> top
-      if (s.charCodeAt(0) === 27 && s[1] === "[" && s[2] === "<") { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (btn === 64) { if (cm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (cm.length) menuSel = Math.min(cm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; input = ""; menuSel = 0; scroll = 0; handleSlash(z.cmd); render(); } } } } return; } // SGR mouse
-      if (busy) { for (const ch of s) { if (ch === "\x7f" || ch === "\b") input = input.slice(0, -1); else if (ch >= " ") input += ch; } return; } // buffer typing mid-turn
+      if (s.charCodeAt(0) === 27 && s[1] === "[" && s[2] === "<") { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (btn === 64) { if (cm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (cm.length) menuSel = Math.min(cm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; input = ""; curPos = 0; menuSel = 0; scroll = 0; handleSlash(z.cmd); render(); } } } } return; } // SGR mouse
+      if (busy) { for (const ch of s) { if (ch === "\r" || ch === "\n") { const t = input.trim(); if (t) { nextQueue.push(t); input = ""; curPos = 0; transcript.push({ role: "system", text: "queued: " + t }); render(); } } else if (ch === "\x7f" || ch === "\b") { if (curPos > 0) { const before = input.slice(0, curPos); const im = before.match(/\[Image#\d+\]$/); const del = im ? im[0].length : 1; input = input.slice(0, curPos - del) + input.slice(curPos); curPos -= del; } render(); } else if (ch >= " ") { input = input.slice(0, curPos) + ch + input.slice(curPos); curPos++; render(); } } return; } // buffer + queue mid-turn
       // ---- bracketed paste fallback (ESC-prefixed version, rare now since we strip above) ----
       if (pasteBuf !== null) {
         const end = s.indexOf("\x1b[201~");
         if (end === -1) { pasteBuf += s; return; }
         pasteBuf += s.slice(0, end);
-        input += pasteBuf.replace(/\r\n?|\n/g, " ").replace(/[^\x20-\x7e]+/g, "");
+        const pasted = pasteBuf.replace(/\r\n?|\n/g, " ").replace(/[^\x20-\x7e]+/g, ""); input = input.slice(0, curPos) + pasted + input.slice(curPos); curPos += pasted.length;
         pasteBuf = null; render(); return;
       }
       if (s.charCodeAt(0) === 27) return;                                // other escapes
       for (const ch of s) {
         if (ch === "\t") { // Tab completes the highlighted slash command, arg completion, or @file path
-          const mm = slashMatches(); if (mm.length) { input = (mm[menuSel] || mm[0])[0] + " "; menuSel = 0; refreshArgCache(); render(); return; }
-          const am = argMatches(); if (am.length) { const sp = input.indexOf(" "); const cmd = input.slice(0, sp); input = cmd + " " + (am[menuSel] || am[0])[0] + " "; menuSel = 0; render(); return; }
+          const mm = slashMatches(); if (mm.length) { input = (mm[menuSel] || mm[0])[0] + " "; curPos = input.length; menuSel = 0; refreshArgCache(); render(); return; }
+          const am = argMatches(); if (am.length) { const sp = input.indexOf(" "); const cmd = input.slice(0, sp); input = cmd + " " + (am[menuSel] || am[0])[0] + " "; curPos = input.length; menuSel = 0; render(); return; }
           const at = input.match(/@([^\s]*)$/);
-          if (at) { try { const pt = at[1]; const dir = pt.includes("/") ? pt.slice(0, pt.lastIndexOf("/") + 1) : ""; const bpart = pt.includes("/") ? pt.slice(pt.lastIndexOf("/") + 1) : pt; const entries = fs.readdirSync(path.resolve(cwd, dir || ".")).filter((e) => e.startsWith(bpart)).sort(); if (entries.length) { const hit = entries[0]; const isDir = fs.statSync(path.resolve(cwd, dir + hit)).isDirectory(); input = input.slice(0, at.index) + "@" + dir + hit + (isDir ? "/" : " "); } } catch (_) {} render(); }
+          if (at) { try { const pt = at[1]; const dir = pt.includes("/") ? pt.slice(0, pt.lastIndexOf("/") + 1) : ""; const bpart = pt.includes("/") ? pt.slice(pt.lastIndexOf("/") + 1) : pt; const entries = fs.readdirSync(path.resolve(cwd, dir || ".")).filter((e) => e.startsWith(bpart)).sort(); if (entries.length) { const hit = entries[0]; const isDir = fs.statSync(path.resolve(cwd, dir + hit)).isDirectory(); input = input.slice(0, at.index) + "@" + dir + hit + (isDir ? "/" : " "); curPos = input.length; } } catch (_) {} render(); }
           return;
         }
         if (ch === "\r" || ch === "\n") {
-          if (input.endsWith("\\")) { input = input.slice(0, -1) + "\n"; render(); return; } // trailing backslash = newline, not submit
-          const t = input.trim(); input = ""; const pick = menuSel; menuSel = 0; if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; } if (t.startsWith("/")) { let cmd = t; if (!/\s/.test(t)) { const mm = fuzzyCmds(t); if (mm.length) cmd = (mm[pick] || mm[0])[0]; } handleSlash(cmd); render(); return; } if (t[0] === "!" && t.length > 1) { runBang(t.slice(1).trim()); render(); return; } if (t[0] === "#" && t.length > 1) { addMemory(t.slice(1).trim()); render(); return; } if (t) { submit(t); return; } render(); }
-        else if (ch === "\x7f" || ch === "\b") { input = input.slice(0, -1); menuSel = 0; render(); }
-        else if (ch >= " ") { input += ch; menuSel = 0; if (ch === "/" && input.length === 1) refreshArgCache(); render(); }
+          if (input.endsWith("\\")) { input = input.slice(0, -1) + "\n"; curPos = input.length; render(); return; } // trailing backslash = newline, not submit
+          const t = input.trim(); input = ""; curPos = 0; const pick = menuSel; menuSel = 0; if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; } if (t.startsWith("/")) { let cmd = t; if (!/\s/.test(t)) { const mm = fuzzyCmds(t); if (mm.length) cmd = (mm[pick] || mm[0])[0]; } handleSlash(cmd); render(); return; } if (t[0] === "!" && t.length > 1) { runBang(t.slice(1).trim()); render(); return; } if (t[0] === "#" && t.length > 1) { addMemory(t.slice(1).trim()); render(); return; } if (t) { submit(t); return; } render(); }
+        else if (ch === "\x7f" || ch === "\b") { if (curPos > 0) { const before = input.slice(0, curPos); const im = before.match(/\[Image#\d+\]$/); const del = im ? im[0].length : 1; input = input.slice(0, curPos - del) + input.slice(curPos); curPos -= del; } menuSel = 0; render(); }
+        else if (ch >= " ") { input = input.slice(0, curPos) + ch + input.slice(curPos); curPos++; menuSel = 0; if (ch === "/" && input.length === 1) refreshArgCache(); render(); }
       }
     } catch (err) { busy = false; try { transcript.push({ role: "system", text: "internal error: " + (err && err.message || err) }); render(); } catch (_) {} } });
     out.on("resize", onResize);
@@ -3704,7 +3722,7 @@ function nexusInit() {
   try { if (fs.existsSync(".git")) detected.push("git repository"); } catch (_) {}
   let created = [];
   if (!fs.existsSync(mdPath)) { fs.writeFileSync(mdPath, "# Nexus project instructions\n\nNexus loads this file at the start of every session. Describe the project, conventions, and how to build/run/test it so the agent has context.\n\n## Project\n" + (detected.length ? detected.map((d) => "- " + d).join("\n") : "- (describe your project here)") + "\n\n## Conventions\n- (code style, patterns to follow, things to avoid)\n\n## Build / run / test\n- (commands to build, run, and test)\n"); created.push("NEXUS.md"); }
-  if (!fs.existsSync(cfgPath)) { fs.writeFileSync(cfgPath, JSON.stringify({ engine: hasBin("claude") ? "claude" : "ollama", model: process.env.SENTINEL_MODEL || "" }, null, 2) + "\n"); created.push("config.json"); }
+  if (!fs.existsSync(cfgPath)) { fs.writeFileSync(cfgPath, JSON.stringify({ engine: hasBin("claude") ? "claude" : "ollama", model: process.env.DARKNODE_MODEL || "" }, null, 2) + "\n"); created.push("config.json"); }
   banner(); h1("Nexus initialized");
   created.forEach((f) => console.log("  " + green("created ") + ".nexus/" + f));
   if (!created.length) console.log("  " + gray("already initialized (.nexus/ exists)"));

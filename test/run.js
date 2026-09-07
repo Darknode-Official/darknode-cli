@@ -484,14 +484,14 @@ group("command registry (batch 1)");
   ok("passphrase honors count arg (6 words, 48 bits)", /^  \S+(-\S+){5}  \(~48 bits\)$/.test(CMD_MAP.passphrase.run({ rest: ["6"], c: plain })));
   ok("passphrase non-numeric arg -> default 4 words", /(-\S+){3}  \(~32 bits\)$/.test(CMD_MAP.passphrase.run({ rest: ["abc"], c: plain })));
   // registry commands must NOT also have a leftover 'cmd === ' branch (no double dispatch)
-  const src = fs.readFileSync(path.join(__dirname, "..", "sentinel.js"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
   const doubled = CMDS.flatMap((cmd) => [cmd.name, ...(cmd.aliases || [])]).filter((n) => src.includes('cmd === "' + n + '"'));
   eq("no migrated command still dispatched inline", doubled, []);
 }
 
-group("no dead lib imports in sentinel.js");
+group("no dead lib imports in darknode.js");
 {
-  const src = fs.readFileSync(path.join(__dirname, "..", "sentinel.js"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
   const imported = new Set();
   for (const m of src.matchAll(/const \{([^}]*)\} = require\("\.\/lib\/[^"]+"\)/g))
     m[1].split(",").forEach((n) => { n = n.trim().split(":").pop().trim(); if (n) imported.add(n); });
@@ -801,7 +801,7 @@ group("help reference (single source of truth)");
   ok("every row is [left, right] strings", COMMAND_GROUPS.every((g) => g.rows.every((r) => r.length === 2 && typeof r[0] === "string" && typeof r[1] === "string")));
   // DRIFT GUARD: every documented command verb must have a real dispatch handler —
   // either an inline `cmd === "x"` branch or a lib/registry.js command entry.
-  const srcFiles = ["sentinel.js", "darknode.js"].map((f) => { try { return fs.readFileSync(path.join(__dirname, "..", f), "utf8"); } catch (_) { return ""; } });
+  const srcFiles = ["darknode.js"].map((f) => { try { return fs.readFileSync(path.join(__dirname, "..", f), "utf8"); } catch (_) { return ""; } });
   const src = srcFiles.join("\n");
   const dispatched = new Set();
   for (const m of src.matchAll(/cmd === "([^"]+)"/g)) dispatched.add(m[1]);
@@ -927,7 +927,7 @@ group("operator/team attribution");
   const { resolveOperator } = require("../lib/governance/identity");
   const { summarize, renderReport } = require("../lib/governance/usage");
   // env (SSO-provisioned) wins
-  eq("env identity wins", resolveOperator({ env: { SENTINEL_OPERATOR: "alice", SENTINEL_TEAM: "platform" }, cwd: os.tmpdir() }), { operator: "alice", team: "platform", source: "sso-env" });
+  eq("env identity wins", resolveOperator({ env: { DARKNODE_OPERATOR: "alice", DARKNODE_TEAM: "platform" }, cwd: os.tmpdir() }), { operator: "alice", team: "platform", source: "sso-env" });
   // local config fallback
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-id-")); fs.mkdirSync(path.join(d, ".nexus"));
   fs.writeFileSync(path.join(d, ".nexus", "identity.json"), JSON.stringify({ operator: "bob", team: "payments" }));
