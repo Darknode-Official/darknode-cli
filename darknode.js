@@ -2424,19 +2424,21 @@ function nexusTui(engine, cwd, nexusMd) {
     const cmdSet = new Set(allCmds().map((c) => c[0]));
     const colorInput = (text) => {
       if (!text || !useColor) return text;
-      if (text[0] === "/" && !(/\s/.test(text))) {
-        const matches = fuzzyCmds(text);
-        return matches.length ? cyan(text) : red(text);
+      const clean = text.replace("█", "");
+      if (clean[0] === "/" && !(/\s/.test(clean))) {
+        const cmds = allCmds();
+        const prefix = cmds.some((c) => c[0].startsWith(clean));
+        return prefix ? cyan(text) : red(text);
       }
-      if (text[0] === "/") {
-        const sp = text.indexOf(" ");
-        const cmd = text.slice(0, sp);
-        const rest = text.slice(sp);
+      if (clean[0] === "/") {
+        const sp = clean.indexOf(" ");
+        const cmd = clean.slice(0, sp);
         const valid = cmdSet.has(cmd) || fuzzyCmds(cmd).some((m) => m[0] === cmd);
-        return (valid ? cyan(cmd) : red(cmd)) + rest;
+        const tsp = text.indexOf(" ");
+        return (valid ? cyan(text.slice(0, tsp)) : red(text.slice(0, tsp))) + text.slice(tsp);
       }
-      if (text[0] === "!") return yellow(text);
-      if (text[0] === "#") return green(text);
+      if (clean[0] === "!") return yellow(text);
+      if (clean[0] === "#") return green(text);
       return text.replace(/(^|\s)(@\S+)/g, (_, pre, at) => pre + blue(at));
     };
     let lastLines = null; // previous frame's rows, for line-level diffing
