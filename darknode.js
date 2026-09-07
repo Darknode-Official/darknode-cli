@@ -2128,7 +2128,7 @@ function nexusTui(engine, cwd, nexusMd) {
     const addMemory = (line) => { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; c += "- " + line + "\n"; fs.writeFileSync(md, c); transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + line }); } catch (e) { transcript.push({ role: "system", text: "could not save note: " + e.message }); } };
     // ---- ansi-aware width helpers ----
     const stripA = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, "");
-    const clip = (s, n) => { let o = "", v = 0; for (const part of String(s).split(/(\x1b\[[0-9;]*m)/)) { if (/^\x1b/.test(part)) { o += part; continue; } for (const ch of part) { if (v >= n) return o; o += ch; v++; } } return o; };
+    const clip = (s, n) => { if (n <= 0) return ""; let o = "", v = 0, hasColor = false; for (const part of String(s).split(/(\x1b\[[0-9;]*m)/)) { if (/^\x1b/.test(part)) { o += part; hasColor = true; continue; } for (const ch of part) { if (v >= n) return o + (hasColor ? "\x1b[0m" : ""); o += ch; v++; } } return o; };
     const fmtK = (n) => n >= 100000 ? (n / 1000).toFixed(0) + "k" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : "" + (n | 0);
     const fmtElapsed = (sec) => { if (sec < 60) return sec + "s"; if (sec < 3600) return Math.floor(sec / 60) + "m " + (sec % 60) + "s"; if (sec < 86400) return Math.floor(sec / 3600) + "h " + Math.floor((sec % 3600) / 60) + "m"; return Math.floor(sec / 86400) + "d " + Math.floor((sec % 86400) / 3600) + "h"; };
     const base = (pth) => String(pth || "").split("/").pop() || String(pth || "");
@@ -2241,8 +2241,8 @@ function nexusTui(engine, cwd, nexusMd) {
     const retrieve = (text, k) => { if (!index || !index.files) return []; const q = new Set((text.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g) || []).filter((w) => w.length > 3)); if (!q.size) return []; const scored = []; for (const f of Object.keys(index.files)) { if (pinned.has(f) || text.includes("@" + f)) continue; let s = 0; for (const w of index.files[f]) if (q.has(w)) s++; if (s > 1) scored.push([f, s]); } scored.sort((a, b) => b[1] - a[1]); return scored.slice(0, k || 3).map((x) => x[0]); };
     // ---- inline markdown / command coloring ----
     const paintCode = (c) => (/(^|\s)(node|npm|npx|git|python3?|pip3?|bash|sh|cd|ls|cat|make|cargo|go|docker|curl|grep|sed|rm|mkdir|chmod|sudo)\b/.test(c) || /\s--?\w/.test(c)) ? blue(c) : mag(c);
-    const colorMd = (line, inCode) => { if (inCode) return blue(line); if (/^#{1,6}\s/.test(line)) return bold(cyan(line)); let s = line.replace(/`([^`]+)`/g, (_, c) => paintCode(c)).replace(/\*\*([^*]+)\*\*/g, (_, c) => bold(c)); return s.replace(/^(\s*[-*]\s)/, (_, b) => cyan(b)); };
-    const wrap = (text) => { const width = Math.max(1, cols() - 4); const res = []; for (const para of String(text).replace(/\r/g, "").split("\n")) { let s = para; if (!s.length) { res.push(""); continue; } while (s.length > width) { let w = width; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); let brk = s.lastIndexOf(" ", w); if (brk < width * 0.4) brk = -1; if (brk > 0) { res.push(s.slice(0, brk)); s = s.slice(brk + 1); } else { res.push(s.slice(0, w)); s = s.slice(w); } } res.push(s); } return res; };
+    const colorMd = (line, inCode) => { if (inCode) return blue(line); if (/^#{1,6}\s/.test(line)) return bold(cyan(line)); let s = line.replace(/\*\*([^*]+)\*\*/g, (_, c) => "\x1b[1m" + c.replace(/`([^`]+)`/g, (__, ic) => "\x1b[0m" + paintCode(ic) + "\x1b[1m") + "\x1b[0m").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); return s.replace(/^(\s*[-*]\s)/, (_, b) => cyan(b)); };
+    const wrap = (text) => { const width = Math.max(1, cols() - 4); const res = []; let inCode = false; for (const para of String(text).replace(/\r/g, "").split("\n")) { if (/^```/.test(para.trim())) inCode = !inCode; let s = para; if (!s.length) { res.push(""); continue; } while (s.length > width) { let w = width; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); if (!inCode) { let brk = s.lastIndexOf(" ", w); if (brk < width * 0.4) brk = -1; if (brk > 0) { res.push(s.slice(0, brk)); s = s.slice(brk + 1); continue; } } res.push(s.slice(0, w)); s = s.slice(w); } res.push(s); } return res; };
     // ---- tool-card labels (Claude-Code style) ----
     const toolLabel = (name, a) => {
       a = a || {};
@@ -2454,7 +2454,7 @@ function nexusTui(engine, cwd, nexusMd) {
       if (curPos > input.length) curPos = input.length;
       if (curPos < 0) curPos = 0;
       const wrapped = []; const wrapOff = []; let _wi = 0;
-      for (const seg of input.split("\n")) { let s = seg; if (!s.length) { wrapped.push(""); wrapOff.push(_wi); _wi++; continue; } while (s.length > iw) { wrapped.push(s.slice(0, iw)); wrapOff.push(_wi); _wi += iw; s = s.slice(iw); } wrapped.push(s); wrapOff.push(_wi); _wi += s.length + 1; }
+      for (const seg of input.split("\n")) { let s = seg; if (!s.length) { wrapped.push(""); wrapOff.push(_wi); _wi++; continue; } while (s.length > iw) { let w = iw; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); wrapped.push(s.slice(0, w)); wrapOff.push(_wi); _wi += w; s = s.slice(w); } wrapped.push(s); wrapOff.push(_wi); _wi += s.length + 1; }
       if (!wrapped.length) { wrapped.push(""); wrapOff.push(0); }
       let _cLine = wrapped.length - 1, _cCol = wrapped[_cLine].length;
       for (let i = 0; i < wrapped.length; i++) { const end = wrapOff[i] + wrapped[i].length; if (curPos >= wrapOff[i] && curPos <= end) { _cLine = i; _cCol = curPos - wrapOff[i]; break; } }
@@ -2463,14 +2463,13 @@ function nexusTui(engine, cwd, nexusMd) {
       const combined = menu.length ? menu : amenu;
       if (menuSel > combined.length - 1) menuSel = Math.max(0, combined.length - 1);
       if (menuSel < 0) menuSel = 0;
-      const menuRows = Math.min(combined.length, Math.max(0, R - 8));
-      // scroll the menu window so the highlighted row stays visible when the list is long
+      const fixedChrome = 5; // status + buttons + 2 rules + hint (always present)
+      const avail = Math.max(0, R - fixedChrome);
+      const menuRows = Math.min(combined.length, Math.max(0, avail - 2));
       const menuStart = combined.length > menuRows ? Math.max(0, Math.min(menuSel - (menuRows >> 1), combined.length - menuRows)) : 0;
-      // clamp input rows so the whole chrome always fits even on short terminals
-      const maxIn = Math.max(1, R - 5 - menuRows);
-      const inRows = Math.max(1, Math.min(wrapped.length, 8, maxIn));
-      const chrome = 1 /*status*/ + 1 /*buttons*/ + menuRows + 1 /*rule*/ + inRows + 1 /*rule*/ + 1 /*hint*/;
-      const bodyRows = Math.max(1, R - chrome);
+      const inRows = Math.max(1, Math.min(wrapped.length, 8, Math.max(1, avail - menuRows - 1)));
+      const chrome = fixedChrome + menuRows + inRows;
+      const bodyRows = Math.max(0, R - chrome);
       const lines = bodyLines();
       const maxScroll = Math.max(0, lines.length - bodyRows);
       if (scroll > maxScroll) scroll = maxScroll;
@@ -2509,7 +2508,7 @@ function nexusTui(engine, cwd, nexusMd) {
       frame.push(gray("─".repeat(C)));
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
-      for (let i = 0; i < inRows; i++) { let raw = shown[i] || ""; const li = _showStart + i; if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol); frame.push((i === 0 ? bold(mag("❯ ")) : "  ") + colorInput(raw)); }
+      for (let i = 0; i < inRows; i++) { let raw = shown[i] || ""; const li = _showStart + i; if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol); frame.push(clip((i === 0 ? bold(mag("❯ ")) : "  ") + colorInput(raw), C)); }
       frame.push(gray("─".repeat(C)));
       frame.push(hint());
       const b = frameDiff(lastLines, frame, ESC);
@@ -3635,15 +3634,15 @@ function nexusTui(engine, cwd, nexusMd) {
       if (isUp || isDown || isLeft || isRight) {
         if (isUp) { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.max(0, menuSel - 1); render(); return; } if (history.length) { hIdx = Math.max(0, hIdx - 1); input = history[hIdx] || ""; curPos = input.length; render(); } return; }
         if (isDown) { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.min(cm.length - 1, menuSel + 1); render(); return; } if (history.length) { hIdx = Math.min(history.length, hIdx + 1); input = history[hIdx] || ""; curPos = input.length; render(); } return; }
-        if (isLeft) { if (curPos > 0) { curPos--; render(); } return; }
-        if (isRight) { if (curPos < input.length) { curPos++; render(); } return; }
+        if (isLeft) { if (curPos > 0) { curPos--; const cc = input.charCodeAt(curPos); if (cc >= 0xDC00 && cc <= 0xDFFF && curPos > 0) curPos--; render(); } return; }
+        if (isRight) { if (curPos < input.length) { const cc = input.charCodeAt(curPos); curPos += (cc >= 0xD800 && cc <= 0xDBFF) ? 2 : 1; if (curPos > input.length) curPos = input.length; render(); } return; }
       }
       if (s === "\x1b[5~" || s === "[5~") { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.max(0, menuSel - page); render(); return; } scroll += page; render(); return; }         // PageUp
       if (s === "\x1b[6~" || s === "[6~") { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.min(cm.length - 1, menuSel + page); render(); return; } scroll = Math.max(0, scroll - page); render(); return; } // PageDown
       if (s === "\x1b[F" || s === "\x1b[4~" || s === "\x1bOF" || s === "[F") { if (input.length) { curPos = input.length; } else { scroll = 0; } render(); return; } // End -> end of input / latest
       if (s === "\x1b[1~" || s === "\x1bOH" || s === "\x1b[H" || s === "[H") { if (input.length) { curPos = 0; } else { scroll += 100000; } render(); return; } // Home -> start of input / top
       if (s.charCodeAt(0) === 27 && s[1] === "[" && s[2] === "<") { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (btn === 64) { if (cm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (cm.length) menuSel = Math.min(cm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; if (!busy) { input = ""; curPos = 0; menuSel = 0; scroll = 0; handleSlash(z.cmd); } render(); } } } } return; } // SGR mouse
-      if (busy) { const clean = s.replace(/\x1b\[[0-9;]*[A-Za-z~]/g, "").replace(/\x1b[^[]/g, ""); for (const ch of clean) { if (ch === "\r" || ch === "\n") { const t = input.trim(); if (t) { nextQueue.push(t); input = ""; curPos = 0; transcript.push({ role: "system", text: "queued: " + t }); render(); } } else if (ch === "\x7f" || ch === "\b") { if (curPos > 0) { const before = input.slice(0, curPos); const im = before.match(/\[Image#\d+\]$/); const del = im ? im[0].length : 1; input = input.slice(0, curPos - del) + input.slice(curPos); curPos -= del; } render(); } else if (ch >= " ") { input = input.slice(0, curPos) + ch + input.slice(curPos); curPos++; render(); } } return; } // buffer + queue mid-turn
+      if (busy) { const clean = s.replace(/\x1b\[[0-9;]*[A-Za-z~]/g, "").replace(/\x1b[^[]/g, ""); for (const ch of clean) { if (ch === "\r" || ch === "\n") { const t = input.trim(); if (t) { nextQueue.push(t); input = ""; curPos = 0; transcript.push({ role: "system", text: "queued: " + t }); render(); } } else if (ch === "\x7f" || ch === "\b") { if (curPos > 0) { const before = input.slice(0, curPos); const im = before.match(/\[Image#\d+\]$/); const del = im ? im[0].length : 1; input = input.slice(0, curPos - del) + input.slice(curPos); curPos -= del; } render(); } else if (ch >= " ") { input = input.slice(0, curPos) + ch + input.slice(curPos); curPos += ch.length; render(); } } return; } // buffer + queue mid-turn
       if (s.charCodeAt(0) === 27) return;                                // other escapes
       for (const ch of s) {
         if (ch === "\t") { // Tab completes the highlighted slash command, arg completion, or @file path
@@ -3656,8 +3655,8 @@ function nexusTui(engine, cwd, nexusMd) {
         if (ch === "\r" || ch === "\n") {
           if (input.endsWith("\\")) { input = input.slice(0, -1) + "\n"; curPos = input.length; render(); return; } // trailing backslash = newline, not submit
           const t = input.trim(); input = ""; curPos = 0; const pick = menuSel; menuSel = 0; if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; } if (t.startsWith("/")) { let cmd = t; if (!/\s/.test(t)) { const mm = fuzzyCmds(t); if (mm.length) cmd = (mm[pick] || mm[0])[0]; } handleSlash(cmd); render(); return; } if (t[0] === "!" && t.length > 1) { runBang(t.slice(1).trim()); render(); return; } if (t[0] === "#" && t.length > 1) { addMemory(t.slice(1).trim()); render(); return; } if (t) { submit(t); return; } render(); }
-        else if (ch === "\x7f" || ch === "\b") { if (curPos > 0) { const before = input.slice(0, curPos); const im = before.match(/\[Image#\d+\]$/); const del = im ? im[0].length : 1; input = input.slice(0, curPos - del) + input.slice(curPos); curPos -= del; } menuSel = 0; render(); }
-        else if (ch >= " ") { input = input.slice(0, curPos) + ch + input.slice(curPos); curPos++; menuSel = 0; if (ch === "/" && input.length === 1) refreshArgCache(); render(); }
+        else if (ch === "\x7f" || ch === "\b") { if (curPos > 0) { const before = input.slice(0, curPos); const im = before.match(/\[Image#\d+\]$/); let del = im ? im[0].length : 1; if (!im && curPos >= 2) { const cc = input.charCodeAt(curPos - 1); if (cc >= 0xDC00 && cc <= 0xDFFF) del = 2; } input = input.slice(0, curPos - del) + input.slice(curPos); curPos -= del; } menuSel = 0; render(); }
+        else if (ch >= " ") { input = input.slice(0, curPos) + ch + input.slice(curPos); curPos += ch.length; menuSel = 0; if (ch === "/" && input.length === 1) refreshArgCache(); render(); }
       }
     } catch (err) { busy = false; try { transcript.push({ role: "system", text: "internal error: " + (err && err.message || err) }); render(); } catch (_) {} } });
     out.on("resize", onResize);
@@ -3676,7 +3675,7 @@ function nexusTui(engine, cwd, nexusMd) {
         caps[1][1] = localModels > 0;
         const put = (row, str, vis) => ESC + "[" + row + ";" + Math.max(1, cx - (((vis || str.length) / 2) | 0)) + "H" + str;
         let b = ESC + "[2J";
-        for (const s of stars) { const tw = (f + s.ph) % 6; const ch = tw < 2 ? "·" : tw < 4 ? "+" : "*"; b += ESC + "[" + s.y + ";" + s.x + "H" + (tw < 2 ? gray(ch) : tw < 4 ? dim(cyan(ch)) : cyan(ch)); } // twinkling starfield behind the logo
+        for (const s of stars) { if (s.x >= C || s.y >= R) continue; const tw = (f + s.ph) % 6; const ch = tw < 2 ? "·" : tw < 4 ? "+" : "*"; b += ESC + "[" + s.y + ";" + s.x + "H" + (tw < 2 ? gray(ch) : tw < 4 ? dim(cyan(ch)) : cyan(ch)); } // twinkling starfield behind the logo
         for (let i = 0; i < ART.length; i++) b += ESC + "[" + (top + i) + ";" + Math.max(1, cx - (artW / 2 | 0)) + "H" + gart(ART[i], i, f); // shimmer wave down the logo
         b += put(top + ART.length + 1, dim(gray("the multi-engine AI coding agent")), 32);
         const nShown = Math.min(caps.length, ((f / total) * caps.length | 0) + 1);
