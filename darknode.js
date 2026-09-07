@@ -1360,12 +1360,13 @@ async function aiCoder(argv) {
   const cwd = process.cwd();
   // ---- parse flags ----
   const arr = Array.isArray(argv) ? argv.slice() : String(argv || "").split(/\s+/).filter(Boolean);
-  let autoApprove = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, parts = [];
+  let autoApprove = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, resumeFlag = false, parts = [];
   for (let i = 0; i < arr.length; i++) {
     const a = arr[i];
     if (a === "-y" || a === "--yes" || a === "--skip-permissions" || a === "--dangerously-skip-permissions") autoApprove = true;
     else if (a === "--print") { printMode = true; autoApprove = true; }
     else if (a === "--tui" || a === "--ui") tuiFlag = true;
+    else if (a === "--resume") resumeFlag = true;
     else if (a === "-m" || a === "--model") modelOverride = arr[++i] || "";
     else if (a === "-e" || a === "--engine") enginePref = arr[++i] || "";
     else if (a === "-h" || a === "--help") return nexusHelp();
@@ -1389,7 +1390,7 @@ async function aiCoder(argv) {
   // "..."`), --print, or a non-interactive stdout.
   if (parts[0] === "serve") return nexusServe(parts.slice(1), { engine });
   const oneShot = parts.length > 0;
-  if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd);
+  if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag);
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
   let model = null, modelList = [];
   if (engine === "ollama") { modelList = await ollamaTags(); if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
@@ -2071,7 +2072,7 @@ const NEXUS_TIPS = [
 const { ENGINES, ENGINE_ORDER, engineCap, ENGINE_TIPS } = require("./lib/nexus/engines"); // multi-AI registry (lib/engines.js)
 const engineAvail = (e) => { const m = ENGINES[e]; if (!m) return false; return m.kind === "local" ? true : hasBin(m.bin); }; // stays here — needs hasBin
 const { geminiParse, codexParse } = require("./lib/nexus/parsers"); // structured-output parsers (lib/parsers.js)
-function nexusTui(engine, cwd, nexusMd) {
+function nexusTui(engine, cwd, nexusMd, autoResume) {
   return new Promise((resolve) => {
     const out = process.stdout, ESC = "\x1b";
     const cols = () => out.columns || 80, rows = () => out.rows || 24;
@@ -3586,7 +3587,7 @@ function nexusTui(engine, cwd, nexusMd) {
     let loading = true;
     // Boot animation control: any key skips it; DARKNODE_FAST / NO_MOTION goes straight to the chat.
     let bootTimer = null, bootDone = false;
-    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); render(); };
+    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); if (autoResume) { try { const s = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8")); transcript.length = 0; for (const b of s.transcript) transcript.push(b); if (s.sess) Object.assign(sess, s.sess); if (s.engine && ENGINES[s.engine]) engine = s.engine; cont = true; transcript.push({ role: "system", text: "restarted with latest code — session restored" }); } catch (_) {} autoResume = false; } render(); };
     const fastBoot = !!(process.env.DARKNODE_FAST || process.env.NO_MOTION);
     // auto-connect MCP servers (non-blocking): the workspace's .nexus/mcp.json PLUS the
     // no-key servers that ship bundled with Nexus (fetch, memory, sequential-thinking,
