@@ -2373,7 +2373,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (compact.on) { const n = 22, f = Math.min(n, compact.f); return clip("  " + yellow("Compacting conversation… ") + gray("[") + cyan("▓".repeat(f)) + gray("░".repeat(n - f)) + gray("] ") + Math.round((f / n) * 100) + "%", C - 2); }
       if (slashMatches().length || argMatches().length) return clip("  " + blue("↑↓") + gray("/PgUp·Dn/wheel select  ") + blue("Tab") + gray(" complete  ") + blue("↵") + gray(" run  ") + blue("Esc") + gray(" dismiss"), C - 2);
       if (scroll > 0) return clip("  " + yellow("↑ scrolled — " + scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  ") + blue("PgUp/PgDn") + gray(" or wheel to scroll  ") + blue("End") + gray(" jump to latest"), C - 2);
-      return clip("  " + blue("↵") + gray(" send  ") + blue("shift+tab") + gray(" mode  ") + blue("ctrl+o") + gray(" " + (expanded ? "collapse" : "expand")) + gray("  ") + blue("@") + gray("file ") + blue("!") + gray("sh ") + blue("#") + gray("note  ") + blue("/") + gray("cmds"), C - 2);
+      return clip("  " + blue("↵") + gray(" send  ") + blue("shift+tab") + gray(" mode  ") + blue("ctrl+o") + gray(" " + (expanded ? "collapse" : "expand")) + gray("  ") + blue("@") + gray("file ") + blue("!") + gray("sh ") + blue("#") + gray("note  ") + blue("/") + gray("cmds  ") + blue("/copy") + gray(" clipboard  ") + (mouseOn ? blue("shift+drag") + gray(" select") : green("select ON")), C - 2);
     };
     // matching slash commands for the popup menu (active when the input is a bare /command being typed)
     // Fuzzy command matching: prefer prefix hits, then subsequence (e.g. /cmt -> /commit,
