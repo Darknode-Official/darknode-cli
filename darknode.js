@@ -2242,7 +2242,7 @@ function nexusTui(engine, cwd, nexusMd) {
     // ---- inline markdown / command coloring ----
     const paintCode = (c) => (/(^|\s)(node|npm|npx|git|python3?|pip3?|bash|sh|cd|ls|cat|make|cargo|go|docker|curl|grep|sed|rm|mkdir|chmod|sudo)\b/.test(c) || /\s--?\w/.test(c)) ? blue(c) : mag(c);
     const colorMd = (line, inCode) => { if (inCode) return blue(line); if (/^#{1,6}\s/.test(line)) return bold(cyan(line)); let s = line.replace(/`([^`]+)`/g, (_, c) => paintCode(c)).replace(/\*\*([^*]+)\*\*/g, (_, c) => bold(c)); return s.replace(/^(\s*[-*]\s)/, (_, b) => cyan(b)); };
-    const wrap = (text) => { const width = Math.max(1, cols() - 4); const res = []; for (const para of String(text).replace(/\r/g, "").split("\n")) { let s = para; if (!s.length) { res.push(""); continue; } while (s.length > width) { let w = width; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); res.push(s.slice(0, w)); s = s.slice(w); } res.push(s); } return res; };
+    const wrap = (text) => { const width = Math.max(1, cols() - 4); const res = []; for (const para of String(text).replace(/\r/g, "").split("\n")) { let s = para; if (!s.length) { res.push(""); continue; } while (s.length > width) { let w = width; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); let brk = s.lastIndexOf(" ", w); if (brk < width * 0.4) brk = -1; if (brk > 0) { res.push(s.slice(0, brk)); s = s.slice(brk + 1); } else { res.push(s.slice(0, w)); s = s.slice(w); } } res.push(s); } return res; };
     // ---- tool-card labels (Claude-Code style) ----
     const toolLabel = (name, a) => {
       a = a || {};
@@ -2605,7 +2605,8 @@ function nexusTui(engine, cwd, nexusMd) {
         if (PAID[engine] && dcost > 0) bits.push("$" + dcost.toFixed(4));
         bits.push(dt + "s");
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); }
-        block.summary = (recap.length ? recap.join(". ") + "." + gray("  ") : "") + bits.join("  ·  ");
+        const clock = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
+        block.summary = (recap.length ? recap.join(". ") + "." + gray("  ") : "") + bits.join("  ·  ") + gray("  ·  done " + clock);
         // Cache read-only answers (no file/command side-effects) so an exact repeat is free.
         if (ckey && !(res && res.interrupted) && stat.files.size === 0 && stat.cmds === 0) { try { const ft = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").trim(); if (ft && ft !== "(no output)") cachePut(cwd, ckey, { text: ft, inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), readonly: true, hits: 0, ts: Date.now() }); } catch (_) {} }
         if (!(res && res.interrupted)) { try { const answerText = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").slice(0, 2000); nexusLearn(text, answerText); } catch (_) {} }
