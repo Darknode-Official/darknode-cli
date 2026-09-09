@@ -1455,18 +1455,18 @@ async function aiCoder(argv) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); break; }
       let o; try { o = JSON.parse(raw); } catch (_) { messages.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
       messages.push({ role: "assistant", content: raw });
-      if (o.thought && !printMode) console.log("  " + gray("- " + o.thought));
+      if (o.thought && !printMode) console.log("  " + gray("💭 " + o.thought.slice(0, 120)));
       if (o.action === "final") {
         if (!didTool && !isChitchat(userMsg) && nudges++ < 3) { messages.push({ role: "tool", content: "You have not taken any action yet. Do the real work first." }); continue; }
         console.log("\n  " + green("done: ") + bold(o.final || "done") + "\n"); break;
       }
       const { name, a } = normalizeToolCall(o); let result;
       try {
-        if (name === "read_file") { const t = fs.readFileSync(path.resolve(cwd, a.path), "utf8"); result = { content: t.slice(0, 16000) }; if (!printMode) console.log("  " + cyan("read ") + a.path); }
+        if (name === "read_file") { const t = fs.readFileSync(path.resolve(cwd, a.path), "utf8"); result = { content: t.slice(0, 16000) }; if (!printMode) console.log("  " + cyan("📖 read ") + gray(a.path)); }
         else if (name === "list_dir") { const d = path.resolve(cwd, a.path || "."); result = { items: fs.readdirSync(d, { withFileTypes: true }).map((e) => (e.isDirectory() ? e.name + "/" : e.name)).slice(0, 200) }; if (!printMode) console.log("  " + cyan("ls ") + (a.path || ".")); }
         else if (name === "write_file") {
           if (!(await approve("write " + a.path))) { result = { error: "denied by operator" }; console.log("  " + red("denied ") + a.path); }
-          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp, "utf8"); } catch (e) { if (e.code === "ENOENT") isNew = true; } fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = { ok: true }; console.log("  " + green("write ") + a.path + gray(" (" + String(a.content || "").split("\n").length + " lines" + (before != null ? ", was " + before.split("\n").length : "") + ")")); }
+          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp, "utf8"); } catch (e) { if (e.code === "ENOENT") isNew = true; } fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = { ok: true }; console.log("  " + green("✏️  write ") + a.path + gray(" · " + String(a.content || "").split("\n").length + " lines")); }
         }
         else if (name === "edit_file") {
           const fp = path.resolve(cwd, a.path); let t;
@@ -1474,11 +1474,11 @@ async function aiCoder(argv) {
           if (t == null) { result = { error: "cannot read " + a.path }; }
           else if (!t.includes(a.find)) { result = { error: "find text not present in file" }; }
           else if (!(await approve("edit " + a.path))) { result = { error: "denied by operator" }; console.log("  " + red("denied ") + a.path); }
-          else { fs.writeFileSync(fp, t.replace(a.find, a.replace == null ? "" : a.replace)); changed.push({ path: fp, before: t, label: "edit " + a.path }); result = { ok: true }; console.log("  " + green("edit ") + a.path); }
+          else { fs.writeFileSync(fp, t.replace(a.find, a.replace == null ? "" : a.replace)); changed.push({ path: fp, before: t, label: "edit " + a.path }); result = { ok: true }; console.log("  " + green("✏️  edit ") + gray(a.path)); }
         }
         else if (name === "run_command") {
           if (!(await approve("run: " + a.command))) { result = { error: "denied by operator" }; console.log("  " + red("denied ") + a.command); }
-          else { console.log("  " + mag("$ ") + a.command); const r = await coderShell(a.command, cwd); result = { code: r.code, output: r.output }; if (r.output && !printMode) console.log(r.output.split("\n").slice(0, 20).map((l) => "    " + gray(l)).join("\n")); }
+          else { console.log("  " + mag("⚡ $ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd); result = { code: r.code, output: r.output }; if (r.output && !printMode) console.log(r.output.split("\n").slice(0, 8).map((l) => "    " + gray(l)).join("\n") + (r.output.split("\n").length > 8 ? "\n    " + gray("... +" + (r.output.split("\n").length - 8) + " more lines") : "")); }
         }
         else { result = { error: "unknown tool '" + name + "' (use read_file/write_file/edit_file/list_dir/run_command)" }; }
       } catch (e) { result = { error: e.message }; }
@@ -1916,15 +1916,15 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA, signal); } catch (e) { return { ok: signal && signal.aborted ? false : false, output: (signal && signal.aborted) ? log + "\n(interrupted)" : "model error: " + e.message }; }
     let o; try { o = JSON.parse(raw); } catch (_) { messages.push({ role: "tool", content: "Reply with valid schema JSON." }); continue; }
     messages.push({ role: "assistant", content: raw });
-    if (o.thought) console.log("    " + gray(o.thought));
+    if (o.thought) console.log("    " + gray("💭 " + (o.thought || "").slice(0, 120)));
     if (o.action === "final") { if (!didTool && !isChitchat(task) && step < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; } return { ok: true, output: log + "\n" + (o.final || "") }; }
     const { name, a } = normalizeToolCall(o); let result;
     try {
       if (name === "read_file") result = { content: fs.readFileSync(path.resolve(cwd, a.path), "utf8").slice(0, 14000) };
       else if (name === "list_dir") result = { items: fs.readdirSync(path.resolve(cwd, a.path || "."), { withFileTypes: true }).map((e) => e.isDirectory() ? e.name + "/" : e.name).slice(0, 200) };
-      else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = { ok: true }; log += "\nwrote " + a.path; console.log("    " + green("write ") + a.path); }
-      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); if (!t.includes(a.find)) result = { error: "find not present" }; else { fs.writeFileSync(fp, t.replace(a.find, a.replace == null ? "" : a.replace)); result = { ok: true }; log += "\nedited " + a.path; console.log("    " + green("edit ") + a.path); } }
-      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = { error: "blocked by Darknode (destructive: " + dg.why + ")" }; console.log("    " + red("blocked ") + dg.why); } else { console.log("    " + mag("$ ") + a.command); const r = await coderShell(a.command, cwd); result = { code: r.code, output: compactOutput(r.output, 4000) }; log += "\n$ " + a.command + "\n" + r.output.slice(0, 1200); } }
+      else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = { ok: true }; log += "\nwrote " + a.path; console.log("    " + green("✏️  write ") + gray(a.path)); }
+      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); if (!t.includes(a.find)) result = { error: "find not present" }; else { fs.writeFileSync(fp, t.replace(a.find, a.replace == null ? "" : a.replace)); result = { ok: true }; log += "\nedited " + a.path; console.log("    " + green("✏️  edit ") + gray(a.path)); } }
+      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = { error: "blocked by Darknode (destructive: " + dg.why + ")" }; console.log("    " + red("🚫 blocked: ") + dg.why); } else { console.log("    " + mag("⚡ $ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd); result = { code: r.code, output: compactOutput(r.output, 4000) }; log += "\n$ " + a.command + "\n" + r.output.slice(0, 1200); } }
       else { const dr = await deviceTool(name, a, cwd); result = dr !== null ? dr : { error: "unknown tool " + name }; }
     } catch (e) { result = { error: e.message }; }
     if (!(result && typeof result.error === "string" && result.error.startsWith("unknown tool"))) didTool = true;
