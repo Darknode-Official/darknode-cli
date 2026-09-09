@@ -2082,14 +2082,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const ident = resolveOperator({ cwd }); // operator/team for chargeback attribution + audit provenance
     const oMsgs = nexusMd ? [{ role: "system", content: "You are Nexus, a concise expert coding assistant.\n" + nexusMd }] : [{ role: "system", content: "You are Nexus, a concise expert coding assistant." }];
     let input = "", curPos = 0, busy = false, cont = false, busyStart = 0, busyWord = "", tick = null;
-    // Carried across a compaction of the claude engine. Claude's context lives
-    // server-side and is resumed with --continue; to actually shrink it we must
-    // DROP --continue (cont=false) and re-seed the next prompt with a summary,
-    // or the next turn silently resumes the whole pre-compaction conversation.
-    // The old code pruned only the local transcript and left --continue on, so
-    // compaction did nothing for claude and a chat grew unbounded (one session
-    // reached 726 turns / 794K context / one context that never reset).
-    let carryNote = "";
     let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = true, hack = false; // mode: 0 normal, 1 auto-accept, 2 plan; scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
     let gitBranch = ""; // cached "branch" (+ "*" when the tree is dirty), shown in the status bar
     const refreshGit = async () => { try { const b = await sh(["rev-parse", "--abbrev-ref", "HEAD"]); if (b.err) { gitBranch = ""; return; } const st = await sh(["status", "--porcelain"]); const next = (b.stdout || "").trim() + ((st.stdout || "").trim() ? "*" : ""); if (next !== gitBranch) { gitBranch = next; try { render(); } catch (_) {} } } catch (_) { gitBranch = ""; } };
@@ -2529,23 +2521,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // ---- animation loop: typewriter reveal + spinners + elapsed ----
     const revealing = () => { const b = cur(); if (!b || !b.items) return false; return b.items.some((it) => it.type === "text" && it.shown < it.full.length); };
     const startTick = () => { if (tick) return; tick = setInterval(() => { const b = cur(); if (b && b.items) for (const it of b.items) if (it.type === "text" && it.shown < it.full.length) { let ns = Math.min(it.full.length, it.shown + Math.max(2, Math.ceil((it.full.length - it.shown) / 22))); const cc = it.full.charCodeAt(ns - 1); if (cc >= 0xD800 && cc <= 0xDBFF && ns < it.full.length) ns++; it.shown = ns; } render(); if (!busy && !revealing() && !compact.on) { clearInterval(tick); tick = null; } }, 45); };
-    // Flatten the kept transcript tail into a short plain-text summary, so a
-    // claude turn that has just dropped --continue still knows what came before.
-    // User lines and the model's own answers only — no tool spew, capped so the
-    // seed itself cannot become the next thing that bloats the context.
-    const buildCarryNote = (keep) => {
-      const parts = [];
-      for (const b of keep || []) {
-        if (!b) continue;
-        if (b.role === "user" && b.text) parts.push("User: " + b.text.trim());
-        else if (b.role === "nexus" && Array.isArray(b.items)) {
-          const txt = b.items.filter((i) => i.type === "text" && i.full)
-                             .map((i) => i.full.trim()).join(" ").trim();
-          if (txt) parts.push("Assistant: " + txt.slice(0, 800));
-        }
-      }
-      return parts.join("\n").slice(-4000);
-    };
     // ---- context compaction (visual + local prune) ----
     const doCompact = (auto) => {
       if (compact.on) return;
@@ -2560,30 +2535,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           for (const k of keep) transcript.push(k);
           // actually shrink the local engine's context: keep the system message + the last few exchanges, and drop the token estimate
           if (oMsgs.length > 7) { const sys = oMsgs[0]; const tail = oMsgs.slice(-6); oMsgs.length = 0; oMsgs.push(sys, ...tail); }
-          // Claude keeps its context server-side, so pruning the local arrays
-          // above does nothing to it. Drop --continue and hand the next turn a
-          // text summary of the kept tail instead — that is what makes a
-          // compaction real for claude rather than cosmetic.
-          if (PAID[engine]) { cont = false; carryNote = buildCarryNote(keep); }
           sess.ctxUsed = Math.floor(sess.ctxUsed * 0.25); warned50 = false;
           compact.on = false; render();
         } else render();
       }, 60);
     };
-    // Cap the carried context before a rate limit does it for you. For claude
-    // the cost that empties a 5-hour bucket is the ABSOLUTE tokens re-read every
-    // turn, not a fraction of a (possibly 1M) window — a 600K context on a 1M
-    // window is only 60% but is still 600K re-read on every single turn. So
-    // claude compacts at a fixed absolute line (the same 200K tokendog flags as
-    // a large context), while the local engine keeps its fraction-of-window
-    // rule. Was: claude excluded entirely, on the wrong assumption that a
-    // headless `-p --continue` run self-compacts. It does not.
-    const CLAUDE_COMPACT_AT = Number(process.env.DARKNODE_COMPACT_AT || 40000); // auto-compact at 40K tokens (was 200K — way too late)
-    const maybeAutoCompact = () => {
-      if (compact.on) return;
-      if (PAID[engine]) { if (sess.ctxUsed > CLAUDE_COMPACT_AT) doCompact(true); }
-      else if (sess.ctxUsed > 0.5 * (sess.ctxWindow || 200000)) doCompact(true); // compact at 50% (was 80%)
-    };
+    const maybeAutoCompact = () => { if (!PAID[engine] && sess.ctxUsed > 0.8 * (sess.ctxWindow || 200000) && !compact.on) doCompact(true); }; // claude self-compacts server-side; only auto-compact the local engine
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
     let cleaned = false;
     const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.iv) { clearInterval(compact.iv); compact.iv = null; } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { out.write(ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {} };
@@ -2616,14 +2573,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (lean) sendText = "[Be concise: minimal output, no preamble/recap/explanation unless asked, short code only.] " + sendText; // cut expensive output tokens
       { const sq = squeezeContext(sendText); if (sq.saved >= 40) impact.squeezeTok += sq.saved; sendText = sq.text; } // dedupe inlined files + collapse whitespace → fewer INPUT tokens every turn
       let promptText = mode === 2 ? "Think step by step and produce a concise PLAN of what you would do. Do NOT modify any files yet.\n\n" + sendText : sendText;
-      // First turn after a claude compaction: --continue is off (cont=false), so
-      // the server context is gone. Seed this one prompt with the summary of what
-      // came before, then clear it — later turns resume normally via --continue.
-      if (carryNote && engine === "claude" && !cont) {
-        promptText = "[Earlier conversation was compacted to save context. Summary of what happened so far:]\n"
-          + carryNote + "\n\n[Now continue. The user's next message:]\n" + promptText;
-        carryNote = "";
-      }
       promptText = nexusAugment(text, promptText);
       // Response cache: an EXACT repeat of a READ-ONLY answer is served FREE. The key
       // includes the inlined context, so a changed file yields a new key and re-runs
@@ -2666,7 +2615,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (ckey && !(res && res.interrupted) && stat.files.size === 0 && stat.cmds === 0) { try { const ft = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").trim(); if (ft && ft !== "(no output)") cachePut(cwd, ckey, { text: ft, inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), readonly: true, hits: 0, ts: Date.now() }); } catch (_) {} }
         if (!(res && res.interrupted)) { try { const answerText = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").slice(0, 2000); nexusLearn(text, answerText); } catch (_) {} }
         cont = true; busy = false; lastLines = null; if (costCap && sess.cost >= costCap) transcript.push({ role: "system", text: "budget cap reached ($" + sess.cost.toFixed(4) + ") — /budget <amount> to raise" });
-        if (!warned50 && sess.ctxUsed > 0.3 * (sess.ctxWindow || 200000)) { warned50 = true; transcript.push({ role: "system", text: "context is over 50% — quality can dip on very long sessions; use /compact or /clear when it makes sense" }); }
+        if (!warned50 && sess.ctxUsed > 0.5 * (sess.ctxWindow || 200000)) { warned50 = true; transcript.push({ role: "system", text: "context is over 50% — quality can dip on very long sessions; use /compact or /clear when it makes sense" }); }
         try { saveSession(); } catch (_) {}
         if (hooks) try { runHooks(hooks, "Stop", { NEXUS_ENGINE: engine }, cwd); } catch (_) {}
         if (notify && (Date.now() - stat.t0) > 15000) { out.write("\x07"); try { _cp.spawn("notify-send", ["Nexus", "turn finished (" + ((Date.now() - stat.t0) / 1000 | 0) + "s)"], { stdio: "ignore" }).on("error", () => {}); } catch (_) {} }
