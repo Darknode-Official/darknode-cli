@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Darknode 3D Modeler - Zombie (GPU Ray March)</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;font-family:'Courier New',monospace}
+canvas{display:block;width:100vw;height:100vh}
+
+#panel{
+  position:fixed;top:10px;left:10px;width:268px;
+  background:rgba(8,8,16,.88);backdrop-filter:blur(14px);
+  border:1px solid rgba(0,255,200,.15);border-radius:8px;
+  color:#ccc;font-size:11px;z-index:100;
+  max-height:calc(100vh - 20px);display:flex;flex-direction:column;
+  transition:width .25s;
+}
+#panel.collapsed{width:auto}
+#panel.collapsed #panel-content{display:none}
+.panel-title{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:9px 14px;border-bottom:1px solid rgba(0,255,200,.1);
+  color:#00ffc8;font-size:12px;font-weight:bold;letter-spacing:1px;
+  flex-shrink:0;user-select:none;
+}
+.collapse-btn{
+  background:none;border:none;color:#666;cursor:pointer;
+  font-family:inherit;font-size:14px;padding:0 4px;line-height:1;
+}
+.collapse-btn:hover{color:#00ffc8}
+
+#panel-content{
+  overflow-y:auto;padding:4px 0 6px;flex:1;
+  scrollbar-width:thin;scrollbar-color:rgba(0,255,200,.18) transparent;
+}
+#panel-content::-webkit-scrollbar{width:4px}
+#panel-content::-webkit-scrollbar-track{background:transparent}
+#panel-content::-webkit-scrollbar-thumb{background:rgba(0,255,200,.2);border-radius:2px}
+
+.info-row{display:flex;justify-content:space-between;padding:2px 14px;font-size:10px}
+.info-row .lb{color:#555}.info-row .vl{color:#00ffc8}
+
+.section{border-top:1px solid rgba(0,255,200,.06)}
+.section-hdr{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:7px 14px;cursor:pointer;color:#00ffc8;
+  font-size:10px;font-weight:bold;text-transform:uppercase;
+  letter-spacing:.5px;user-select:none;
+}
+.section-hdr:hover{background:rgba(0,255,200,.04)}
+.chv{color:#555;font-size:10px;transition:transform .2s}
+.section-hdr.shut .chv{transform:rotate(-90deg)}
+.section-body{padding:3px 14px 7px}
+.section-body.shut{display:none}
+
+.ctrl-row{display:flex;align-items:center;justify-content:space-between;margin:3px 0;gap:6px}
+.ctrl-row label{font-size:10px;color:#888;min-width:60px}
+
+input[type="color"]{
+  -webkit-appearance:none;appearance:none;border:1px solid rgba(0,255,200,.2);
+  border-radius:3px;width:32px;height:18px;padding:0;background:none;cursor:pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper{padding:1px}
+input[type="color"]::-webkit-color-swatch{border:none;border-radius:2px}
+
+.slider-row{display:flex;align-items:center;margin:3px 0;gap:5px}
+.slider-row label{font-size:10px;color:#888;min-width:68px;flex-shrink:0}
+.slider-row input[type="range"]{flex:1;min-width:0}
+.slider-row .vl{font-size:9px;color:#00ffc8;min-width:30px;text-align:right;flex-shrink:0}
+
+input[type="range"]{
+  -webkit-appearance:none;appearance:none;height:3px;border-radius:2px;
+  background:rgba(0,255,200,.12);outline:none;
+}
+input[type="range"]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:10px;height:10px;border-radius:50%;
+  background:#00ffc8;cursor:pointer;
+}
+input[type="range"]::-moz-range-thumb{
+  width:10px;height:10px;border-radius:50%;
+  background:#00ffc8;cursor:pointer;border:none;
+}
+
+.toggle-row{display:flex;align-items:center;margin:3px 0;gap:6px}
+.toggle-row label{font-size:10px;color:#888;flex:1}
+.tog{
+  width:30px;height:14px;background:rgba(255,255,255,.08);border-radius:7px;
+  position:relative;cursor:pointer;transition:.2s;flex-shrink:0;
+}
+.tog.on{background:rgba(0,255,200,.3)}
+.tog::after{
+  content:'';position:absolute;width:10px;height:10px;border-radius:50%;
+  background:#555;top:2px;left:2px;transition:.2s;
+}
+.tog.on::after{left:18px;background:#00ffc8}
+
+.btn-row{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
+.btn{
+  background:rgba(0,255,200,.06);color:#00ffc8;
+  border:1px solid rgba(0,255,200,.2);padding:4px 8px;border-radius:3px;
+  cursor:pointer;font-family:inherit;font-size:10px;transition:.15s;
+}
+.btn:hover{background:rgba(0,255,200,.15);border-color:rgba(0,255,200,.4)}
+.btn.active{background:rgba(0,255,200,.2);border-color:#00ffc8}
+
+#fps{
+  position:fixed;top:10px;right:10px;color:rgba(0,255,200,.45);
+  font-family:'Courier New',monospace;font-size:11px;z-index:100;pointer-events:none;
+}
+#shortcuts{
+  position:fixed;bottom:10px;right:10px;
+  background:rgba(8,8,16,.92);backdrop-filter:blur(12px);
+  border:1px solid rgba(0,255,200,.15);border-radius:6px;
+  padding:10px 14px;color:#888;font-size:10px;z-index:100;
+  display:none;line-height:1.9;
+}
+#shortcuts .ttl{color:#00ffc8;font-size:11px;margin-bottom:3px;font-weight:bold}
+.key{
+  color:#00ffc8;background:rgba(0,255,200,.08);
+  padding:1px 5px;border-radius:2px;font-size:9px;
+  display:inline-block;min-width:16px;text-align:center;margin-right:2px;
+}
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <div class="panel-title">
+    <span>DARKNODE 3D MODELER</span>
+    <button class="collapse-btn" id="collapseBtn" onclick="togglePanel()">-</button>
+  </div>
+  <div id="panel-content">
+    <div class="info-row"><span class="lb">Method</span><span class="vl">GPU Ray March (SDF)</span></div>
+    <div class="info-row"><span class="lb">Render</span><span class="vl">Per-pixel isosurface</span></div>
+    <div class="info-row"><span class="lb">Lighting</span><span class="vl">PBR + SSS</span></div>
+
+    <!-- Material -->
+    <div class="section">
+      <div class="section-hdr" onclick="togSec(this)"><span>Material</span><span class="chv">-</span></div>
+      <div class="section-body">
+        <div class="ctrl-row"><label>Skin</label><input type="color" id="cSkin" value="#b8a6a1"></div>
+        <div class="ctrl-row"><label>Wound</label><input type="color" id="cWound" value="#a62e24"></div>
+        <div class="ctrl-row"><label>Eye</label><input type="color" id="cEye" value="#d9e059"></div>
+        <div class="ctrl-row"><label>Socket</label><input type="color" id="cSocket" value="#1f1a1a"></div>
+        <div class="ctrl-row"><label>Bone</label><input type="color" id="cBone" value="#d1c29e"></div>
+        <div class="ctrl-row"><label>Cloth</label><input type="color" id="cCloth" value="#262629"></div>
+        <div class="slider-row"><label>Roughness</label><input type="range" id="sRough" min="0.2" max="3" step="0.05" value="1"><span class="vl" id="vRough">1.00</span></div>
+      </div>
+    </div>
+
+    <!-- Lighting -->
+    <div class="section">
+      <div class="section-hdr" onclick="togSec(this)"><span>Lighting</span><span class="chv">-</span></div>
+      <div class="section-body">
+        <div class="slider-row"><label>Sun Azimuth</label><input type="range" id="sAzim" min="0" max="360" step="1" value="51"><span class="vl" id="vAzim">51</span></div>
+        <div class="slider-row"><label>Sun Elevation</label><input type="range" id="sElev" min="0" max="90" step="1" value="48"><span class="vl" id="vElev">48</span></div>
+        <div class="slider-row"><label>Sun Intensity</label><input type="range" id="sSunI" min="0.5" max="4" step="0.1" value="2"><span class="vl" id="vSunI">2.0</span></div>
+        <div class="ctrl-row"><label>Sun Color</label><input type="color" id="cSun" value="#ffffff"></div>
+        <div class="slider-row"><label>Fill Intensity</label><input type="range" id="sFill" min="0" max="2" step="0.05" value="0.8"><span class="vl" id="vFill">0.80</span></div>
+        <div class="slider-row"><label>Ambient</label><input type="range" id="sAmb" min="0" max="2" step="0.05" value="1"><span class="vl" id="vAmb">1.00</span></div>
+      </div>
+    </div>
+
+    <!-- Animation -->
+    <div class="section">
+      <div class="section-hdr" onclick="togSec(this)"><span>Animation</span><span class="chv">-</span></div>
+      <div class="section-body">
+        <div class="toggle-row"><label>Auto-Rotate</label><div class="tog on" id="tSpin" onclick="togBool(this,'spin')"></div></div>
+        <div class="toggle-row"><label>Animate</label><div class="tog on" id="tAnim" onclick="togBool(this,'anim')"></div></div>
+        <div class="slider-row"><label>Speed</label><input type="range" id="sSpd" min="0" max="3" step="0.05" value="1"><span class="vl" id="vSpd">1.00</span></div>
+        <div class="slider-row"><label>Sway Amount</label><input type="range" id="sSway" min="0" max="3" step="0.05" value="1"><span class="vl" id="vSway">1.00</span></div>
+        <div class="slider-row"><label>Bob Amount</label><input type="range" id="sBob" min="0" max="3" step="0.05" value="1"><span class="vl" id="vBob">1.00</span></div>
+        <div class="slider-row"><label>Eye Glow Spd</label><input type="range" id="sGlow" min="0" max="10" step="0.1" value="3"><span class="vl" id="vGlow">3.0</span></div>
+      </div>
+    </div>
+
+    <!-- Post-Processing -->
+    <div class="section">
+      <div class="section-hdr" onclick="togSec(this)"><span>Post-Processing</span><span class="chv">-</span></div>
+      <div class="section-body">
+        <div class="slider-row"><label>Exposure</label><input type="range" id="sExpo" min="0.5" max="3" step="0.05" value="1"><span class="vl" id="vExpo">1.00</span></div>
+        <div class="slider-row"><label>Gamma</label><input type="range" id="sGam" min="0.3" max="0.8" step="0.005" value="0.4545"><span class="vl" id="vGam">0.45</span></div>
+        <div class="toggle-row"><label>Fog</label><div class="tog" id="tFog" onclick="togFlag(this,'fogOn')"></div></div>
+        <div class="slider-row"><label>Fog Density</label><input type="range" id="sFogD" min="0.01" max="0.5" step="0.01" value="0.1"><span class="vl" id="vFogD">0.10</span></div>
+        <div class="toggle-row"><label>Vignette</label><div class="tog" id="tVig" onclick="togFlag(this,'vigOn')"></div></div>
+        <div class="slider-row"><label>Vignette Str</label><input type="range" id="sVigS" min="0.1" max="2" step="0.05" value="0.5"><span class="vl" id="vVigS">0.50</span></div>
+      </div>
+    </div>
+
+    <!-- Pose Presets -->
+    <div class="section">
+      <div class="section-hdr" onclick="togSec(this)"><span>Pose Presets</span><span class="chv">-</span></div>
+      <div class="section-body">
+        <div class="btn-row">
+          <button class="btn active" id="pIdle" onclick="setPose('idle')">Idle</button>
+          <button class="btn" id="pReach" onclick="setPose('reaching')">Reaching</button>
+          <button class="btn" id="pShamble" onclick="setPose('shamble')">Shamble</button>
+          <button class="btn" id="pRage" onclick="setPose('rage')">Rage</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- View -->
+    <div class="section">
+      <div class="section-hdr" onclick="togSec(this)"><span>View</span><span class="chv">-</span></div>
+      <div class="section-body">
+        <div class="toggle-row"><label>Ground Grid</label><div class="tog" id="tGrid" onclick="togFlag(this,'gridOn')"></div></div>
+        <div class="toggle-row"><label>Debug Normals</label><div class="tog" id="tNorm" onclick="togFlag(this,'normOn')"></div></div>
+        <div class="btn-row">
+          <button class="btn" onclick="screenshot()">Screenshot [P]</button>
+          <button class="btn" onclick="resetCam()">Reset Camera [R]</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="fps">-- FPS</div>
+
+<div id="shortcuts">
+  <div class="ttl">Keyboard Shortcuts</div>
+  <div><span class="key">Space</span> Toggle auto-rotate</div>
+  <div><span class="key">A</span> Toggle animate</div>
+  <div><span class="key">G</span> Toggle grid</div>
+  <div><span class="key">P</span> Screenshot</div>
+  <div><span class="key">R</span> Reset camera</div>
+  <div><span class="key">1</span><span class="key">2</span><span class="key">3</span><span class="key">4</span> Pose presets</div>
+  <div><span class="key">H</span> Toggle this panel</div>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+/* ===== State ===== */
+let spin = true, anim = true;
+let gridOn = false, normOn = false, fogOn = false, vigOn = false;
+let camAngle = 0, camY = 1.3, camDist = 3.0;
+let drag = false, lx = 0, ly = 0;
+let captureNext = false;
+
+const S = {
+  roughMul:1, sunAzim:51, sunElev:48, sunInt:2, fillInt:.8, ambInt:1,
+  animSpd:1, swayAmt:1, bobAmt:1, glowSpd:3,
+  exposure:1, gamma:.4545, fogDens:.1, vigStr:.5
+};
+const C = {
+  skin:[.72,.65,.63], wound:[.65,.18,.14], eye:[.85,.88,.35],
+  socket:[.12,.10,.10], bone:[.82,.76,.62], cloth:[.15,.15,.16],
+  sun:[1,1,1]
+};
+
+/* Pose system */
+const posePresets = {
+  idle:     {aLF:0, aLU:0, aRF:0, aRU:0, lean:0, hunch:0},
+  reaching: {aLF:.32, aLU:.28, aRF:.32, aRU:.28, lean:.05, hunch:0},
+  shamble:  {aLF:-.06, aLU:-.18, aRF:-.06, aRU:-.18, lean:.14, hunch:.06},
+  rage:     {aLF:.06, aLU:.38, aRF:.06, aRU:.38, lean:-.09, hunch:-.03}
+};
+const poseTarget = {aLF:0,aLU:0,aRF:0,aRU:0,lean:0,hunch:0};
+const poseCur = {aLF:0,aLU:0,aRF:0,aRU:0,lean:0,hunch:0};
+let activePose = 'idle';
+
+/* FPS tracking */
+let fpsSamples = [], fpsLast = 0;
+
+/* ===== Helpers ===== */
+function hexToRGB(h){
+  return [parseInt(h.substr(1,2),16)/255, parseInt(h.substr(3,2),16)/255, parseInt(h.substr(5,2),16)/255];
+}
+
+function togglePanel(){
+  const p = document.getElementById('panel');
+  const b = document.getElementById('collapseBtn');
+  p.classList.toggle('collapsed');
+  b.textContent = p.classList.contains('collapsed') ? '+' : '-';
+}
+
+function togSec(hdr){
+  const body = hdr.nextElementSibling;
+  const chv = hdr.querySelector('.chv');
+  const shut = !body.classList.contains('shut');
+  body.classList.toggle('shut', shut);
+  hdr.classList.toggle('shut', shut);
+  chv.textContent = shut ? '+' : '-';
+}
+
+function togBool(el, key){
+  if(key==='spin') spin=!spin;
+  if(key==='anim') anim=!anim;
+  el.classList.toggle('on');
+}
+
+function togFlag(el, key){
+  if(key==='fogOn') fogOn=!fogOn;
+  else if(key==='vigOn') vigOn=!vigOn;
+  else if(key==='gridOn') gridOn=!gridOn;
+  else if(key==='normOn') normOn=!normOn;
+  el.classList.toggle('on');
+}
+
+function setPose(name){
+  const pre = posePresets[name];
+  if(!pre) return;
+  for(const k in poseTarget) poseTarget[k] = pre[k];
+  activePose = name;
+  document.querySelectorAll('#pIdle,#pReach,#pShamble,#pRage').forEach(b=>b.classList.remove('active'));
+  const map = {idle:'pIdle',reaching:'pReach',shamble:'pShamble',rage:'pRage'};
+  const el = document.getElementById(map[name]);
+  if(el) el.classList.add('active');
+}
+
+function resetCam(){
+  camAngle = 0; camY = 1.3; camDist = 3.0;
+}
+
+function screenshot(){
+  captureNext = true;
+}
+
+function bindSlider(id, vid, dec, cb){
+  const s = document.getElementById(id);
+  const v = document.getElementById(vid);
+  s.addEventListener('input', ()=>{
+    const val = parseFloat(s.value);
+    v.textContent = val.toFixed(dec);
+    cb(val);
+  });
+}
+
+function bindColor(id, key){
+  document.getElementById(id).addEventListener('input', e=>{
+    C[key] = hexToRGB(e.target.value);
+  });
+}
+
+/* ===== Canvas & GL ===== */
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', {preserveDrawingBuffer:true});
+if(!gl){document.body.innerHTML='<h1 style="color:red;padding:40px">WebGL2 required</h1>';throw 0;}
+
+canvas.addEventListener('pointerdown', e=>{drag=true;lx=e.clientX;ly=e.clientY;});
+addEventListener('pointerup', ()=>drag=false);
+addEventListener('pointermove', e=>{
+  if(!drag)return;
+  camAngle-=(e.clientX-lx)*.005;
+  camY+=(e.clientY-ly)*.003;
+  camY=Math.max(.3,Math.min(2.2,camY));
+  lx=e.clientX;ly=e.clientY;
+});
+canvas.addEventListener('wheel', e=>{camDist=Math.max(1.8,Math.min(5,camDist+e.deltaY*.002));},{passive:true});
+
+/* Keyboard */
+addEventListener('keydown', e=>{
+  if(e.target.tagName==='INPUT') return;
+  const k = e.key.toLowerCase();
+  if(k===' '||e.code==='Space'){e.preventDefault();spin=!spin;document.getElementById('tSpin').classList.toggle('on',spin);}
+  else if(k==='a'){anim=!anim;document.getElementById('tAnim').classList.toggle('on',anim);}
+  else if(k==='g'){gridOn=!gridOn;document.getElementById('tGrid').classList.toggle('on',gridOn);}
+  else if(k==='p'){screenshot();}
+  else if(k==='r'){resetCam();}
+  else if(k==='h'){const s=document.getElementById('shortcuts');s.style.display=s.style.display==='none'||!s.style.display?'block':'none';}
+  else if(k==='1'){setPose('idle');}
+  else if(k==='2'){setPose('reaching');}
+  else if(k==='3'){setPose('shamble');}
+  else if(k==='4'){setPose('rage');}
+});
+
+function resize(){
+  canvas.width=innerWidth;canvas.height=innerHeight;
+  gl.viewport(0,0,canvas.width,canvas.height);
+}
+resize();
+addEventListener('resize',resize);
+
+/* ===== Shaders ===== */
+const vs=`#version 300 es
+in vec2 p;
+void main(){gl_Position=vec4(p,0,1);}`;
+
+const fs=`#version 300 es
+precision highp float;
+out vec4 O;
+uniform vec2 R;
+uniform float T;
+uniform vec3 camPos;
+uniform vec3 camTarget;
+uniform int doAnim;
+
+uniform vec3 uSkinCol,uWoundCol,uEyeCol,uSocketCol,uBoneCol,uClothCol;
+uniform float uRoughMul;
+
+uniform vec3 uSunDir,uSunCol;
+uniform float uSunInt,uFillInt,uAmbInt;
+
+uniform float uAnimSpd,uSwayAmt,uBobAmt,uGlowSpd;
+
+uniform float uExposure,uGamma,uFogDens,uVigStr;
+uniform int uFogOn,uVigOn,uGridOn,uNormOn;
+
+uniform float uALF,uALU,uARF,uARU,uLean,uHunch;
+
+// ---- SDF primitives ----
+float sdSphere(vec3 p,float r){return length(p)-r;}
+float sdEllipsoid(vec3 p,vec3 r){float k0=length(p/r);float k1=length(p/(r*r));return k0*(k0-1.0)/k1;}
+float sdCapsule(vec3 p,vec3 a,vec3 b,float r){vec3 pa=p-a,ba=b-a;float h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);return length(pa-ba*h)-r;}
+float sdBox(vec3 p,vec3 b){vec3 q=abs(p)-b;return length(max(q,0.))+min(max(q.x,max(q.y,q.z)),0.);}
+float sdTorus(vec3 p,float R,float r){vec2 q=vec2(length(p.xz)-R,p.y);return length(q)-r;}
+float smin(float a,float b,float k){float h=max(k-abs(a-b),0.)/k;return min(a,b)-h*h*h*k/6.;}
+float ssub(float a,float b,float k){return -smin(-a,b,k);}
+
+// ---- Zombie SDF ----
+vec2 map(vec3 p){
+  float skin=1e9,wound=1e9,eye=1e9,dark=1e9,bone=1e9,cloth=1e9;
+
+  float animT=T*uAnimSpd;
+  float sway=doAnim==1?sin(animT*.4)*.03*uSwayAmt:0.;
+  float bob=doAnim==1?sin(animT*.7)*.005*uBobAmt:0.;
+  vec3 q=vec3(p.x-sway,p.y-bob,p.z);
+
+  // Body lean
+  float lf=smoothstep(.5,1.5,q.y);
+  q.z+=uLean*lf;
+  // Hunch
+  float hf=smoothstep(1.2,1.7,q.y);
+  q.z+=uHunch*hf*3.;
+  q.y-=uHunch*hf*.5;
+
+  // --- TORSO ---
+  float chest=sdEllipsoid(q-vec3(0,1.25,0),vec3(.17,.22,.12));
+  float belly=sdEllipsoid(q-vec3(0,1.02,0),vec3(.13,.13,.10));
+  skin=smin(chest,belly,.08);
+  skin=smin(skin,sdCapsule(q,vec3(-.17,1.38,0),vec3(.17,1.38,0),.065),.06);
+  skin=smin(skin,sdEllipsoid(q-vec3(0,1.4,-.07),vec3(.12,.09,.09)),.05);
+  skin=smin(skin,sdEllipsoid(q-vec3(0,.88,0),vec3(.13,.07,.09)),.06);
+
+  // --- NECK ---
+  skin=smin(skin,sdCapsule(q,vec3(.01,1.40,.01),vec3(.02,1.55,.02),.05),.08);
+
+  // --- HEAD ---
+  vec3 h=q-vec3(.01,1.66,.02);
+  float head=sdEllipsoid(h,vec3(.12,.15,.13));
+  head=smin(head,sdEllipsoid(h-vec3(0,-.02,.09),vec3(.09,.03,.04)),.03);
+  head=smin(head,sdEllipsoid(h-vec3(-.065,-.06,.06),vec3(.04,.03,.03)),.025);
+  head=smin(head,sdEllipsoid(h-vec3(.065,-.06,.06),vec3(.04,.03,.03)),.025);
+  head=smin(head,sdEllipsoid(h-vec3(0,-.12,.03),vec3(.08,.05,.07)),.04);
+  head=smin(head,sdEllipsoid(h-vec3(0,-.05,.1),vec3(.018,.032,.022)),.02);
+  head=smin(head,sdEllipsoid(h-vec3(-.13,-.01,-.01),vec3(.012,.035,.015)),.02);
+  head=smin(head,sdEllipsoid(h-vec3(.13,-.01,-.01),vec3(.01,.025,.012)),.02);
+  skin=smin(skin,head,.08);
+
+  skin=ssub(sdEllipsoid(h-vec3(-.043,.0,.095),vec3(.026,.02,.035)),skin,.012);
+  skin=ssub(sdEllipsoid(h-vec3(.043,.0,.095),vec3(.026,.02,.035)),skin,.012);
+  skin=ssub(sdEllipsoid(h-vec3(0,-.065,.1),vec3(.016,.012,.016)),skin,.008);
+  skin=ssub(sdBox(h-vec3(0,-.135,.065),vec3(.035,.01,.025)),skin,.008);
+
+  eye=min(sdSphere(h-vec3(-.043,.0,.1),.018),sdSphere(h-vec3(.043,.0,.1),.018));
+  dark=min(sdEllipsoid(h-vec3(-.043,.005,.09),vec3(.032,.028,.015)),
+           sdEllipsoid(h-vec3(.043,.005,.09),vec3(.032,.028,.015)));
+
+  // --- LEFT ARM (pose offsets) ---
+  vec3 laO=vec3(0,uALU,uALF);
+  vec3 laEl=vec3(-.28,1.18,.06)+laO*.5;
+  vec3 laWr=vec3(-.30,.94,.22)+laO;
+  vec3 laHd=vec3(-.30,.90,.26)+laO*1.1;
+  float la=sdCapsule(q,vec3(-.2,1.35,0),laEl,.038);
+  la=smin(la,sdSphere(q-laEl,.035),.02);
+  la=smin(la,sdCapsule(q,laEl,laWr,.03),.025);
+  la=smin(la,sdEllipsoid(q-laHd,vec3(.028,.038,.018)),.02);
+  vec3 lfb=laO*1.1,lft=laO*1.3;
+  la=smin(la,sdCapsule(q,vec3(-.31,.88,.27)+lfb,vec3(-.33,.80,.32)+lft,.008),.01);
+  la=smin(la,sdCapsule(q,vec3(-.30,.88,.27)+lfb,vec3(-.31,.79,.33)+lft,.007),.01);
+  la=smin(la,sdCapsule(q,vec3(-.29,.88,.27)+lfb,vec3(-.29,.80,.32)+lft,.007),.01);
+  la=smin(la,sdCapsule(q,vec3(-.28,.89,.26)+lfb,vec3(-.27,.82,.30)+lft,.006),.01);
+  skin=smin(skin,la,.06);
+
+  // --- RIGHT ARM (pose offsets) ---
+  vec3 raO=vec3(0,uARU,uARF);
+  vec3 raEl=vec3(.25,1.12,-.01)+raO*.5;
+  vec3 raWr=vec3(.23,.88,.02)+raO;
+  vec3 raHd=vec3(.23,.84,.03)+raO*1.1;
+  float ra=sdCapsule(q,vec3(.2,1.35,0),raEl,.04);
+  ra=smin(ra,sdSphere(q-raEl,.035),.03);
+  ra=smin(ra,sdCapsule(q,raEl,raWr,.032),.03);
+  ra=smin(ra,sdEllipsoid(q-raHd,vec3(.025,.035,.018)),.025);
+  vec3 rfb=raO*1.1,rft=raO*1.3;
+  ra=smin(ra,sdCapsule(q,vec3(.22,.82,.04)+rfb,vec3(.21,.76,.07)+rft,.007),.015);
+  ra=smin(ra,sdCapsule(q,vec3(.24,.82,.04)+rfb,vec3(.24,.77,.08)+rft,.007),.015);
+  skin=smin(skin,ra,.06);
+  bone=sdCapsule(q,vec3(.26,1.08,-.005)+raO*.4,vec3(.24,.92,.015)+raO*.8,.007);
+
+  // --- LEGS ---
+  for(float sx=-1.;sx<=1.;sx+=2.){
+    float leg=sdCapsule(q,vec3(sx*.08,.82,0),vec3(sx*.09,.50,.01),.052);
+    leg=smin(leg,sdSphere(q-vec3(sx*.09,.50,.02),.042),.02);
+    leg=smin(leg,sdCapsule(q,vec3(sx*.09,.48,.02),vec3(sx*.09,.10,.01),.036),.025);
+    leg=smin(leg,sdSphere(q-vec3(sx*.09,.10,.01),.030),.015);
+    leg=smin(leg,sdEllipsoid(q-vec3(sx*.09,.04,.045),vec3(.032,.025,.065)),.02);
+    skin=smin(skin,leg,.07);
+  }
+
+  // --- WOUNDS ---
+  wound=sdEllipsoid(q-vec3(-.06,1.05,.12),vec3(.045,.035,.03));
+  skin=ssub(sdEllipsoid(q-vec3(-.06,1.05,.13),vec3(.04,.03,.03)),skin,.015);
+  skin=ssub(sdSphere(q-vec3(.17,1.35,.03),.02),skin,.01);
+  wound=min(wound,sdSphere(q-vec3(.17,1.35,.03),.018));
+  skin=ssub(sdSphere(h-vec3(.08,-.07,.06),.018),skin,.008);
+  wound=min(wound,sdSphere(h-vec3(.08,-.07,.06),.016));
+
+  // Ribs
+  for(float i=0.;i<4.;i++){
+    float ry=1.14-i*.038;
+    bone=min(bone,sdTorus(q-vec3(-.02,ry,.02),.085,.005));
+  }
+
+  // Spine bumps
+  for(float i=0.;i<6.;i++){
+    skin=smin(skin,sdSphere(q-vec3(0,1.0+i*.07,-.09),.012),.01);
+  }
+
+  // Torn shirt
+  float shirt=sdCapsule(q,vec3(0,1.0,0),vec3(0,1.35,0),.175);
+  shirt=max(shirt,-sdCapsule(q,vec3(0,1.0,0),vec3(0,1.35,0),.165));
+  shirt=max(shirt,sdBox(q-vec3(-.12,1.15,.05),vec3(.08,.12,.08)));
+  cloth=shirt;
+  float pants=sdCapsule(q,vec3(0,.7,0),vec3(0,.9,0),.145);
+  pants=max(pants,-sdCapsule(q,vec3(0,.7,0),vec3(0,.9,0),.135));
+  cloth=min(cloth,pants);
+
+  float md=skin;float mid=0.;
+  if(wound<md){md=wound;mid=1.;}
+  if(eye<md){md=eye;mid=2.;}
+  if(dark<md){md=dark;mid=3.;}
+  if(bone<md){md=bone;mid=4.;}
+  if(cloth<md){md=cloth;mid=5.;}
+  return vec2(md,mid);
+}
+
+// ---- Ray marching ----
+vec3 calcNormal(vec3 p){
+  vec2 e=vec2(.0005,0);
+  return normalize(vec3(
+    map(p+e.xyy).x-map(p-e.xyy).x,
+    map(p+e.yxy).x-map(p-e.yxy).x,
+    map(p+e.yyx).x-map(p-e.yyx).x));
+}
+
+float shadow(vec3 ro,vec3 rd,float tmin,float tmax){
+  float res=1.;float t=tmin;
+  for(int i=0;i<32;i++){
+    float h=map(ro+rd*t).x;
+    res=min(res,8.*h/t);
+    t+=clamp(h,.01,.2);
+    if(h<.001||t>tmax)break;
+  }
+  return clamp(res,0.,1.);
+}
+
+float ao(vec3 p,vec3 n){
+  float o=0.,s=1.;
+  for(int i=0;i<5;i++){
+    float d=.02+.06*float(i);
+    o+=s*(d-map(p+n*d).x);
+    s*=.5;
+  }
+  return clamp(1.-2.*o,0.,1.);
+}
+
+vec3 matColor(float id,vec3 p){
+  if(id<.5)return uSkinCol;
+  if(id<1.5)return uWoundCol;
+  if(id<2.5)return uEyeCol;
+  if(id<3.5)return uSocketCol;
+  if(id<4.5)return uBoneCol;
+  return uClothCol;
+}
+
+float matRough(float id){
+  float r;
+  if(id<.5)r=.82;
+  else if(id<1.5)r=.65;
+  else if(id<2.5)r=.3;
+  else if(id<3.5)r=.95;
+  else if(id<4.5)r=.55;
+  else r=.95;
+  return r*uRoughMul;
+}
+
+mat3 setCamera(vec3 ro,vec3 ta){
+  vec3 cw=normalize(ta-ro);
+  vec3 cu=normalize(cross(cw,vec3(0,1,0)));
+  vec3 cv=cross(cu,cw);
+  return mat3(cu,cv,cw);
+}
+
+void main(){
+  vec2 uv=(gl_FragCoord.xy-.5*R)/R.y;
+  vec3 ro=camPos;
+  vec3 ta=camTarget;
+  mat3 ca=setCamera(ro,ta);
+  vec3 rd=ca*normalize(vec3(uv,1.5));
+
+  vec3 col=mix(vec3(.08,.08,.12),vec3(.12,.12,.18),uv.y+.5);
+
+  float t=0.;float mid=-1.;
+  for(int i=0;i<128;i++){
+    vec3 p=ro+rd*t;
+    vec2 h=map(p);
+    if(h.x<.001){mid=h.y;break;}
+    t+=h.x*.7;
+    if(t>20.)break;
+  }
+
+  float marchT=t;
+
+  if(mid>=0.){
+    vec3 p=ro+rd*t;
+    vec3 n=calcNormal(p);
+
+    // Debug normals
+    if(uNormOn==1){
+      col=n*.5+.5;
+    } else {
+      vec3 baseCol=matColor(mid,p);
+      float rough=matRough(mid);
+
+      if(mid<.5){
+        float v=sin(p.x*40.)*sin(p.y*30.)*sin(p.z*35.)*.04;
+        baseCol+=vec3(v,v*.7,v*.5);
+        if(abs(p.x)>.15&&p.y>.8&&p.y<1.4)baseCol.b+=.04;
+        if(p.y<.15)baseCol*=.8;
+      }
+      if(mid>1.5&&mid<2.5){
+        baseCol+=vec3(.1,.12,0)*(.5+.5*sin(T*uGlowSpd));
+      }
+
+      vec3 sunDir=uSunDir;
+      vec3 sunCol=uSunCol*uSunInt;
+      vec3 fillDir=normalize(vec3(-.4,.5,-.3));
+      vec3 fillCol=vec3(.4,.45,.6)*uFillInt;
+
+      float diff=max(dot(n,sunDir),0.);
+      float sh=shadow(p+n*.002,sunDir,.01,5.);
+      diff*=sh;
+      float spec=pow(max(dot(reflect(-sunDir,n),normalize(ro-p)),0.),8./(rough*rough+.01));
+      float occ=ao(p,n);
+      float fres=pow(1.-max(dot(n,normalize(ro-p)),0.),3.);
+
+      float sss=0.;
+      if(mid<.5){
+        float thickness=map(p-sunDir*.05).x;
+        sss=max(0.,.1-thickness)*3.;
+      }
+
+      vec3 lin=vec3(0);
+      lin+=sunCol*diff;
+      lin+=fillCol*max(dot(n,fillDir),0.);
+      lin+=vec3(.12,.13,.18)*occ*uAmbInt;
+      lin+=sunCol*spec*(1.-rough)*.5;
+      lin+=vec3(.08,.04,.03)*sss;
+      lin+=vec3(.15,.18,.25)*fres*.3;
+
+      col=baseCol*lin;
+    }
+  }
+
+  // Ground plane
+  {
+    float gnd=-(ro.y)/rd.y;
+    if(gnd>0.&&(mid<0.||gnd<marchT)){
+      vec3 gp=ro+rd*gnd;
+      float sh=shadow(gp+vec3(0,.001,0),uSunDir,.01,5.);
+      vec3 gc=vec3(.12,.12,.14)*(.3+.7*sh);
+      float dist=length(gp.xz);
+      float fade=1.-smoothstep(3.,10.,dist);
+
+      // Grid overlay
+      if(uGridOn==1){
+        float scale=2.;
+        vec2 g1=abs(fract(gp.xz*scale)-.5);
+        float line1=min(g1.x,g1.y);
+        float w1=.025/(1.+dist*.25);
+        float mask1=1.-smoothstep(0.,w1,line1);
+
+        vec2 g2=abs(fract(gp.xz)-.5);
+        float line2=min(g2.x,g2.y);
+        float w2=.035/(1.+dist*.2);
+        float mask2=1.-smoothstep(0.,w2,line2);
+
+        float gridFade=1.-smoothstep(4.,12.,dist);
+        gc=mix(gc,vec3(0,1.,.78)*.12,mask1*gridFade);
+        gc=mix(gc,vec3(0,1.,.78)*.25,mask2*gridFade);
+      }
+
+      if(mid<0.){
+        col=gc*fade+col*(1.-fade);
+        marchT=gnd;
+      } else {
+        col=mix(col,gc,fade*step(gnd,marchT));
+      }
+    }
+  }
+
+  // Skip post-processing for normals debug
+  if(uNormOn==0){
+    // Fog
+    if(uFogOn==1&&marchT<20.){
+      vec3 fogCol=vec3(.08,.08,.12);
+      float ff=1.-exp(-uFogDens*marchT);
+      col=mix(col,fogCol,clamp(ff,0.,1.));
+    }
+
+    // Tone map
+    col*=uExposure;
+    col=col/(1.+col);
+    col=pow(col,vec3(uGamma));
+
+    // Vignette
+    if(uVigOn==1){
+      vec2 vc=gl_FragCoord.xy/R-.5;
+      col*=clamp(1.-dot(vc,vc)*uVigStr*2.,0.,1.);
+    }
+  }
+
+  O=vec4(col,1);
+}`;
+
+/* ===== Compile ===== */
+function compile(src,type){
+  const s=gl.createShader(type);
+  gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s));return null;}
+  return s;
+}
+
+const prog=gl.createProgram();
+gl.attachShader(prog,compile(vs,gl.VERTEX_SHADER));
+gl.attachShader(prog,compile(fs,gl.FRAGMENT_SHADER));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+/* Fullscreen quad */
+const buf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+const loc=gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(loc);
+gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+/* ===== Uniform locations ===== */
+function u(name){return gl.getUniformLocation(prog,name);}
+
+const U={
+  R:u('R'),T:u('T'),camPos:u('camPos'),camTarget:u('camTarget'),doAnim:u('doAnim'),
+  skinCol:u('uSkinCol'),woundCol:u('uWoundCol'),eyeCol:u('uEyeCol'),
+  socketCol:u('uSocketCol'),boneCol:u('uBoneCol'),clothCol:u('uClothCol'),
+  roughMul:u('uRoughMul'),
+  sunDir:u('uSunDir'),sunCol:u('uSunCol'),sunInt:u('uSunInt'),
+  fillInt:u('uFillInt'),ambInt:u('uAmbInt'),
+  animSpd:u('uAnimSpd'),swayAmt:u('uSwayAmt'),bobAmt:u('uBobAmt'),glowSpd:u('uGlowSpd'),
+  exposure:u('uExposure'),gamma:u('uGamma'),
+  fogOn:u('uFogOn'),fogDens:u('uFogDens'),
+  vigOn:u('uVigOn'),vigStr:u('uVigStr'),
+  gridOn:u('uGridOn'),normOn:u('uNormOn'),
+  aLF:u('uALF'),aLU:u('uALU'),aRF:u('uARF'),aRU:u('uARU'),
+  lean:u('uLean'),hunch:u('uHunch')
+};
+
+/* ===== Bind controls ===== */
+bindSlider('sRough','vRough',2,v=>S.roughMul=v);
+bindSlider('sAzim','vAzim',0,v=>S.sunAzim=v);
+bindSlider('sElev','vElev',0,v=>S.sunElev=v);
+bindSlider('sSunI','vSunI',1,v=>S.sunInt=v);
+bindSlider('sFill','vFill',2,v=>S.fillInt=v);
+bindSlider('sAmb','vAmb',2,v=>S.ambInt=v);
+bindSlider('sSpd','vSpd',2,v=>S.animSpd=v);
+bindSlider('sSway','vSway',2,v=>S.swayAmt=v);
+bindSlider('sBob','vBob',2,v=>S.bobAmt=v);
+bindSlider('sGlow','vGlow',1,v=>S.glowSpd=v);
+bindSlider('sExpo','vExpo',2,v=>S.exposure=v);
+bindSlider('sGam','vGam',2,v=>S.gamma=v);
+bindSlider('sFogD','vFogD',2,v=>S.fogDens=v);
+bindSlider('sVigS','vVigS',2,v=>S.vigStr=v);
+
+bindColor('cSkin','skin');
+bindColor('cWound','wound');
+bindColor('cEye','eye');
+bindColor('cSocket','socket');
+bindColor('cBone','bone');
+bindColor('cCloth','cloth');
+bindColor('cSun','sun');
+
+/* ===== Render loop ===== */
+function frame(now){
+  requestAnimationFrame(frame);
+  const t=(now||0)/1000;
+
+  // FPS
+  fpsSamples.push(now);
+  while(fpsSamples.length>0&&fpsSamples[0]<now-500) fpsSamples.shift();
+  if(now-fpsLast>500){
+    fpsLast=now;
+    document.getElementById('fps').textContent=(fpsSamples.length*2)+' FPS';
+  }
+
+  // Spin
+  if(spin) camAngle+=.003;
+
+  // Pose interpolation
+  for(const k in poseCur) poseCur[k]+=(poseTarget[k]-poseCur[k])*.06;
+
+  // Sun direction from azimuth/elevation
+  const az=S.sunAzim*Math.PI/180;
+  const el=S.sunElev*Math.PI/180;
+  const sd=[Math.cos(el)*Math.sin(az),Math.sin(el),Math.cos(el)*Math.cos(az)];
+
+  const cx=Math.sin(camAngle)*camDist;
+  const cz=Math.cos(camAngle)*camDist;
+
+  // Set uniforms
+  gl.uniform2f(U.R,canvas.width,canvas.height);
+  gl.uniform1f(U.T,t);
+  gl.uniform3f(U.camPos,cx,camY,cz);
+  gl.uniform3f(U.camTarget,0,1.1,0);
+  gl.uniform1i(U.doAnim,anim?1:0);
+
+  gl.uniform3fv(U.skinCol,C.skin);
+  gl.uniform3fv(U.woundCol,C.wound);
+  gl.uniform3fv(U.eyeCol,C.eye);
+  gl.uniform3fv(U.socketCol,C.socket);
+  gl.uniform3fv(U.boneCol,C.bone);
+  gl.uniform3fv(U.clothCol,C.cloth);
+  gl.uniform1f(U.roughMul,S.roughMul);
+
+  gl.uniform3fv(U.sunDir,sd);
+  gl.uniform3fv(U.sunCol,C.sun);
+  gl.uniform1f(U.sunInt,S.sunInt);
+  gl.uniform1f(U.fillInt,S.fillInt);
+  gl.uniform1f(U.ambInt,S.ambInt);
+
+  gl.uniform1f(U.animSpd,S.animSpd);
+  gl.uniform1f(U.swayAmt,S.swayAmt);
+  gl.uniform1f(U.bobAmt,S.bobAmt);
+  gl.uniform1f(U.glowSpd,S.glowSpd);
+
+  gl.uniform1f(U.exposure,S.exposure);
+  gl.uniform1f(U.gamma,S.gamma);
+  gl.uniform1i(U.fogOn,fogOn?1:0);
+  gl.uniform1f(U.fogDens,S.fogDens);
+  gl.uniform1i(U.vigOn,vigOn?1:0);
+  gl.uniform1f(U.vigStr,S.vigStr);
+
+  gl.uniform1i(U.gridOn,gridOn?1:0);
+  gl.uniform1i(U.normOn,normOn?1:0);
+
+  gl.uniform1f(U.aLF,poseCur.aLF);
+  gl.uniform1f(U.aLU,poseCur.aLU);
+  gl.uniform1f(U.aRF,poseCur.aRF);
+  gl.uniform1f(U.aRU,poseCur.aRU);
+  gl.uniform1f(U.lean,poseCur.lean);
+  gl.uniform1f(U.hunch,poseCur.hunch);
+
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+
+  // Screenshot capture
+  if(captureNext){
+    captureNext=false;
+    canvas.toBlob(blob=>{
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download='zombie-3d-'+Date.now()+'.png';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    },'image/png');
+  }
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
