@@ -3780,6 +3780,11 @@ if (args[0] === "-v" || args[0] === "--version") {
   }
   process.exit(0);
 }
-else if (args.length === 0) mainMenu();
+else if (args.length === 0) {
+  // If launched as "nexus" (not "darknode"), go straight to TUI
+  const binName = require("path").basename(process.argv[1], ".js");
+  if (binName === "nexus") cli(["nexus", "--tui"]).then(() => process.exit(0)).catch((e) => { console.error("  " + red("error: " + e.message)); process.exit(1); });
+  else mainMenu();
+}
 else if (args[0] === "-h" || args[0] === "--help") usage();
 else cli(args).then(() => process.exit(0)).catch((e) => { console.error("  " + red("error: " + e.message)); process.exit(1); });
