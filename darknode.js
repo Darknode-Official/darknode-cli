@@ -2552,7 +2552,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     process.on("exit", cleanup); process.on("SIGINT", onSigint); process.on("SIGTERM", onSigterm); process.on("uncaughtException", onFatal); process.on("unhandledRejection", onRejection);
     // ---- engine turn ----
     const submit = (text) => {
-      if (costCap && sess.cost >= costCap) { transcript.push({ role: "system", text: "budget reached ($" + sess.cost.toFixed(4) + " ≥ cap $" + costCap.toFixed(2) + ") — raise it with /budget <amount> to continue" }); render(); return; }
+      // Only enforce budget cap on API-billed engines, not Claude Max subscription
+      const isSubEngine = engine === "claude" && !process.env.ANTHROPIC_API_KEY;
+      if (costCap && sess.cost >= costCap && !isSubEngine) { transcript.push({ role: "system", text: "budget reached ($" + sess.cost.toFixed(4) + " ≥ cap $" + costCap.toFixed(2) + ") — raise it with /budget <amount> to continue" }); render(); return; }
       if (hooks) { const hr = runHooks(hooks, "UserPromptSubmit", { NEXUS_ENGINE: engine, NEXUS_PROMPT: text }, cwd); if (hr.block) { transcript.push({ role: "user", text }); transcript.push({ role: "system", text: "blocked by UserPromptSubmit hook" + (hr.out ? ": " + hr.out : "") }); render(); return; } }
       history.push(text); hIdx = history.length; scroll = 0;
       transcript.push({ role: "user", text });
