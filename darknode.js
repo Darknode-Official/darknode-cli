@@ -2088,7 +2088,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const MODES = [{ k: "normal", c: gray }, { k: "auto-accept", c: green }, { k: "plan", c: cyan }];
     const compact = { on: false, f: 0, iv: null };
     const history = []; let hIdx = -1;
-    let ctl = null, costCap = 2, // default $2 cap per session — /budget to change rate = null, warned50 = false, notify = false, redact = false, offline = false, guard = "enforce", lean = true, // default ON to save tokens —  /lean off to disable effort = "", fallback = "", style = "default"; // …, lean, effort, fallback model, output style
+    let ctl = null, costCap = 2, rate = null, warned50 = false, notify = false, redact = false, offline = false, guard = "enforce", lean = true, effort = "", fallback = "", style = "default";
     const READONLY_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"]; // disallowed to enforce read-only (plan mode / /bench)
     const impact = { localTurns: 0, cloudTurns: 0, localTok: 0, cloudInTok: 0, cloudOutTok: 0, cloudCost: 0, ctxSavedTok: 0, coworkSaved: 0, delegated: 0, cachedHits: 0, cachedSaved: 0, squeezeTok: 0 }; // Impact Receipt tallies
     let cacheOn = true; // response cache: serve exact-repeat read-only answers for free
