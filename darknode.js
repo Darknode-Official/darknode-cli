@@ -1216,7 +1216,8 @@ async function nexusSetup(opts) {
 }
 
 // ---------- AI coder (terminal AI coding agent, local Ollama, dependency-free) ----------
-const { ollamaChat, ollamaTags, pickCoderModel, apiConfigured, API_BASE, hasAnthropic } = require("./lib/nexus/ollama"); // local/any-model client (lib/ollama.js)
+const { ollamaChat, ollamaTags, pickCoderModel, apiConfigured, ensureDarknodeModel, API_BASE, hasAnthropic } = require("./lib/nexus/ollama"); // local/any-model client (lib/ollama.js)
+let darknodeAutoTried = false; // module-level guard: attempt the first-run darknode auto-install at most once per process
 const CODER_SCHEMA = { type: "object", properties: { thought: { type: "string" }, action: { type: "string", enum: ["tool", "final"] }, tool: { type: "string" }, args: { type: "object" }, final: { type: "string" } }, required: ["thought", "action"] };
 // Weak local models routinely mangle the tool schema — packing args into the
 // tool name ("list_dir{/home/x}", "run_command{ls -l}", "sysinfo{}", "discover(query:sysinfo)"),
@@ -1393,7 +1394,17 @@ async function aiCoder(argv) {
   if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag);
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
   let model = null, modelList = [];
-  if (engine === "ollama") { modelList = await ollamaTags(); if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
+  if (engine === "ollama") { modelList = await ollamaTags();
+    // First run: auto-build the local "darknode" model when it's the effective default (nothing else chosen/installed) or explicitly requested, instead of erroring out.
+    if (!apiConfigured() && !darknodeAutoTried) {
+      const preModel = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList);
+      if (!preModel || /^darknode(:|$)/i.test(preModel)) {
+        darknodeAutoTried = true;
+        const dlog = (s) => { if (!printMode) console.log("  " + gray(s)); };
+        if (await ensureOllamaServer(dlog)) { if (await ensureDarknodeModel(dlog)) modelList = await ollamaTags(); }
+      }
+    }
+    if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
   if (!printMode) {
     banner();
     const W = 56, bx = (s) => cyan("│ ") + s + " ".repeat(Math.max(0, W - 1 - s.length)) + cyan("│");
