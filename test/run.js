@@ -57,8 +57,11 @@ group("parsers (gemini/codex structured output → real tokens)");
   eq("gemini text", g.text, "Here is the fix."); eq("gemini in", g.inTok, 1200); eq("gemini out", g.outTok, 400); eq("gemini model", g.model, "gemini-2.5-pro");
   ok("gemini garbage → null", geminiParse("not json") === null);
   const c = codexParse([JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Done." } }), JSON.stringify({ type: "turn.completed", usage: { input_tokens: 2100, cached_input_tokens: 512, output_tokens: 230 } })].join("\n"));
-  eq("codex text", c.text, "Done."); eq("codex in", c.inTok, 2612); eq("codex out", c.outTok, 230);
+  eq("codex text", c.text, "Done."); eq("codex in (cached is part of input, not extra)", c.inTok, 2100); eq("codex out", c.outTok, 230);
   ok("codex garbage → null", codexParse("hello\nworld") === null);
+  const cf = codexParse(['{"type":"turn.started"}', '{"type":"error","message":"Reconnecting... 1/5 (unexpected status 404)"}', '{"type":"turn.failed","error":{"message":"unexpected status 404 Not Found: The model `x` does not exist or you do not have access to it., url: https://example/codex, request id: abc"}}'].join("\n"));
+  eq("codex failed turn → clean error, no raw JSON", [cf.text, cf.error], ["", "unexpected status 404 Not Found: The model `x` does not exist or you do not have access to it."]);
+  eq("codex success has no error", c.error, "");
 }
 
 group("engines (registry + NO cross-engine flag leakage)");
@@ -962,6 +965,21 @@ group("compliance bundle (SOC2 export)");
   ok("unsigned bundle: sigOk is null", (() => { const u = buildBundle(d, { operator: "alice", now: "2026-08-12T12:00:00Z" }); return u.signature === undefined && verifyBundle(u).sigOk === null && verifyBundle(u).hashOk === true; })());
   ok("markdown render has the key sections", (() => { const md = renderBundleMd(b); return md.includes("# Darknode compliance report") && md.includes("Operator:** alice") && md.includes("Manifest (SHA-256)") && md.includes(b.integrity.hash); })());
   ok("deterministic with fixed now + injected key", buildBundle(d, { operator: "alice", team: "platform", now: "2026-08-12T12:00:00Z", signingKey: "secret" }).integrity.hash === b.integrity.hash);
+  try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
+}
+
+{
+  const { codexLocal } = require("../lib/nexus/codex-local");
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-codex-"));
+  fs.writeFileSync(path.join(d, "config.toml"), 'model = "gpt-a"\nmodel_reasoning_effort = "low"\n[profiles.fast]\nmodel = "gpt-profile"\n');
+  fs.writeFileSync(path.join(d, "models_cache.json"), JSON.stringify({ models: [{ slug: "gpt-b", visibility: "list", priority: 9 }, { slug: "hidden", visibility: "hide", priority: 1 }, { slug: "gpt-a", visibility: "list", priority: 2 }] }));
+  fs.writeFileSync(path.join(d, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", OPENAI_API_KEY: null, tokens: { access_token: "SECRET" } }));
+  const c = codexLocal(d);
+  eq("codex default model from top-level config, not a profile", c.model, "gpt-a");
+  eq("codex models: listed only, by priority", c.models, ["gpt-a", "gpt-b"]);
+  eq("codex auth mode", c.authMode, "chatgpt");
+  ok("codex tokens never read out", !JSON.stringify(c).includes("SECRET"));
+  eq("codex missing home keeps defaults", codexLocal(path.join(d, "none")), { model: "", models: [], authMode: "" });
   try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
 }
 
