@@ -2083,6 +2083,12 @@ const NEXUS_TIPS = [
 const { ENGINES, ENGINE_ORDER, engineCap, ENGINE_TIPS } = require("./lib/nexus/engines"); // multi-AI registry (lib/engines.js)
 const engineAvail = (e) => { const m = ENGINES[e]; if (!m) return false; return m.kind === "local" ? true : hasBin(m.bin); }; // stays here — needs hasBin
 const { geminiParse, codexParse } = require("./lib/nexus/parsers"); // structured-output parsers (lib/parsers.js)
+// Use the local Codex CLI's own default model and model list (~/.codex) instead of the static catalog,
+// and note whether it is signed in with a ChatGPT plan (billed by the plan, not per token).
+const CODEX_LOCAL = require("./lib/nexus/codex-local").codexLocal();
+if (CODEX_LOCAL.model) ENGINES.codex.model = CODEX_LOCAL.model;
+if (CODEX_LOCAL.models.length) ENGINES.codex.models = CODEX_LOCAL.models;
+const onPlan = (e) => (e === "claude" && !process.env.ANTHROPIC_API_KEY) || (e === "codex" && CODEX_LOCAL.authMode === "chatgpt"); // flat plan, not per-token billing
 function nexusTui(engine, cwd, nexusMd, autoResume) {
   return new Promise((resolve) => {
     const out = process.stdout, ESC = "\x1b";
@@ -2367,7 +2373,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const parts = [bold(sess.model || engine)];
       if (gitBranch) parts.push(blue("⌥ " + gitBranch));
       parts.push(gray("ctx ") + pc(pct + "%") + " " + bar, gray("↑") + fmtK(sess.inTok) + gray(" ↓") + fmtK(sess.outTok) + gray(" tok"));
-      if (PAID[engine]) { const isSubscription = !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY; if (isSubscription) { parts.push(green("included in plan")); } else { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); } }
+      if (PAID[engine]) { const isSubscription = onPlan(engine) || (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY); if (isSubscription) { parts.push(green("included in plan")); } else { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); } }
       else parts.push(apiConfigured() ? cyan("api") : green("local · free"));
       if (runningShells) parts.push(yellow(runningShells + " shell" + (runningShells > 1 ? "s" : "")));
       if (bgJobs.running()) parts.push(cyan(bgJobs.running() + " bg"));
@@ -2607,7 +2613,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // ---- engine turn ----
     const submit = (text) => {
       // Only enforce budget cap on API-billed engines, not Claude Max subscription
-      const isSubEngine = engine === "claude" && !process.env.ANTHROPIC_API_KEY;
+      const isSubEngine = onPlan(engine);
       if (costCap && sess.cost >= costCap && !isSubEngine) { transcript.push({ role: "system", text: "budget reached ($" + sess.cost.toFixed(4) + " ≥ cap $" + costCap.toFixed(2) + ") — raise it with /budget <amount> to continue" }); render(); return; }
       if (hooks) { const hr = runHooks(hooks, "UserPromptSubmit", { NEXUS_ENGINE: engine, NEXUS_PROMPT: text }, cwd); if (hr.block) { transcript.push({ role: "user", text }); transcript.push({ role: "system", text: "blocked by UserPromptSubmit hook" + (hr.out ? ": " + hr.out : "") }); render(); return; } }
       history.push(text); hIdx = history.length; scroll = 0;
@@ -2729,7 +2735,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           if (jsonProto) {
             const parsed = eng.proto === "gemini-json" ? geminiParse(raw) : codexParse(raw);
             if (parsed) {
-              display = parsed.text || raw;
+              display = parsed.text || (parsed.error ? engine + " error: " + parsed.error : raw);
               if (parsed.inTok || parsed.outTok) { inD = parsed.inTok || Math.ceil(promptText.length / 4); outD = parsed.outTok || Math.ceil(display.length / 4); } // REAL usage
               if (parsed.model && (!sess.model || sess.model === engine)) sess.model = parsed.model;
             }
@@ -2737,7 +2743,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           }
           if (inD == null) { inD = Math.ceil(promptText.length / 4); outD = Math.ceil(display.length / 4); } // estimate fallback
           sess.inTok += inD; sess.outTok += outD; sess.ctxUsed = sess.inTok + sess.outTok;
-          if (PAID[engine]) { const pm = mdl || eng.model || ""; const pr = priceOf(pm); sess.cost += (inD * pr.in + outD * pr.out) / 1e6; } // priced from the table → shown as ~$
+          if (PAID[engine] && !onPlan(engine)) { const pm = mdl || eng.model || ""; const pr = priceOf(pm); sess.cost += (inD * pr.in + outD * pr.out) / 1e6; } // priced from the table → shown as ~$ (a plan login costs nothing per turn)
           finish(res);
         });
       } else { // ollama — LOCAL agent with full device access (read/write/edit/list/run_command)
@@ -3190,7 +3196,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
               const res = await runEngineTask(engine, prompt, cwd, true, false, null, ctl, mdl);
               let out = (res.output || "").trim(); const proto = ENGINES[engine] && ENGINES[engine].proto;
               if (proto === "gemini-json") { const p = geminiParse(out); if (p && p.text) out = p.text; }
-              else if (proto === "codex-json") { const p = codexParse(out); if (p && p.text) out = p.text; }
+              else if (proto === "codex-json") { const p = codexParse(out); if (p && p.text) out = p.text; else if (p && p.error) out = "codex error: " + p.error; }
               return out;
             } catch (e) { return "(error: " + (e && e.message || e) + ")"; }
           };
@@ -3236,7 +3242,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
                 const res = await runEngineTask(r.engine, prompt, cwd, autonomous, false, null, ctl, r.model || undefined);
                 let out = (res.output || "").trim(); const proto = ENGINES[r.engine] && ENGINES[r.engine].proto;
                 if (proto === "gemini-json") { const p = geminiParse(out); if (p && p.text) out = p.text; }
-                else if (proto === "codex-json") { const p = codexParse(out); if (p && p.text) out = p.text; }
+                else if (proto === "codex-json") { const p = codexParse(out); if (p && p.text) out = p.text; else if (p && p.error) out = "codex error: " + p.error; }
                 return out;
               } catch (e) { return "(error: " + (e && e.message || e) + ")"; }
             };
