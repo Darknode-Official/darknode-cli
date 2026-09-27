@@ -1,0 +1,1 @@
+{ "id": "multi-file", "prompt": "Add a multiply feature spanning two files. In math.js, add and export a function multiply(a, b). In calc.js, add and export a function product(nums) that returns the product of an array of numbers using multiply from math.js (product of an empty array is 1). Do not break the existing total(). Verify with: node test.js", "timeout": 300 }

@@ -1,0 +1,1 @@
+{ "id": "fix-csv", "prompt": "parseCSV(text) in csv.js should split rows on newlines and fields on commas, but it mishandles edge cases: empty input must return [] (not [[\"\"]]), and a trailing newline must not produce an extra empty row. Fix csv.js so the tests pass. Verify with: node test.js", "timeout": 240 }
