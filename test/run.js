@@ -1112,6 +1112,18 @@ group("compliance bundle (SOC2 export)");
   eq("openai tool result shape", NT.openaiToolResult("c1", "out"), { role: "tool", tool_call_id: "c1", content: "out" });
 }
 
+// ===================== default local coder (qwen2.5-coder ships with Nexus) =====================
+{
+  const { chooseCoderToPull, DEFAULT_CODER, pickCoderModel } = require("../lib/nexus/ollama");
+  eq("default coder is qwen2.5-coder", DEFAULT_CODER, "qwen2.5-coder");
+  eq("no models installed -> pull the default coder", chooseCoderToPull([]), "qwen2.5-coder");
+  ok("qwen2.5-coder installed -> pull nothing", chooseCoderToPull(["qwen2.5-coder:latest"]) === null);
+  ok("gpt-oss installed -> pull nothing", chooseCoderToPull(["gpt-oss:20b"]) === null);
+  ok("darknode persona counts as capable -> pull nothing", chooseCoderToPull(["darknode-13b:latest"]) === null);
+  eq("only a general chat model -> still pull the coder", chooseCoderToPull(["llama3.1:8b", "phi3:mini"]), "qwen2.5-coder");
+  eq("pickCoderModel returns qwen2.5-coder when it's what's installed", pickCoderModel(["qwen2.5-coder:7b"]), "qwen2.5-coder:7b");
+}
+
 (async () => {
   // native tool loop orchestrator (async, dependency-injected fake model) — proves the
   // edit->run->observe cycle: run tools, feed results back, then finalize.
