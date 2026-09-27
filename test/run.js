@@ -983,5 +983,102 @@ group("compliance bundle (SOC2 export)");
   try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
 }
 
+{
+  const { buildRepoMap, renderRepoMap, extractSymbols, isSourceFile, scoreFile, findSymbol } = require("../lib/nexus/repo-map");
+  // symbol extraction per language
+  eq("js: function + class + arrow const", extractSymbols("a.js", "export function foo(){}\nclass Bar{}\nconst baz = () => 1\n").map((s) => s.kind + ":" + s.name), ["fn:foo", "class:Bar", "fn:baz"]);
+  eq("py: def + class with line numbers", extractSymbols("x.py", "import os\n\ndef run(x):\n    pass\nclass Widget:\n    pass\n").map((s) => s.kind + ":" + s.name + "@" + s.line), ["fn:run@3", "class:Widget@5"]);
+  eq("go: func + type struct", extractSymbols("m.go", "func main(){}\ntype Server struct{}\nfunc (s *Server) Do(){}\n").map((s) => s.kind + ":" + s.name), ["fn:main", "type:Server", "fn:Do"]);
+  eq("ts: interface + type alias beyond js", extractSymbols("t.ts", "interface Opt{}\ntype Id = string\nfunction q(){}\n").map((s) => s.kind + ":" + s.name), ["type:Opt", "type:Id", "fn:q"]);
+  eq("unknown extension yields no symbols", extractSymbols("data.bin", "func x(){}"), []);
+  ok("dedups repeated names", extractSymbols("a.js", "function foo(){}\nfunction foo(){}\n").length === 1);
+  ok("skips absurdly long (minified) lines", extractSymbols("a.js", "function keep(){}\n" + "x".repeat(500) + "function skip(){}\n").length === 1);
+  // ignore rules
+  ok("node_modules is not a source file", !isSourceFile("node_modules/x/index.js"));
+  ok("lockfile is not a source file", !isSourceFile("package-lock.json"));
+  ok("minified bundle is not a source file", !isSourceFile("dist/app.min.js"));
+  ok("binary by extension is not a source file", !isSourceFile("assets/logo.png"));
+  ok("plain source file is kept", isSourceFile("src/core/game.js"));
+  // ranking: an entry point with symbols beats a deep test file
+  ok("entry point outranks a test file", scoreFile({ path: "index.js", symbols: [{}, {}] }) > scoreFile({ path: "src/deep/nested/util.test.js", symbols: [{}, {}] }));
+  // full build + render
+  const files = [
+    { path: "./src/index.js", content: "export function main(){ return 1 }\nclass App {}\n" },
+    { path: "node_modules/lib/a.js", content: "function ignored(){}" },
+    { path: "package-lock.json", content: "{}" },
+    { path: "test/index.test.js", content: "function testThing(){}" },
+    { path: "src/util.py", content: "def helper():\n    pass\n" },
+  ];
+  const map = buildRepoMap(files);
+  eq("build ignores node_modules + lockfiles", map.fileCount, 3);
+  ok("counts symbols across languages", map.symbolCount === 4);
+  ok("languages tallied", map.languages.js === 2 && map.languages.py === 1);
+  eq("normalizes ./ prefix and ranks entry point first", map.files[0].path, "src/index.js");
+  const txt = renderRepoMap(map, { maxFiles: 10, maxSymbols: 5 });
+  ok("render has header + entry file + symbol", /Repository map: 3 source files/.test(txt) && txt.includes("src/index.js") && txt.includes("main"));
+  ok("render marks classes/types with *", txt.includes("App*"));
+  eq("empty map renders a placeholder", renderRepoMap(buildRepoMap([])), "(empty repository map)");
+  ok("deterministic output", renderRepoMap(buildRepoMap(files)) === renderRepoMap(buildRepoMap(files)));
+  // symbol navigation
+  const m2 = buildRepoMap([
+    { path: "src/a.js", content: "function handleRequest(){}\nfunction other(){}\n" },
+    { path: "src/b.js", content: "const handleRequestRetry = () => {}\n" },
+  ]);
+  eq("findSymbol exact def first", findSymbol(m2, "handleRequest")[0], { path: "src/a.js", name: "handleRequest", kind: "fn", line: 1 });
+  ok("findSymbol substring is ranked after exact", (() => { const r = findSymbol(m2, "handleRequest"); return r.length === 2 && r[1].name === "handleRequestRetry"; })());
+  eq("findSymbol is case-insensitive", findSymbol(m2, "HANDLEREQUEST")[0].name, "handleRequest");
+  eq("findSymbol miss returns empty", findSymbol(m2, "nope"), []);
+  ok("findSymbol ignores 1-2 char fuzzy noise", findSymbol(m2, "h").length === 0);
+}
+
+{
+  const { applyEdits, applyEditsFlexible, locateFlexible, parsePatch, applyHunks, applyPatch } = require("../lib/nexus/edit");
+  // atomic multi-edit
+  eq("multi-edit applies in order", applyEdits("a b c", [{ find: "a", replace: "x" }, { find: "c", replace: "z" }]).content, "x b z");
+  ok("multi-edit is atomic: one bad edit touches nothing", (() => { const r = applyEdits("a b c", [{ find: "a", replace: "x" }, { find: "ZZZ", replace: "z" }]); return !r.ok && /not present/.test(r.error); })());
+  ok("ambiguous find without replaceAll is an error", !applyEdits("a a a", [{ find: "a", replace: "x" }]).ok);
+  eq("replaceAll replaces every occurrence", applyEdits("a a a", [{ find: "a", replace: "x", replaceAll: true }]).content, "x x x");
+  ok("identical find/replace rejected", !applyEdits("abc", [{ find: "b", replace: "b" }]).ok);
+  ok("empty edits list rejected", !applyEdits("abc", []).ok);
+  // flexible (whitespace-insensitive) single-match fallback
+  const src = "function f() {\n    return   1;\n}\n";
+  const fx = applyEditsFlexible(src, [{ find: "  return 1;", replace: "    return 2;" }]);
+  ok("flexible match applies when only whitespace differs", fx.ok && fx.content.includes("return 2;") && fx.applied[0].mode === "flexible");
+  ok("exact path is preferred and marked exact", (() => { const r = applyEditsFlexible("hello world", [{ find: "world", replace: "there" }]); return r.ok && r.content === "hello there" && r.applied[0].mode === "exact"; })());
+  ok("flexible refuses when the block is ambiguous", (() => { const r = applyEditsFlexible("x=1\nx=1\n", [{ find: " x = 1 ", replace: "x=2" }]); return !r.ok; })());
+  eq("locateFlexible finds a unique indentation-variant block", locateFlexible("a\n   foo()\nb", "foo()").count, 1);
+  eq("locateFlexible reports missing", locateFlexible("a\nb\n", "zzz").count, 0);
+  // unified diff
+  const patch = ["--- a/f.js", "+++ b/f.js", "@@ -1,3 +1,3 @@", " line1", "-line2", "+LINE2", " line3"].join("\n");
+  const pf = parsePatch(patch);
+  eq("parsePatch: one file", pf.length, 1);
+  eq("parsePatch: file name", pf[0].file, "f.js");
+  eq("apply single-file patch anchors on context despite line drift", applyPatch("pre\nline1\nline2\nline3\npost\n", patch).content, "pre\nline1\nLINE2\nline3\npost\n");
+  ok("patch context-not-found is an error", !applyPatch("totally different\n", patch).ok);
+  ok("multi-file patch is parsed into two files", parsePatch(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@", "-a", "+b", "diff --git a/y b/y", "--- a/y", "+++ b/y", "@@", "-c", "+d"].join("\n")).length === 2);
+  eq("applyHunks flexible-anchors a hunk whose context indentation differs", applyHunks("  keep\n    old\n  tail\n", [{ before: ["keep", "old"], after: ["keep", "new"] }]).content, "  keep\n  new\n  tail\n");
+}
+
+{
+  const { detectProjectCommands, pickVerify, detectPackageManager } = require("../lib/nexus/verify");
+  const pj = (obj) => ({ "package.json": JSON.stringify(obj) });
+  eq("npm test from package.json scripts", detectProjectCommands(["package.json"], pj({ scripts: { test: "node t.js", build: "tsc" } })).test, "npm test");
+  eq("pnpm run build when pnpm lock present", detectProjectCommands(["package.json", "pnpm-lock.yaml"], pj({ scripts: { build: "vite build" } })).build, "pnpm run build");
+  eq("yarn test invocation", detectProjectCommands(["package.json", "yarn.lock"], pj({ scripts: { test: "jest" } })).test, "yarn test");
+  eq("tsconfig implies a typecheck command", detectProjectCommands(["package.json", "tsconfig.json"], pj({ scripts: {} })).typecheck, "npx tsc --noEmit");
+  eq("python: pytest from pyproject", detectProjectCommands(["pyproject.toml"], {}).test, "pytest -q");
+  eq("python: pytest from a tests dir", detectProjectCommands(["tests", "app.py"], {}).test, "pytest -q");
+  eq("rust: cargo test + build", (() => { const c = detectProjectCommands(["Cargo.toml"], {}); return c.test + "|" + c.build; })(), "cargo test|cargo build");
+  eq("go: test/build/vet", (() => { const c = detectProjectCommands(["go.mod"], {}); return [c.test, c.build, c.lint].join(","); })(), "go test ./...,go build ./...,go vet ./...");
+  eq("make test only when target exists", detectProjectCommands(["Makefile"], { "Makefile": "build:\n\tcc x\ntest:\n\t./t\n" }).test, "make test");
+  ok("make with no test target yields no test", !detectProjectCommands(["Makefile"], { "Makefile": "all:\n\tcc x\n" }).test);
+  eq("package.json wins over python when both present", detectProjectCommands(["package.json", "pyproject.toml"], pj({ scripts: { test: "x" } })).test, "npm test");
+  eq("pickVerify prefers test over build", pickVerify({ build: "make", test: "npm test" }), { kind: "test", cmd: "npm test" });
+  eq("pickVerify falls back to build", pickVerify({ build: "cargo build", lint: "x" }), { kind: "build", cmd: "cargo build" });
+  eq("pickVerify null when nothing detected", pickVerify({}), null);
+  eq("package manager detection", [detectPackageManager(["yarn.lock"]), detectPackageManager(["pnpm-lock.yaml"]), detectPackageManager([])].join(","), "yarn,pnpm,npm");
+  eq("empty project detects nothing", detectProjectCommands([], {}), {});
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 process.exit(fail ? 1 : 0);
