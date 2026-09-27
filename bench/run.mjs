@@ -59,11 +59,14 @@ function countChanged(before, after) {
 function runAgent(cmd, cwd, prompt, timeoutSec) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn("sh", ["-c", cmd.replaceAll("{PROMPT}", shq(prompt))], { cwd, env: { ...process.env, NO_COLOR: "1", BENCH_PROMPT: prompt } });
+    // detached:true puts the child in its own process group so we can kill the WHOLE tree on
+    // timeout (the agent spawns node -> ollama etc.; killing just `sh` leaves them running).
+    const child = spawn("sh", ["-c", cmd.replaceAll("{PROMPT}", shq(prompt))], { cwd, env: { ...process.env, NO_COLOR: "1", BENCH_PROMPT: prompt }, detached: true });
     let out = ""; const cap = (b) => { if (out.length < 200000) out += b.toString(); };
     child.stdout.on("data", cap); child.stderr.on("data", cap);
     let killed = false;
-    const timer = setTimeout(() => { killed = true; try { child.kill("SIGKILL"); } catch (_) {} }, timeoutSec * 1000);
+    const killTree = () => { try { process.kill(-child.pid, "SIGKILL"); } catch (_) { try { child.kill("SIGKILL"); } catch (_) {} } };
+    const timer = setTimeout(() => { killed = true; killTree(); }, timeoutSec * 1000);
     child.on("close", (code) => { clearTimeout(timer); resolve({ code, out, killed, seconds: (Date.now() - started) / 1000 }); });
     child.on("error", (e) => { clearTimeout(timer); resolve({ code: -1, out: out + "\nspawn error: " + e.message, killed, seconds: (Date.now() - started) / 1000 }); });
   });
