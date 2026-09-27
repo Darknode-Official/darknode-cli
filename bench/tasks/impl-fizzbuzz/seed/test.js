@@ -1,0 +1,11 @@
+const assert = require("assert");
+const { fizzbuzz } = require("./fizzbuzz.js");
+const r = fizzbuzz(15);
+assert.strictEqual(r.length, 15);
+assert.strictEqual(r[0], "1");
+assert.strictEqual(r[2], "Fizz");
+assert.strictEqual(r[4], "Buzz");
+assert.strictEqual(r[14], "FizzBuzz");
+assert.strictEqual(r[8], "Fizz");
+assert.strictEqual(r[6], "7");
+console.log("OK");
