@@ -43,11 +43,36 @@ required anywhere (dead code). Now surfaced as instant, no-LLM commands:
 Agentic "go to definition" without an LSP: `find_symbol{name}` tool ranks exact defs first, then
 case-insensitive, then substring. Reuses the Wave-1 map.
 
+### Wave 6 — Native (structured) tool-calling  (`lib/nexus/native-tools.js` + `ollama.js`)
+The former #1 gap. The loop asked the model to emit `{thought,action,tool,args}` as TEXT and parsed
+it (that is why `normalizeToolCall` exists — to recover mangled JSON). Capable providers do native
+tool-calling: a guaranteed tool name + JSON-schema-checked args. Built and **verified end-to-end**:
+- `native-tools.js` (pure, 20 unit tests): `TOOL_SCHEMAS` (JSON input schema per built-in tool) →
+  `toAnthropicTools` / `toOpenAITools` / `toOllamaTools`; `parse{Anthropic,OpenAI,Ollama}Reply` +
+  `normalizeReply` collapse every provider's reply into ONE `{text, toolCalls:[{id,name,args}], done}`
+  shape (the same `{name,args}` the dispatch already runs); `*AssistantTurn` / `*ToolResult{s}`
+  build the follow-up messages; `runNativeToolLoop({chat,dispatch,...})` is the whole
+  edit→run→observe cycle, dependency-injected so it is unit-tested with a fake model.
+- `ollama.js` → `ollamaChatNative(model, messages, tools, signal)`: same routing as `ollamaChat`
+  (Ollama / OpenAI-compatible / Anthropic) but sends `tools` and returns the raw provider body +
+  a provider tag for `normalizeReply`.
+- **Live proof:** drove a real native tool call against the local qwen3 model (`darknode-13b`) —
+  it emitted a structured `list_dir` call, the result was fed back as a native tool message, and it
+  terminated. No text-JSON parsing anywhere in that path.
+
 ## Result
-**550 tests, 0 fail** (59 new). New tools respect plan mode, the `.nexus/policy.json` guardrails,
+**570 tests, 0 fail** (79 new). New tools respect plan mode, the `.nexus/policy.json` guardrails,
 the danger classifier, secret scanning, and the audit trail — same as the pre-existing tools.
 
-## Deliberately deferred
-- Native provider tool-calling (replace prompt-driven JSON for API models): the #1 reliability gap,
-  but it rewrites the working local loop and can't be verified end-to-end without a live model, so
-  it's held rather than shipped blind. Candidate for the next focused, model-in-the-loop session.
+## Remaining wiring for native tool-calling (one careful, provider-verified step)
+The mechanism is built + tested; flipping the interactive loop (`darknode.js` ~2808) from the
+prompt-driven path onto `ollamaChatNative` + `normalizeReply` is deliberately NOT done yet because
+of one hard constraint that can only be verified against the strict APIs (unreachable from here):
+- **1:1 pairing:** OpenAI and Anthropic reject the next request unless EVERY `tool_use` in an
+  assistant turn has a matching `tool_result`. A native reply may contain several tool calls at
+  once, but the current loop runs ONE per step. The wiring must run *all* of a reply's calls (each
+  through the existing permission → plan → policy → danger → hooks → dispatch → audit chain, one
+  card each) and append one assistant turn + all tool_results, before the next model turn.
+- Suggested rollout: gate behind `NEXUS_NATIVE_TOOLS=1`, enable Ollama-local first (verified,
+  lenient), then the strict API paths once a model-in-the-loop session confirms the pairing. The
+  prompt-driven path stays as the fallback for models without tool support.

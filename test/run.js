@@ -1080,5 +1080,58 @@ group("compliance bundle (SOC2 export)");
   eq("empty project detects nothing", detectProjectCommands([], {}), {});
 }
 
-console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
-process.exit(fail ? 1 : 0);
+// ===================== native tool-calling (structured) =====================
+{
+  const NT = require("../lib/nexus/native-tools");
+  // provider tool-spec shapes
+  const a = NT.toAnthropicTools(["read_file"])[0];
+  eq("anthropic tool spec shape", [a.name, !!a.input_schema, a.input_schema.type, a.input_schema.required[0]], ["read_file", true, "object", "path"]);
+  const o = NT.toOpenAITools(["run_command"])[0];
+  eq("openai tool spec shape", [o.type, o.function.name, o.function.parameters.required[0]], ["function", "run_command", "command"]);
+  ok("ollama tools == openai tools shape", JSON.stringify(NT.toOllamaTools(["read_file"])) === JSON.stringify(NT.toOpenAITools(["read_file"])));
+  ok("buildToolList defaults to all built-ins", NT.buildToolList().length === Object.keys(NT.TOOL_SCHEMAS).length);
+  ok("MCP tool with its own schema passes through", NT.toOpenAITools([{ name: "mcp__x__y", description: "d", input_schema: { type: "object", properties: { q: {} } } }])[0].function.parameters.properties.q !== undefined);
+  // safeArgs: object / json string / garbage / array
+  eq("safeArgs object", NT.safeArgs({ path: "a" }), { path: "a" });
+  eq("safeArgs json string", NT.safeArgs('{"path":"a"}'), { path: "a" });
+  eq("safeArgs garbage -> {}", NT.safeArgs("not json"), {});
+  eq("safeArgs array -> items", NT.safeArgs([1, 2]), { items: [1, 2] });
+  // reply parsing per provider -> one shape
+  eq("parse ollama tool_call (args object)", NT.parseOllamaReply({ message: { content: "", tool_calls: [{ function: { name: "read_file", arguments: { path: "a.js" } } }] } }).toolCalls[0], { id: "call_0", name: "read_file", args: { path: "a.js" } });
+  eq("parse openai tool_call (args json string)", NT.parseOpenAIReply({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "x", function: { name: "run_command", arguments: '{"command":"ls"}' } }] } }] }).toolCalls[0], { id: "x", name: "run_command", args: { command: "ls" } });
+  eq("parse anthropic tool_use", NT.parseAnthropicReply({ stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu", name: "verify", input: {} }] }).toolCalls[0], { id: "tu", name: "verify", args: {} });
+  const fin = NT.parseAnthropicReply({ stop_reason: "end_turn", content: [{ type: "text", text: "all set" }] });
+  eq("text-only reply is done", [fin.text, fin.toolCalls.length, fin.done], ["all set", 0, true]);
+  eq("normalizeReply routes by provider", NT.normalizeReply("openai", { choices: [{ message: { content: "hi" } }] }).text, "hi");
+  // follow-up message builders
+  const at = NT.anthropicAssistantTurn("thinking", [{ id: "t1", name: "read_file", args: { path: "a" } }]);
+  eq("anthropic assistant turn has text + tool_use", [at.role, at.content[0].type, at.content[1].type, at.content[1].id], ["assistant", "text", "tool_use", "t1"]);
+  eq("anthropic tool results shape", NT.anthropicToolResults([{ id: "t1", content: "out" }]).content[0], { type: "tool_result", tool_use_id: "t1", content: "out", is_error: false });
+  const oa = NT.openaiAssistantTurn("", [{ id: "c1", name: "list_dir", args: { path: "." } }]);
+  eq("openai assistant turn tool_calls[].function.arguments is a string", typeof oa.tool_calls[0].function.arguments, "string");
+  eq("openai tool result shape", NT.openaiToolResult("c1", "out"), { role: "tool", tool_call_id: "c1", content: "out" });
+}
+
+(async () => {
+  // native tool loop orchestrator (async, dependency-injected fake model) — proves the
+  // edit->run->observe cycle: run tools, feed results back, then finalize.
+  try {
+    const NT = require("../lib/nexus/native-tools");
+    let turn = 0;
+    const chat = async (msgs) => {
+      turn++;
+      return turn === 1
+        ? { provider: "ollama", body: { message: { content: "", tool_calls: [
+            { function: { name: "read_file", arguments: { path: "a" } } },
+            { function: { name: "list_dir", arguments: {} } },
+          ] } } }
+        : { provider: "ollama", body: { message: { content: "saw " + msgs.filter((m) => m.role === "tool").length + " results" } } };
+    };
+    const r = await NT.runNativeToolLoop({ chat, dispatch: async (n, args) => n + ":" + JSON.stringify(args), tools: [], maxSteps: 5 });
+    ok("native loop: 2 tools then finalizes with results fed back", r.steps === 2 && r.calls.length === 2 && r.finalText === "saw 2 results" && r.calls[0].result === 'read_file:{"path":"a"}');
+    const stopped = await NT.runNativeToolLoop({ chat: async () => ({ provider: "ollama", body: { message: { tool_calls: [{ function: { name: "x", arguments: {} } }] } } }), dispatch: async () => "y", tools: [], maxSteps: 3 });
+    ok("native loop: respects maxSteps when model never stops", stopped.hitLimit === true && stopped.calls.length === 3);
+  } catch (e) { ok("native loop test threw: " + (e && e.message), false); }
+  console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
+  process.exit(fail ? 1 : 0);
+})();
