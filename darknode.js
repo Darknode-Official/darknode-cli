@@ -762,26 +762,44 @@ function listen(port) {
 // Self-update: if the CLI is a git checkout, fetch origin, show what's new, and
 // fast-forward (running `npm install` when deps changed). Returns a plain string
 // for both the `update` verb and the TUI `/update` command. { apply:false } only checks.
+const { semverGt, autoUpdateMode, shouldCheck } = require("./lib/nexus/update");
 function nexusUpdate(opts) {
-  const apply = !!(opts && opts.apply);
+  const apply = !!(opts && opts.apply), silent = !!(opts && opts.silent);
+  // silent (background) mode stays quiet when there is nothing worth interrupting the user for.
+  const hush = (msg) => (silent ? "" : msg);
   const cp = require("child_process"), fs = require("fs"), path = require("path");
   const dir = __dirname;
-  const run = (c, a) => cp.spawnSync(c, a, { cwd: dir, encoding: "utf8", timeout: 60000 });
-  if (!fs.existsSync(path.join(dir, ".git"))) return "installed at " + dir + "\nnot a git checkout — update with:  npm install -g darknode-cli@latest\n(or re-pull from wherever you cloned it)";
-  if (!hasBin("git")) return "git not found — install git to self-update, or reinstall the CLI.";
+  const run = (c, a) => cp.spawnSync(c, a, { cwd: dir, encoding: "utf8", timeout: 120000 });
+  if (!fs.existsSync(path.join(dir, ".git"))) {
+    // installed from npm (global) — compare against the registry and, on apply, reinstall.
+    if (!hasBin("npm")) return hush("installed at " + dir + "\nnot a git checkout and npm not found — reinstall to update.");
+    const v = run("npm", ["view", "darknode-cli", "version"]);
+    const latest = (v.stdout || "").trim();
+    if (v.status !== 0 || !latest) return hush("update check failed (npm view): " + (((v.stderr || "") + (v.error ? v.error.message : "")).trim().split("\n").slice(-1)[0] || "no output"));
+    if (!semverGt(latest, VERSION)) return hush("up to date — v" + VERSION + " is the latest (npm).");
+    const L = ["update available: v" + VERSION + " → v" + latest + " (npm)"];
+    if (!apply) { L.push("run  " + cyan("darknode update") + "  to install (npm i -g darknode-cli@latest)."); return L.join("\n"); }
+    const ni = cp.spawnSync("npm", ["install", "-g", "darknode-cli@latest", "--no-audit", "--no-fund"], { encoding: "utf8", timeout: 600000 });
+    if (ni.status !== 0) { L.push("auto-update failed (a global npm install may need elevated permissions): " + (((ni.stderr || "") + (ni.error ? ni.error.message : "")).trim().split("\n").slice(-2).join(" ") || "npm error") + "\n  install manually:  npm install -g darknode-cli@latest"); return L.join("\n"); }
+    L.push(green("updated") + " to v" + latest + " — restart Nexus to load it."); return L.join("\n");
+  }
+  if (!hasBin("git")) return hush("git not found — install git to self-update, or reinstall the CLI.");
   const f = run("git", ["fetch", "--quiet", "origin"]);
-  if (f.status !== 0) return "update check failed: " + (((f.stderr || "") + (f.error ? f.error.message : "")).trim() || "git fetch error");
+  if (f.status !== 0) return hush("update check failed: " + (((f.stderr || "") + (f.error ? f.error.message : "")).trim() || "git fetch error"));
   const local = (run("git", ["rev-parse", "HEAD"]).stdout || "").trim();
   let remote = (run("git", ["rev-parse", "--verify", "-q", "@{u}"]).stdout || "").trim();
   if (!remote) remote = (run("git", ["rev-parse", "--verify", "-q", "origin/main"]).stdout || "").trim();
-  if (!remote || local === remote) return "up to date — v" + VERSION + " is the latest (" + dir + ").";
+  if (!remote || local === remote) return hush("up to date — v" + VERSION + " is the latest (" + dir + ").");
   const behind = run("git", ["rev-list", "--count", "HEAD.." + remote]).stdout.trim() || "?";
+  if (behind === "0") return hush("up to date — v" + VERSION + " is the latest (" + dir + ")."); // local is level with or ahead of the remote
   const log = run("git", ["log", "--oneline", "-6", "HEAD.." + remote]).stdout.trim();
   const L = [behind + " update(s) available for v" + VERSION + ":"];
   if (log) L.push(log.split("\n").map((l) => "  " + l).join("\n"));
   if (!apply) { L.push("run  " + cyan("darknode update") + "  (or  /update apply  in the TUI) to install."); return L.join("\n"); }
   const dirty = run("git", ["status", "--porcelain"]).stdout.trim();
-  if (dirty) { L.push("can't auto-update — you have local changes in " + dir + ". Commit or stash them first."); return L.join("\n"); }
+  // in silent/background mode, a dirty checkout is the user's own WIP — surface that an update
+  // exists (so /update still works) but never nag every launch about their local changes.
+  if (dirty) { L.push(silent ? "(local changes in the install dir block auto-apply; run /update after committing)" : "can't auto-update — you have local changes in " + dir + ". Commit or stash them first."); return L.join("\n"); }
   const pull = run("git", ["pull", "--ff-only", "--quiet"]);
   if (pull.status !== 0) { L.push("update failed: " + (((pull.stderr || "") + (pull.error ? pull.error.message : "")).trim() || "git pull error")); return L.join("\n"); }
   const changed = (run("git", ["diff", "--name-only", local, "HEAD"]).stdout) || "";
@@ -830,7 +848,11 @@ async function cli(args) {
   else if (cmd === "totp") { const secret = rest.join(" ").replace(/\s+/g, ""); const code = totp(secret); if (!code) { console.log(red("usage: darknode totp <base32-secret>   — generate a TOTP 2FA code")); } else { console.log(bold(cyan(code))); const left = secondsRemaining(30); console.log(gray("  valid " + left + "s" + (left <= 5 ? " (expiring — a new code is imminent)" : ""))); } }
   else if (cmd === "hash") console.log(hashes(rest.join(" ")));
   else if (cmd === "lab") { await labCmd(rest); }
-  else if (cmd === "update") { banner(); h1("Update Nexus / Darknode CLI"); const check = rest.includes("--check") || rest.includes("-n"); console.log("  installed  " + gray(__dirname) + "\n  version    " + cyan("v" + VERSION) + "\n"); console.log("  " + nexusUpdate({ apply: !check }).split("\n").join("\n  ") + "\n"); }
+  else if (cmd === "update") {
+    const check = rest.includes("--check") || rest.includes("-n");
+    if (rest.includes("--auto")) { const s = nexusUpdate({ apply: !check, silent: true }); if (s) process.stdout.write(s + "\n"); return; } // quiet mode for the background auto-updater: prints only when there is something to say
+    banner(); h1("Update Nexus / Darknode CLI"); console.log("  installed  " + gray(__dirname) + "\n  version    " + cyan("v" + VERSION) + "\n"); console.log("  " + nexusUpdate({ apply: !check }).split("\n").join("\n  ") + "\n");
+  }
   else if (cmd === "payloads") printPayloads(rest[0]);
   else if (cmd === "genpass") console.log(genPass(rest[0]));
   else if (cmd === "myip") console.log(await myIp());
@@ -2246,6 +2268,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/env", "env-var audit: used-but-undocumented vs .env.example"],
       ["/login", "sign in with Google or GitHub (Firebase)"], ["/logout", "sign out of Nexus"], ["/whoami", "show the signed-in account"], ["/setup", "install Ollama + pull a local model"],
       ["/restart", "save session, restart Nexus with latest code, resume where you left off"],
+      ["/update", "check for & install a newer Nexus (/update apply to install now)"],
+      ["/autoupdate", "auto-update on launch: /autoupdate on | check | off"],
       ["/next", "queue a prompt to auto-run after the current turn finishes"],
       ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
       ["/cron", "scheduled pipeline runs — /cron add \"0 9 * * *\" <goal> · /cron list · /cron remove <id>"],
@@ -3136,7 +3160,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const argstr = sp === -1 ? "" : t.slice(sp + 1).trim();
       const arg = argstr.split(/\s+/)[0];
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
-      if (cmd === "/help") transcript.push({ role: "system", text: "core:  /help /clear /compact /context /cost /budget /undo /redo /rewind /checkpoints /resume /export /copy /status /doctor /update /init /model /engine /commands /expand /exit\nsave-cost:  /cheap (preset) · /cowork (strong+weak) · /lean · /effort low · /estimate · /index · /budget · /report (chargeback) · /compliance (SOC2 bundle) · /impact\nunique:  /race · /ensemble · /bench · /review · /ultrareview · /changelog · /watch · /plan · /guard · /gaps · /dream · /commit · /models · /recent · /keys · /diff · /git · /blame · /explain · /test · /index · /todo · /stats · /deps · /env · /snippet · /pin · /secrets · /scan · /agents a ;; b · /tree · /theme · /offline · /redact\ninput:  @file (Tab-completes paths) · !cmd shell · #note memory · end a line with \\ for a newline · MCP & /hooks from .nexus/\nkeys:  shift+tab mode · ctrl+o expand · ctrl+c stop · ↑/↓ history · wheel/PgUp/PgDn/Home/End scroll · / menu" });
+      if (cmd === "/help") transcript.push({ role: "system", text: "core:  /help /clear /compact /context /cost /budget /undo /redo /rewind /checkpoints /resume /export /copy /status /doctor /update /autoupdate /init /model /engine /commands /expand /exit\nsave-cost:  /cheap (preset) · /cowork (strong+weak) · /lean · /effort low · /estimate · /index · /budget · /report (chargeback) · /compliance (SOC2 bundle) · /impact\nunique:  /race · /ensemble · /bench · /review · /ultrareview · /changelog · /watch · /plan · /guard · /gaps · /dream · /commit · /models · /recent · /keys · /diff · /git · /blame · /explain · /test · /index · /todo · /stats · /deps · /env · /snippet · /pin · /secrets · /scan · /agents a ;; b · /tree · /theme · /offline · /redact\ninput:  @file (Tab-completes paths) · !cmd shell · #note memory · end a line with \\ for a newline · MCP & /hooks from .nexus/\nkeys:  shift+tab mode · ctrl+o expand · ctrl+c stop · ↑/↓ history · wheel/PgUp/PgDn/Home/End scroll · / menu" });
       else if (cmd === "/commands") { const ks = Object.keys(customCmds); transcript.push({ role: "system", text: ks.length ? ("custom commands (from .nexus/commands or .claude/commands):\n" + ks.map((k) => "  " + k + "  " + customCmds[k].desc.replace(/ \(custom\)$/, "")).join("\n")) : "no custom commands yet — add a file like .nexus/commands/review.md, then use /review" }); }
       else if (cmd === "/trust") {
         if (trustRepo(cwd)) { _untrustedRepoConfig = false; mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "trusted this workspace (" + gray(cwd) + ") — its .nexus MCP servers now load; hooks apply on next launch." }); }
@@ -3160,6 +3184,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/hooks") { transcript.push({ role: "system", text: hooks ? ("hooks (.nexus/hooks.json) active for events: " + Object.keys(hooks).join(", ") + "\n  PreToolUse/PostToolUse run for the local engine; UserPromptSubmit & Stop run for every engine") : "no hooks configured. Create .nexus/hooks.json:\n  { \"PreToolUse\": [ { \"matcher\": \"run_command|write_file\", \"command\": \"echo $TOOL_NAME >> .nexus/audit.log\" } ] }\n  events: UserPromptSubmit · PreToolUse · PostToolUse · Stop  (non-zero exit on PreToolUse/UserPromptSubmit blocks the action)" }); }
       else if (cmd === "/status") transcript.push({ role: "system", text: "status:\n  engine   " + engine + (sess.model && sess.model !== engine ? " (" + sess.model + ")" : "") + "\n  dir      " + cwd + "\n  mode     " + MODES[mode].k + "\n  context  " + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "% of " + fmtK(sess.ctxWindow) + "\n  tokens   ↑" + fmtK(sess.inTok) + " ↓" + fmtK(sess.outTok) + (PAID[engine] ? (sess.cost ? " · $" + sess.cost.toFixed(4) : " · billed") : " · local · free") + "\n  budget   " + (costCap ? "$" + costCap.toFixed(2) + " cap" : "none") + "\n  undo     " + checkpoints.length + " checkpoint(s)" });
       else if (cmd === "/update") { const apply = /\b(apply|now|-y|yes)\b/.test(argstr); transcript.push({ role: "system", text: (apply ? "" : "checking for updates…\n") + nexusUpdate({ apply }) }); }
+      else if (cmd === "/autoupdate") {
+        const a = (argstr || "").trim().toLowerCase();
+        const st = readGlobal("state.json", {}) || {};
+        if (["on", "check", "off"].includes(a)) { st.autoUpdate = a; delete st.lastUpdateCheck; writeGlobal("state.json", st); transcript.push({ role: "system", text: "auto-update set to " + cyan(a) + gray(a === "on" ? " — Nexus will check on launch and install updates in the background" : a === "check" ? " — Nexus will notify you on launch but not install" : " — Nexus will not check for updates") }); }
+        else { const cur = autoUpdateMode(st); transcript.push({ role: "system", text: "auto-update is " + cyan(cur) + " (checked at most every 4h, on launch)\n  " + gray("/autoupdate on") + " install in background   " + gray("/autoupdate check") + " notify only   " + gray("/autoupdate off") + " disable\n  " + gray("/update") + " check now   " + gray("/update apply") + " install now" }); }
+      }
       else if (cmd === "/doctor") {
         const blk = { role: "system", text: bold("doctor") + gray("  system health check\n") }; transcript.push(blk); render();
         const ok = (s) => green("●") + " " + s, no = (s) => red("○") + " " + s, warn = (s) => yellow("◐") + " " + s;
@@ -3730,6 +3760,26 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
     };
     connectMcp();
+    // Auto-update, the way Claude Code does it: on launch, check for a newer Nexus in the
+    // background (never blocking boot) and, unless told only to check, apply it silently, then
+    // drop a one-line note into the transcript. Config in ~/.darknode/state.json:
+    //   autoUpdate: "on" (default, auto-apply) | "check" (notify only) | "off"
+    // Throttled to at most once every 4h, skipped under the offline lock. Toggle with /autoupdate.
+    (function autoUpdateBg() {
+      try {
+        const st = readGlobal("state.json", {}) || {};
+        const now = Date.now();
+        if (!shouldCheck(st, now, offline)) return;
+        const mode = autoUpdateMode(st);
+        st.lastUpdateCheck = now; writeGlobal("state.json", st);
+        const args = [__filename, "update", "--auto"]; if (mode === "check") args.push("--check");
+        const child = _cp.spawn(process.execPath, args, { cwd: __dirname, env: Object.assign({}, process.env, { NO_COLOR: "1", DARKNODE_IN_NEXUS: "1" }) });
+        let buf = ""; const cap = (b) => { buf += b; if (buf.length > 8192) buf = buf.slice(-8192); };
+        child.stdout.on("data", cap); child.stderr.on("data", cap);
+        child.on("error", () => {}); // git/npm missing etc. — stay quiet in the background
+        child.on("close", () => { const t = buf.trim(); if (t) { transcript.push({ role: "system", text: (mode === "check" ? "update available:\n" : "auto-update:\n") + t }); if (!loading) render(); } });
+      } catch (_) {}
+    })();
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
     if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("⚠ this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
