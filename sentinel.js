@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 "use strict";
+// Legacy entry point: it predates the authorization & scope gate and is NOT gated.
+// Refuse to run in engagement mode (DARKNODE_ENGAGEMENT) — use darknode.js.
+if (process.env.DARKNODE_ENGAGEMENT) { console.error("sentinel.js is ungated and cannot run in engagement mode; use darknode.js"); process.exit(1); }
 /*!
  * Sentinel — Terminal Edition
  * A dependency-free CLI/TUI security console for Windows and Linux.
