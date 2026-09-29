@@ -19,6 +19,7 @@ const { oneline, extractJson } = require("../lib/cli/text");
 const { frameDiff, diffTokens, wordHi } = require("../lib/cli/diff");
 const { TOP_PORTS, parsePorts, idHash, parseCve, cidrCalc, ipToInt, inCidr } = require("../lib/toolkit/scanutil");
 const { DONE_TOKEN, loopDecision, clampRounds, loopPrompt } = require("../lib/nexus/loop");
+const { semverGt, autoUpdateMode, shouldCheck } = require("../lib/nexus/update");
 const { defang, refang } = require("../lib/toolkit/ioc");
 const { shannon, assess } = require("../lib/toolkit/entropy");
 const { convert: epochConvert } = require("../lib/toolkit/epoch");
@@ -1123,6 +1124,15 @@ group("compliance bundle (SOC2 export)");
   eq("only a general chat model -> still pull the coder", chooseCoderToPull(["llama3.1:8b", "phi3:mini"]), "qwen2.5-coder");
   eq("pickCoderModel returns qwen2.5-coder when it's what's installed", pickCoderModel(["qwen2.5-coder:7b"]), "qwen2.5-coder:7b");
 }
+
+group("auto-update (Claude-Code-style self-update)");
+ok("semverGt: patch/minor/major", semverGt("2.46.0", "2.45.0") && semverGt("2.10.0", "2.9.0") && semverGt("3.0.0", "2.99.9"));
+ok("semverGt: not greater when equal or older", !semverGt("2.45.0", "2.45.0") && !semverGt("2.45.0", "2.46.0"));
+ok("semverGt: shorter version, numeric only", semverGt("2.45.1", "2.45") && !semverGt("2.45", "2.45.0"));
+ok("autoUpdateMode: default on; unknown -> on", autoUpdateMode(null) === "on" && autoUpdateMode({}) === "on" && autoUpdateMode({ autoUpdate: "weird" }) === "on");
+ok("autoUpdateMode: honours check/off", autoUpdateMode({ autoUpdate: "check" }) === "check" && autoUpdateMode({ autoUpdate: "off" }) === "off");
+ok("shouldCheck: off disables; offline disables", !shouldCheck({ autoUpdate: "off" }, 1e12, false) && !shouldCheck({ autoUpdate: "on" }, 1e12, true));
+ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldCheck({}, 1e12, false) && !shouldCheck({ lastUpdateCheck: 1e12 - 1000 }, 1e12, false) && shouldCheck({ lastUpdateCheck: 1e12 - 5 * 3600 * 1000 }, 1e12, false));
 
 (async () => {
   // native tool loop orchestrator (async, dependency-injected fake model) — proves the
