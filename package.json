@@ -14,7 +14,7 @@
   "scripts": {
     "start": "node darknode.js",
     "build": "pkg . --out-path dist",
-    "test": "node test/run.js",
+    "test": "node test/run.js && node test/authz.test.js",
     "postinstall": "node scripts/postinstall.js"
   },
   "pkg": {

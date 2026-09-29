@@ -154,7 +154,8 @@ async function whois(query) {
 const SEC = [["strict-transport-security", "HSTS"], ["content-security-policy", "CSP"], ["x-frame-options", "X-Frame-Options"], ["x-content-type-options", "X-Content-Type-Options"], ["referrer-policy", "Referrer-Policy"], ["permissions-policy", "Permissions-Policy"]];
 async function headers(url) {
   if (!/^https?:\/\//.test(url)) url = "https://" + url;
-  const r = await fetch(url, { redirect: "follow" }).catch((e) => ({ __err: e.message }));
+  // engagement mode: a redirect could leave scope, so never follow one
+  const r = await fetch(url, { redirect: process.env.DARKNODE_ENGAGEMENT ? "manual" : "follow" }).catch((e) => ({ __err: e.message }));
   if (r.__err) return { err: r.__err };
   const h = {}; r.headers.forEach((v, k) => (h[k] = v));
   return { status: r.status, server: h.server || "?", h };
@@ -809,7 +810,25 @@ function nexusUpdate(opts) {
   return L.join("\n");
 }
 
+// Engagement mode (DARKNODE_ENGAGEMENT=<id>): only gated tools run, each behind the
+// authorization & scope gate (lib/governance/engagement-gate.js). Allow-list, fail closed.
 async function cli(args) {
+  const eng = process.env.DARKNODE_ENGAGEMENT, [cmd, ...rest] = args;
+  if (cmd === "authz") { process.exitCode = await require("./lib/governance/authz-cli").authzCommand(rest); return; }
+  if (!eng) return cliRun(args);
+  const G = require("./lib/governance/engagement-gate");
+  const deny = (e) => { console.error("  " + red(e.message)); process.exitCode = 1; };
+  try {
+    if (G.TOOLS[cmd]) {
+      if (G.TOOLS[cmd].bin) { const r = await G.runExternal(eng, cmd, rest); process.exitCode = r.code; return; }   // nmap / nuclei: the gate spawns the binary itself
+      return await G.guard(eng, cmd, rest, () => cliRun(args, { filter: (hosts) => G.filterInScope(eng, "scan", hosts) }));
+    }
+    if (CMD_MAP[cmd] || G.OFFLINE_COMMANDS.has(cmd)) return cliRun(args);   // offline helpers: no target is touched
+    const d = G.authorize({ engagement: eng, tool: cmd || "", argv: rest });   // unknown command: audited deny
+    throw new G.GateDenied(d.allow ? { code: "GATE_ERROR", reason: "unexpected allow for ungated command" } : d);
+  } catch (e) { if (e instanceof G.GateDenied) return deny(e); throw e; }
+}
+async function cliRun(args, gate) {
   const [cmd, ...rest] = args;
   if (CMD_MAP[cmd]) { console.log(CMD_MAP[cmd].run({ rest, c: { red, green, yellow, cyan, gray, bold } })); }
   else if (cmd === "scan") { const host = rest[0]; if (!host) return usage(); await scan(host, parsePorts(rest[1])); }
@@ -821,7 +840,7 @@ async function cli(args) {
   else if (cmd === "nmap") { const host = rest[0]; if (!host) return usage(); if (hasBin("nmap")) await runTool("nmap", rest.length > 1 ? rest : ["-T4", "-F", host]); else { console.log(yellow("nmap not installed — using Darknode's native scanner instead.")); await scan(host, parsePorts(rest[1])); } }
   else if (cmd === "nuclei") { const t = rest[0]; if (!t) return usage(); if (!hasBin("nuclei")) { console.log(red("nuclei not installed — get it: https://github.com/projectdiscovery/nuclei  (go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest)")); return; } await runTool("nuclei", ["-u", t, ...rest.slice(1)]); }
   else if (cmd === "hashcat") { if (!hasBin("hashcat")) { console.log(red("hashcat not installed — apt install hashcat  /  brew install hashcat")); return; } const hf = rest[0], mode = rest[1]; if (!hf || !mode) { console.log("usage: darknode hashcat <hashfile> <mode> [wordlist]\n  common modes:  0 MD5 · 100 SHA1 · 1400 SHA256 · 1700 SHA512 · 1800 sha512crypt · 3200 bcrypt · 1000 NTLM · 5600 NetNTLMv2 · 22000 WPA\n  straight/dictionary attack against the wordlist (rockyou by default)"); return; } await runTool("hashcat", ["-m", mode, "-a", "0", hf, rest[2] || "/usr/share/wordlists/rockyou.txt"]); }
-  else if (cmd === "subrecon") { if (!rest[0]) return usage(); await subrecon(rest[0]); }
+  else if (cmd === "subrecon") { if (!rest[0]) return usage(); await subrecon(rest[0], gate && gate.filter); }
   else if (cmd === "cve") await cveSearch(rest.join(" "));
   else if (cmd === "fuzz") await fuzz(rest[0], rest[1]);
   else if (cmd === "git") {
@@ -1555,14 +1574,15 @@ function runTool(bin, args) { return new Promise((res) => { let p; try { p = spa
 
 // Chained recon: passive subdomains (crt.sh) -> resolve A -> live HTTP probe.
 // Reuses the existing subs()/headers() primitives; concurrency-capped.
-async function subrecon(domain) {
+async function subrecon(domain, filter) {
   domain = (domain || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
   if (!domain) { console.log("usage: darknode subrecon <domain>"); return; }
   console.log(cyan("subrecon " + domain) + gray("  passive subdomains → resolve → live HTTP"));
   let list = [];
   try { const r = await subs(domain); if (Array.isArray(r)) list = r; else if (r && r.err) { console.log(r.err); return; } } catch (e) { console.log(red(String((e && e.message) || e))); return; }
   list = [...new Set(list.map((s) => String(s).trim().toLowerCase()).filter(Boolean))];
-  if (!list.length) { console.log(gray("no subdomains found via crt.sh")); return; }
+  if (filter) { const f = filter(list); list = f.allowed; if (f.dropped.length) console.log(yellow("  " + f.dropped.length + " discovered host(s) are outside the authorized scope and were NOT probed")); }
+  if (!list.length) { console.log(gray("no in-scope subdomains found via crt.sh")); return; }
   const cap = 80, targets = list.slice(0, cap);
   console.log(gray(list.length + " found" + (list.length > cap ? " · probing first " + cap : "") + " …\n"));
   const dnsp = require("dns").promises;
@@ -3959,8 +3979,9 @@ if (args[0] === "-v" || args[0] === "--version") {
 else if (args.length === 0) {
   // If launched as "nexus" (not "darknode"), go straight to TUI
   const binName = require("path").basename(process.argv[1], ".js");
-  if (binName === "nexus") cli(["nexus", "--tui"]).then(() => process.exit(0)).catch((e) => { console.error("  " + red("error: " + e.message)); process.exit(1); });
+  if (binName === "nexus") cli(["nexus", "--tui"]).then(() => process.exit(process.exitCode || 0)).catch((e) => { console.error("  " + red("error: " + e.message)); process.exit(1); });
+  else if (process.env.DARKNODE_ENGAGEMENT) { console.error("  " + red("interactive menu is disabled in engagement mode (ungated). Use: darknode <gated command> …")); process.exit(1); }
   else mainMenu();
 }
 else if (args[0] === "-h" || args[0] === "--help") usage();
-else cli(args).then(() => process.exit(0)).catch((e) => { console.error("  " + red("error: " + e.message)); process.exit(1); });
+else cli(args).then(() => process.exit(process.exitCode || 0)).catch((e) => { console.error("  " + red("error: " + e.message)); process.exit(1); });
