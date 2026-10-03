@@ -64,12 +64,12 @@ const TOOLS = [
 // ---------- helpers ----------
 function banner() {
   const art = [
-    "  ███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗     ",
-    "  ██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║     ",
-    "  ███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║     ",
-    "  ╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║     ",
-    "  ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗",
-    "  ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝",
+    "  ██████╗  █████╗ ██████╗ ██╗  ██╗███╗   ██╗ ██████╗ ██████╗ ███████╗",
+    "  ██╔══██╗██╔══██╗██╔══██╗██║ ██╔╝████╗  ██║██╔═══██╗██╔══██╗██╔════╝",
+    "  ██║  ██║███████║██████╔╝█████╔╝ ██╔██╗ ██║██║   ██║██║  ██║█████╗  ",
+    "  ██║  ██║██╔══██║██╔══██╗██╔═██╗ ██║╚██╗██║██║   ██║██║  ██║██╔══╝  ",
+    "  ██████╔╝██║  ██║██║  ██║██║  ██╗██║ ╚████║╚██████╔╝██████╔╝███████╗",
+    "  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝",
   ];
   // smooth vertical cyan → violet → magenta gradient (256-color, falls back to plain)
   const grad = ["38;5;51", "38;5;45", "38;5;44", "38;5;99", "38;5;134", "38;5;170"];
@@ -3966,6 +3966,14 @@ ${renderCommands(COMMAND_GROUPS, { color: cyan, cheats: Object.keys(CHEATS).join
 // ---------- entry ----------
 process.on("SIGINT", () => { if (tuiActive) return; console.log("\n  " + gray("interrupted — stay sharp.") + "\n"); process.exit(130); });
 const args = process.argv.slice(2);
+// The CLI ships two bins: `darknode` (full platform) and `nexus` (the AI agent).
+// When invoked as `nexus`, every command is scoped to the agent, so `nexus run …`,
+// `nexus overnight …`, `nexus agents …` work the same as `darknode nexus …`, and a
+// bare `nexus` drops straight into the agent TUI (handled in the args.length===0 branch).
+const _binName = require("path").basename(process.argv[1] || "", ".js");
+if (_binName === "nexus" && args.length && !["-v", "--version", "-h", "--help"].includes(args[0]) && args[0] !== "nexus") {
+  args.unshift("nexus");
+}
 if (args[0] === "-v" || args[0] === "--version") {
   console.log("darknode " + VERSION);
   if (!args.includes("--short")) {
