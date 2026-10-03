@@ -2291,6 +2291,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/update", "check for & install a newer Nexus (/update apply to install now)"],
       ["/autoupdate", "auto-update on launch: /autoupdate on | check | off"],
       ["/next", "queue a prompt to auto-run after the current turn finishes"],
+      ["/feature", "add/remove your own commands: /feature create <name> <what it does> · /feature remove <name>"],
+      ["/dashboard", "open the localhost web UI — live pipelines, jobs & cowork agents"],
       ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
       ["/cron", "scheduled pipeline runs — /cron add \"0 9 * * *\" <goal> · /cron list · /cron remove <id>"],
       ["/expand", "toggle tool-call detail"], ["/exit", "quit Nexus"],
@@ -2303,6 +2305,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       try { for (const f of fs.readdirSync(dir)) { if (!/\.md$/.test(f)) continue; const nm = "/" + f.replace(/\.md$/, ""); if (customCmds[nm]) continue; const body = fs.readFileSync(path.join(dir, f), "utf8"); const desc = ((body.split("\n").find((l) => l.trim()) || "custom command").replace(/^#+\s*/, "") + " (custom)").slice(0, 52); customCmds[nm] = { body, desc }; } } catch (_) {}
     }
     const allCmds = () => CMDS.concat(Object.keys(customCmds).map((k) => [k, customCmds[k].desc]));
+    // Re-scan .nexus/commands + .claude/commands into customCmds (used after /feature
+    // create|remove so a new feature is usable immediately, without a restart).
+    const reloadCustomCmds = () => {
+      for (const k of Object.keys(customCmds)) delete customCmds[k];
+      for (const dir of [path.join(cwd, ".nexus", "commands"), path.join(cwd, ".claude", "commands")]) {
+        try { for (const f of fs.readdirSync(dir)) { if (!/\.md$/.test(f)) continue; const nm = "/" + f.replace(/\.md$/, ""); if (customCmds[nm]) continue; const body = fs.readFileSync(path.join(dir, f), "utf8"); const desc = ((body.split("\n").find((l) => l.trim()) || "custom command").replace(/^#+\s*/, "") + " (custom)").slice(0, 52); customCmds[nm] = { body, desc }; } } catch (_) {}
+      }
+      try { cmdSet.clear(); for (const c of allCmds()) cmdSet.add(c[0]); } catch (_) {}
+    };
     // ---- MCP servers + hooks (loaded from .nexus/) ----
     const hooks = loadHooks(cwd);
     const policy = loadPolicy(cwd); // enterprise guardrails (.nexus/policy.json)
@@ -2681,7 +2692,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     };
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
     let cleaned = false;
-    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.iv) { clearInterval(compact.iv); compact.iv = null; } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { out.write(ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {} };
+    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.iv) { clearInterval(compact.iv); compact.iv = null; } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { out.write(ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {} };
     tuiActive = true;
     const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
@@ -3174,14 +3185,125 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     };
     // ---- slash commands ----
     const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "session.json"), JSON.stringify({ engine, model: sess.model, transcript, sess, ts: Date.now() })); } catch (_) {} };
+
+    // ---- localhost dashboard (/dashboard) — live web view of this agent session ----
+    let dashServer = null;              // { url, port, close } once started
+    const _pipeCache = { ts: 0, data: null }; // throttle the (blocking) glitch observe shell-out
+    const pipeInfo = () => {
+      try {
+        const P = require("./lib/nexus/pipelines");
+        if (!P.hasGlitch || !P.hasGlitch()) return { engine: false };
+        if (Date.now() - _pipeCache.ts > 15000) {
+          _pipeCache.ts = Date.now();
+          let text = ""; try { text = (P.observePipelines(cwd) || "").toString().trim(); } catch (_) {}
+          _pipeCache.data = { engine: true, text: text.slice(0, 4000) };
+        }
+        return _pipeCache.data || { engine: true, text: "" };
+      } catch (_) { return { engine: false }; }
+    };
+    const dashActivity = () => {
+      const out = [];
+      for (const b of transcript.slice(-12)) {
+        if (!b || b.role === "art") continue;
+        if (b.role === "system") out.push("· " + String(b.text || "").split("\n")[0]);
+        else if (b.role === "user") out.push("› " + String(b.text || "").replace(/\n/g, " ").slice(0, 120));
+        else if (b.role === "diff") out.push("[diff]");
+        else if (b.role === "nexus") for (const it of (b.items || [])) {
+          if (it.type === "text" && it.full) out.push("nexus: " + it.full.replace(/\n/g, " ").slice(0, 140));
+          else if (it.type === "tool") out.push("  [" + (it.status || "run") + "] " + (it.label || it.name || "tool"));
+        }
+      }
+      return out.slice(-18);
+    };
+    const dashboardState = () => ({
+      engine, model: sess.model || engine, paid: !!PAID[engine],
+      inTok: sess.inTok || 0, outTok: sess.outTok || 0, cost: sess.cost || 0,
+      ctxUsed: sess.ctxUsed || 0, ctxWindow: sess.ctxWindow || CTXW[engine] || 0,
+      dir: cwd.replace(os.homedir(), "~"),
+      jobs: bgJobs.list(), jobsRunning: bgJobs.running(),
+      agents: activeAgents,
+      cowork: { on: cowork.on, strong: cowork.strong, weak: cowork.weak, weakKind: cowork.weakKind },
+      impact: { delegated: impact.delegated, coworkSaved: impact.coworkSaved },
+      plan: plan.map((p) => ({ text: p.text || p.title || "", done: !!p.done, running: !!p.running })),
+      pipelines: pipeInfo(),
+      activity: dashActivity(),
+    });
+
     const handleSlash = (t) => {
       const sp = t.indexOf(" ");
       const cmd = (sp === -1 ? t : t.slice(0, sp)).toLowerCase();
       const argstr = sp === -1 ? "" : t.slice(sp + 1).trim();
       const arg = argstr.split(/\s+/)[0];
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
-      if (cmd === "/help") transcript.push({ role: "system", text: "core:  /help /clear /compact /context /cost /budget /undo /redo /rewind /checkpoints /resume /export /copy /status /doctor /update /autoupdate /init /model /engine /commands /expand /exit\nsave-cost:  /cheap (preset) · /cowork (strong+weak) · /lean · /effort low · /estimate · /index · /budget · /report (chargeback) · /compliance (SOC2 bundle) · /impact\nunique:  /race · /ensemble · /bench · /review · /ultrareview · /changelog · /watch · /plan · /guard · /gaps · /dream · /commit · /models · /recent · /keys · /diff · /git · /blame · /explain · /test · /index · /todo · /stats · /deps · /env · /snippet · /pin · /secrets · /scan · /agents a ;; b · /tree · /theme · /offline · /redact\ninput:  @file (Tab-completes paths) · !cmd shell · #note memory · end a line with \\ for a newline · MCP & /hooks from .nexus/\nkeys:  shift+tab mode · ctrl+o expand · ctrl+c stop · ↑/↓ history · wheel/PgUp/PgDn/Home/End scroll · / menu" });
+      if (cmd === "/help") transcript.push({ role: "system", text: "core:  /help /clear /compact /context /cost /budget /undo /redo /rewind /checkpoints /resume /export /copy /status /doctor /update /autoupdate /init /model /engine /commands /expand /exit\nsave-cost:  /cheap (preset) · /cowork (strong+weak) · /lean · /effort low · /estimate · /index · /budget · /report (chargeback) · /compliance (SOC2 bundle) · /impact\nunique:  /race · /ensemble · /bench · /review · /ultrareview · /changelog · /watch · /plan · /guard · /gaps · /dream · /commit · /models · /recent · /keys · /diff · /git · /blame · /explain · /test · /index · /todo · /stats · /deps · /env · /snippet · /pin · /secrets · /scan · /agents a ;; b · /tree · /theme · /offline · /redact\nextend:  /feature create <name> <what it does> · /feature remove <name> · /feature list  ·  /dashboard (localhost web UI: live pipelines, jobs & cowork)\ninput:  @file (Tab-completes paths) · !cmd shell · #note memory · end a line with \\ for a newline · MCP & /hooks from .nexus/\nkeys:  shift+tab mode · ctrl+o expand · ctrl+c stop · ↑/↓ history · wheel/PgUp/PgDn/Home/End scroll · / menu" });
       else if (cmd === "/commands") { const ks = Object.keys(customCmds); transcript.push({ role: "system", text: ks.length ? ("custom commands (from .nexus/commands or .claude/commands):\n" + ks.map((k) => "  " + k + "  " + customCmds[k].desc.replace(/ \(custom\)$/, "")).join("\n")) : "no custom commands yet — add a file like .nexus/commands/review.md, then use /review" }); }
+      else if (cmd === "/feature" || cmd === "/features") {
+        // Let the user grow Nexus themselves: /feature create <name> <what it does> writes an
+        // editable .nexus/commands/<name>.md prompt-command that becomes /<name> immediately.
+        const ps = argstr.split(/\s+/).filter(Boolean);
+        const sub = (ps[0] || "").toLowerCase();
+        const cmdsDir = path.join(cwd, ".nexus", "commands");
+        if (!sub || sub === "list" || sub === "ls") {
+          const ks = Object.keys(customCmds);
+          transcript.push({ role: "system", text: ks.length
+            ? ("your features (editable .md commands in .nexus/commands):\n" + ks.map((k) => "  " + cyan(k.padEnd(16)) + gray(customCmds[k].desc.replace(/ \(custom\)$/, ""))).join("\n") + "\n  /feature create <name> <what it does>  ·  /feature remove <name>")
+            : "no features yet.\n  " + cyan("/feature create <name> <what it should do>") + "\n  e.g. " + gray("/feature create triage  review the current git diff and list risky changes by severity") + "\n  then run " + cyan("/triage") + ".  Each feature is a plain .md file in .nexus/commands you can edit." });
+        }
+        else if (sub === "create" || sub === "add" || sub === "new") {
+          const name = (ps[1] || "").toLowerCase().replace(/^\//, "");
+          const desc = ps.slice(2).join(" ").trim();
+          const builtins = new Set(CMDS.map((c) => c[0]));
+          if (!name || !desc) transcript.push({ role: "system", text: "usage: " + cyan("/feature create <name> <what the feature should do>") + "\n  e.g. /feature create triage  review the current git diff and list risky changes by severity" });
+          else if (!/^[a-z][a-z0-9-]{1,30}$/.test(name)) transcript.push({ role: "system", text: red("invalid name '" + name + "'") + " — lowercase letters, numbers and dashes (2–31 chars), starting with a letter." });
+          else if (builtins.has("/" + name)) transcript.push({ role: "system", text: red("/" + name + " is a built-in command") + " — pick another name." });
+          else {
+            const file = path.join(cmdsDir, name + ".md");
+            let existed = false; try { existed = fs.existsSync(file); } catch (_) {}
+            const body = "# " + desc.replace(/\s+/g, " ").slice(0, 80) + "\n\n" +
+              "You are running the user-defined \"/" + name + "\" feature of Nexus.\n\n" +
+              "Goal: " + desc + "\n\n" +
+              "Carry that out using this repository's context and your available tools. " +
+              "Extra arguments the user passed after the command: $ARGUMENTS\n\n" +
+              "Be precise and thorough. If anything is ambiguous, state your assumption in one line and proceed.\n";
+            try {
+              fs.mkdirSync(cmdsDir, { recursive: true });
+              fs.writeFileSync(file, body);
+              reloadCustomCmds();
+              transcript.push({ role: "system", text: (existed ? "updated" : "created") + " feature " + cyan("/" + name) + "\n  run it:  " + cyan("/" + name + " [extra args]") + "\n  stored:  " + gray(path.relative(cwd, file) + "   (edit this file to refine the behavior)") + "\n  remove:  " + gray("/feature remove " + name) });
+            } catch (e) { transcript.push({ role: "system", text: red("could not write the feature: " + (e && e.message || e)) }); }
+          }
+        }
+        else if (sub === "remove" || sub === "rm" || sub === "delete") {
+          const name = (ps[1] || "").toLowerCase().replace(/^\//, "");
+          if (!name) transcript.push({ role: "system", text: "usage: /feature remove <name>   (" + cyan("/feature list") + " to see them)" });
+          else {
+            const files = [path.join(cwd, ".nexus", "commands", name + ".md"), path.join(cwd, ".claude", "commands", name + ".md")];
+            const hit = files.filter((f) => { try { return fs.existsSync(f); } catch (_) { return false; } });
+            if (!hit.length) transcript.push({ role: "system", text: "no feature '" + name + "' here — " + cyan("/feature list") + " to see what's defined" });
+            else { let ok = true; for (const f of hit) { try { fs.unlinkSync(f); } catch (_) { ok = false; } } reloadCustomCmds(); transcript.push({ role: "system", text: ok ? ("removed feature " + cyan("/" + name) + " " + gray("(" + hit.map((f) => path.relative(cwd, f)).join(", ") + ")")) : red("could not remove some files for '" + name + "'") }); }
+          }
+        }
+        else transcript.push({ role: "system", text: "usage: " + cyan("/feature list") + " · " + cyan("/feature create <name> <description>") + " · " + cyan("/feature remove <name>") });
+      }
+      else if (cmd === "/dashboard" || cmd === "/ui") {
+        const sub = arg.toLowerCase();
+        if (sub === "stop" || sub === "off") {
+          if (dashServer) { const u = dashServer.url; try { dashServer.close(); } catch (_) {} dashServer = null; transcript.push({ role: "system", text: "dashboard stopped (" + u + ")" }); }
+          else transcript.push({ role: "system", text: "dashboard isn't running — /dashboard to start it" });
+        } else if (dashServer) {
+          transcript.push({ role: "system", text: "dashboard is live — open " + cyan(dashServer.url) + " in your browser\n  /dashboard stop to shut it down" });
+        } else {
+          const blk = { role: "system", text: "starting the dashboard…" }; transcript.push(blk); render();
+          try {
+            const { startDashboard } = require("./lib/nexus/dashboard");
+            startDashboard({ port: 7979, getState: dashboardState }).then((d) => {
+              dashServer = d;
+              blk.text = "dashboard live — open " + cyan(d.url) + " in your browser\n  live: pipelines · background jobs · cowork agents · plan · tokens & cost  (updates every second)\n  /dashboard stop to shut it down";
+              render();
+            }).catch((e) => { blk.text = red("could not start the dashboard: " + (e && e.message || e)); render(); });
+          } catch (e) { blk.text = red("dashboard module failed to load: " + (e && e.message || e)); render(); }
+        }
+      }
       else if (cmd === "/trust") {
         if (trustRepo(cwd)) { _untrustedRepoConfig = false; mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "trusted this workspace (" + gray(cwd) + ") — its .nexus MCP servers now load; hooks apply on next launch." }); }
         else transcript.push({ role: "system", text: red("could not record trust") });
