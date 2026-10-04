@@ -1200,15 +1200,38 @@ async function nexusLogin(provider, log) {
   log(green("signed in as ") + (user.name || user.email || user.uid) + gray("  (" + providerId.replace(".com", "") + ")"));
   return { ok: true, user };
 }
-// Primary login: paste the code shown in the website's Settings → Nexus CLI.
-// The code is the user's Firebase refresh token; we exchange it for a session,
-// so there is nothing to set up — same account as the website.
+// URL of the server-side pairing exchange (Firebase Function `pair`). Overridable
+// via ~/.darknode/firebase.json `pairUrl`; defaults to the project's deployed URL.
+function pairExchangeUrl() { const c = firebaseCfg(); return c.pairUrl || ("https://us-central1-" + (c.projectId || "sentinel-b4194") + ".cloudfunctions.net/pair"); }
+// A website pairing code is a 16-char Crockford-ish token (A-Z, 2-9; no I/O/0/1),
+// optionally dash-grouped. A legacy Firebase refresh token is far longer and mixed-case.
+function looksLikePairCode(s) { const t = String(s || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase(); return /^[A-HJ-NP-Z2-9]{12,24}$/.test(t); }
+async function pairExchange(code) {
+  const url = pairExchangeUrl();
+  const norm = String(code || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  const r = await httpReq({ url, method: "POST", headers: { "Content-Type": "application/json" }, body: { code: norm } });
+  if (r.status === 200 && r.json && r.json.uid) return r.json; // { uid, email, name, apiKey }
+  const msg = (r.json && r.json.error) || ("exchange failed (HTTP " + r.status + ")");
+  throw new Error(msg);
+}
+// Primary login: paste the one-time code from the website's Settings → Nexus CLI.
+// The code is exchanged server-side for the account identity + a REVOCABLE Darknode
+// API key — the Firebase refresh token is never handed out. (Codes that look like a
+// legacy refresh token still work via the old path, for a clean transition.)
 async function nexusLoginCode(code, log) {
   log = log || ((s) => console.log("  " + s));
   code = (code || "").trim();
   if (!code) throw new Error("paste the code from the website — Settings → Nexus CLI");
-  if (!firebaseCfg().apiKey) throw new Error("no Firebase apiKey configured");
   log("verifying your code…");
+  if (looksLikePairCode(code)) {
+    let res; try { res = await pairExchange(code); } catch (e) { throw new Error(e.message || "that code didn't work — copy a fresh one from the website (Settings → Nexus CLI)"); }
+    const user = { provider: "code", email: res.email || "", name: res.name || "", uid: res.uid || "", apiKey: res.apiKey || "", ts: Date.now() };
+    writeGlobal("auth.json", user);
+    log(green("signed in as ") + (user.name || user.email || user.uid || "your account"));
+    return { ok: true, user };
+  }
+  // Legacy path: the code is a Firebase refresh token (pre-pairing website versions).
+  if (!firebaseCfg().apiKey) throw new Error("no Firebase apiKey configured");
   let tok; try { tok = await firebaseRefresh(code); } catch (e) { throw new Error("could not reach Firebase (" + e.message + ")"); }
   if (!tok || !tok.id_token) throw new Error("that code didn't work — copy a fresh one from the website (Settings → Nexus CLI)");
   let info = null; try { info = await firebaseLookup(tok.id_token); } catch (_) {}
