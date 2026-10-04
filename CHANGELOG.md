@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Sentinel / Nexus. Format loosely follows
+All notable changes to Darknode / Nexus. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased] — branch `feat/multi-ai-enterprise-arch`
@@ -18,11 +18,11 @@ All notable changes to Sentinel / Nexus. Format loosely follows
 - Guardrails policy (`.nexus/policy.json`): protected paths, denied commands,
   per-turn write limit, secret-write blocking; enforced on the local agent and
   injected into Claude's instructions.
-- Two-tier policy: an org floor at `~/.sentinel/policy.json` a local policy can only
+- Two-tier policy: an org floor at `~/.darknode/policy.json` a local policy can only
   make stricter, never weaker.
-- Tamper-evident, hash-chained audit trail; `sentinel audit verify` / `/audit verify`
+- Tamper-evident, hash-chained audit trail; `darknode audit verify` / `/audit verify`
   detect any edit, deletion, or reordering (non-zero exit for CI gates).
-- `sentinel policy` / `sentinel audit` usable outside the TUI for CI and compliance.
+- `darknode policy` / `darknode audit` usable outside the TUI for CI and compliance.
 
 ### Added — from Claude Code & Glitch
 - Output styles (`/style`), including custom `.nexus/styles/*.md`.

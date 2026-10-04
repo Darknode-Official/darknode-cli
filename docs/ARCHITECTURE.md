@@ -1,12 +1,12 @@
 # Architecture
 
-Sentinel is a dependency-free Node CLI. The security console and tools live in
-`sentinel.js`; **Nexus**, the terminal AI coding agent, is the largest subsystem.
+Darknode is a dependency-free Node CLI. The security console and tools live in
+`darknode-legacy.js`; **Nexus**, the terminal AI coding agent, is the largest subsystem.
 Pure, testable logic is being progressively extracted into `lib/` so the domain
 model is decoupled from the terminal UI.
 
 ```
-sentinel.js            entry + CLI dispatch + the Nexus full-screen TUI (raw ANSI)
+darknode-legacy.js            entry + CLI dispatch + the Nexus full-screen TUI (raw ANSI)
 lib/                   pure, testable logic in four domain subpackages
   cli/                 CLI framework: dispatch tables, help, presentation
     reference.js         --help command catalog (single source of truth) + renderer
@@ -45,12 +45,12 @@ lib/                   pure, testable logic in four domain subpackages
     tools.js             local-agent tool catalog + `discover` keyword search
     bgjobs.js            background-command manager (run_background/check/stop)
     memory.js            durable-note merge with dedup (the agent `remember` tool)
-    todos.js             tech-debt marker scanner (TODO/FIXME/HACK) — /todo, sentinel todo
-    codestats.js         codebase overview: files/lines/languages — /stats, sentinel stats
-    deps.js              dependency hygiene: unused + undeclared imports — /deps, sentinel deps
-    envaudit.js          env-var audit: code refs vs .env.example — /env, sentinel env
+    todos.js             tech-debt marker scanner (TODO/FIXME/HACK) — /todo, darknode todo
+    codestats.js         codebase overview: files/lines/languages — /stats, darknode stats
+    deps.js              dependency hygiene: unused + undeclared imports — /deps, darknode deps
+    envaudit.js          env-var audit: code refs vs .env.example — /env, darknode env
     review.js            multi-lens code-review prompt builder — /ultrareview
-    changelog.js         release-notes generator from git history — /changelog, sentinel changelog
+    changelog.js         release-notes generator from git history — /changelog, darknode changelog
   governance/          enterprise policy, audit, cost & compliance
     policy.js            guardrails engine: policyCheck + tamper-evident audit chain
     security.js          scanSecrets / maskSecrets / classifyDanger / compactOutput
@@ -65,7 +65,7 @@ test/
 
 ## Dispatch flow
 
-`process.argv` is read at the bottom of `sentinel.js`: `-v/--version` prints the
+`process.argv` is read at the bottom of `darknode-legacy.js`: `-v/--version` prints the
 version + detected engines; no args → `mainMenu()` (interactive menu); `--help` →
 `usage()` (rendered from `lib/cli/reference`); otherwise → `cli(args)`.
 
@@ -84,7 +84,7 @@ version + detected engines; no args → `mainMenu()` (interactive menu); `--help
    default → `nexusTui()`, the raw-ANSI full-screen agent.
 
 ```
-             process.argv (sentinel.js)
+             process.argv (darknode-legacy.js)
                      |
         +------------+------------------+---------------+
      mainMenu     usage()            cli(args)  -- router
@@ -113,7 +113,7 @@ is appended per turn.
   asserts no Claude-only flag appears in any other engine's argv.
 - **Least privilege.** The local agent's file/command tools are checked against
   `.nexus/policy.json` (protected paths, denied commands, per-turn write limit,
-  secret-write blocking) *before* execution. An org floor at `~/.sentinel/policy.json`
+  secret-write blocking) *before* execution. An org floor at `~/.darknode/policy.json`
   can only be made stricter locally, never weaker.
 - **Provenance.** Every enforced tool action is appended to a hash-chained
   `.nexus/audit.jsonl`; `auditVerify` (via `/audit verify`) detects any edit,
@@ -122,20 +122,20 @@ is appended per turn.
 ## Extraction pattern
 
 Modules are carved out incrementally and safely: each `lib/*.js` `module.exports`
-everything its former block defined, and `sentinel.js` replaces the block with a
+everything its former block defined, and `darknode-legacy.js` replaces the block with a
 single `require`, so every existing reference resolves unchanged. Thin wrappers
 that need live process state (`loadPolicy` -> home dir, `engineAvail` -> `hasBin`)
-stay in `sentinel.js`. Boot and `npm test` are verified after each extraction.
+stay in `darknode-legacy.js`. Boot and `npm test` are verified after each extraction.
 
 The terminal UI (render loop, engine runners, command handlers) remains in
-`sentinel.js` for now — it is tightly coupled to session state and is refactored
+`darknode-legacy.js` for now — it is tightly coupled to session state and is refactored
 only where it can be verified without a live TTY.
 
 ## Testing
 
 ```
 npm test        # unit suite (lib/*)
-node --check sentinel.js lib/*.js test/*.js
+node --check darknode-legacy.js lib/*.js test/*.js
 ```
 
 CI runs both plus a CLI smoke test across Node 18/20/22 on every push and PR.

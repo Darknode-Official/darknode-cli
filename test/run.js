@@ -1,5 +1,5 @@
 "use strict";
-// Sentinel/Nexus unit suite — runs the pure lib/ subsystems. `npm test`.
+// Darknode/Nexus unit suite — runs the pure lib/ subsystems. `npm test`.
 // No framework, no deps: a tiny assert harness so it runs anywhere (CI included).
 const os = require("os"), fs = require("fs"), path = require("path");
 const { MODEL_PRICE, priceOf, isMechanical, shouldDelegate } = require("../lib/nexus/pricing");
@@ -425,7 +425,7 @@ group("base32 (RFC 4648 test vectors)");
   ok("'foobar' → MZXW6YTBOI======", base32encode("foobar") === "MZXW6YTBOI======");
   ok("decode reverses (padded)", base32decode("MZXW6YTBOI======") === "foobar");
   ok("decode lowercase + spaces tolerated", base32decode("mzxw6===") === "foo");
-  ok("round-trips arbitrary text", base32decode(base32encode("Sentinel/Nexus 42!")) === "Sentinel/Nexus 42!");
+  ok("round-trips arbitrary text", base32decode(base32encode("Darknode/Nexus 42!")) === "Darknode/Nexus 42!");
   ok("invalid char → null", base32decode("MZXW6!!!") === null);
 }
 
@@ -563,7 +563,7 @@ group("encoders (shared CLI + menu)");
 {
   const { ENC } = require("../lib/toolkit/encoders");
   eq("op keys present", Object.keys(ENC).sort(), ["b64d", "b64e", "base32d", "base32e", "base58d", "base58e", "hexd", "hexe", "rot13d", "rot13e", "urld", "urle"]);
-  ok("b64/hex/url/base32 all roundtrip", ["b64", "hex", "url", "base32"].every((t) => ENC[t + "d"](ENC[t + "e"]("Sentinel 42!")) === "Sentinel 42!"));
+  ok("b64/hex/url/base32 all roundtrip", ["b64", "hex", "url", "base32"].every((t) => ENC[t + "d"](ENC[t + "e"]("Darknode 42!")) === "Darknode 42!"));
   eq("url encodes a space", ENC.urle("a b"), "a%20b");
   eq("invalid base32 -> guarded message", ENC.base32d("!!!"), "(invalid base32)");
 }
@@ -788,7 +788,7 @@ group("luhn checksum");
 group("base58 (bitcoin alphabet)");
 {
   eq("known vector 'Hello World!'", b58encode("Hello World!"), "2NEpo7TZRRrLZSi2U");
-  ok("round-trips utf8", b58decode(b58encode("sentinel")).toString("utf8") === "sentinel");
+  ok("round-trips utf8", b58decode(b58encode("darknode")).toString("utf8") === "darknode");
   eq("empty -> empty", b58encode(""), "");
   ok("leading zero bytes -> leading 1s", b58encode(Buffer.from([0, 0, 1])) === "112");
   ok("invalid char (0/O/I/l) -> null", b58decode("0OIl") === null);
@@ -808,7 +808,7 @@ group("xor cipher (repeating key)");
 group("rot / caesar");
 {
   eq("rot13 basic", rot13("Hello, World!"), "Uryyb, Jbeyq!");
-  ok("rot13 is its own inverse", rot13(rot13("Sentinel")) === "Sentinel");
+  ok("rot13 is its own inverse", rot13(rot13("Darknode")) === "Darknode");
   eq("rot n=1", rot(1, "abcZ"), "bcdA");
   ok("non-letters untouched", rot(5, "a1!b") === "f1!g");
   ok("negative and >26 normalize", rot(-13, "abc") === rot(13, "abc") && rot(39, "abc") === rot(13, "abc"));

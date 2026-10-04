@@ -2,11 +2,14 @@
 "use strict";
 // Legacy entry point: it predates the authorization & scope gate and is NOT gated.
 // Refuse to run in engagement mode (DARKNODE_ENGAGEMENT) — use darknode.js.
-if (process.env.DARKNODE_ENGAGEMENT) { console.error("sentinel.js is ungated and cannot run in engagement mode; use darknode.js"); process.exit(1); }
+if (process.env.DARKNODE_ENGAGEMENT) { console.error("the legacy entry is ungated and cannot run in engagement mode; use darknode.js"); process.exit(1); }
+// Back-compat: this legacy entry reads SENTINEL_* env vars directly. Let DARKNODE_*
+// take precedence by copying any DARKNODE_* into the matching SENTINEL_* when unset.
+for (const k of Object.keys(process.env)) { if (k.startsWith("DARKNODE_") && process.env["SENTINEL_" + k.slice(9)] === undefined) process.env["SENTINEL_" + k.slice(9)] = process.env[k]; }
 /*!
- * Sentinel — Terminal Edition
+ * Darknode — Terminal Edition
  * A dependency-free CLI/TUI security console for Windows and Linux.
- * Uses only Node.js built-ins. Copyright (c) 2026 Sentinel. All rights reserved.
+ * Uses only Node.js built-ins. Copyright (c) 2026 Darknode. All rights reserved.
  * Use only on systems you own or are explicitly authorized to test.
  */
 const net = require("net");
@@ -36,7 +39,7 @@ const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA co
 const { SERVICES } = require("./lib/toolkit/ports"); // port<->service map, used by scan (lib/ports.js)
 const { digests, genPass } = require("./lib/toolkit/hashing"); // hash digests + password gen (lib/hashing.js)
 const { COMMAND_GROUPS, renderCommands, documentedVerbs } = require("./lib/cli/reference"); // help catalog = single source of truth (lib/reference.js)
-// Documented sentinel verbs NOT bridged into the Nexus TUI as /commands: they
+// Documented darknode verbs NOT bridged into the Nexus TUI as /commands: they
 // block (server/listener), prompt for input, or already have a richer in-TUI
 // handler. Everything else documented becomes a slash command automatically.
 const NEXUS_NO_BRIDGE = new Set(["nexus", "code", "ai", "serve", "listen", "login", "setup", "git", "lab", "api"]);
@@ -177,7 +180,7 @@ async function subs(domain) {
   domain = domain.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
   const ctrl = new AbortController(), to = setTimeout(() => ctrl.abort(), 20000);
   try {
-    const r = await fetch("https://crt.sh/?q=%25." + encodeURIComponent(domain) + "&output=json", { signal: ctrl.signal, headers: { "User-Agent": "Sentinel" } });
+    const r = await fetch("https://crt.sh/?q=%25." + encodeURIComponent(domain) + "&output=json", { signal: ctrl.signal, headers: { "User-Agent": "Darknode" } });
     const txt = await r.text(); let data;
     try { data = JSON.parse(txt); } catch { return { err: "crt.sh is busy — try again in a moment" }; }
     const set = new Set();
@@ -193,7 +196,7 @@ function headReq(url, to) {
   return new Promise((res) => {
     let u; try { u = new URL(url); } catch (_) { return res(null); }
     const lib = u.protocol === "https:" ? https : http;
-    const req = lib.request(u, { method: "GET", timeout: to || 8000, rejectUnauthorized: false, headers: { "User-Agent": "Sentinel" } }, (r) => { const o = { status: r.statusCode, len: r.headers["content-length"] || "", loc: r.headers["location"] || "" }; r.destroy(); res(o); });
+    const req = lib.request(u, { method: "GET", timeout: to || 8000, rejectUnauthorized: false, headers: { "User-Agent": "Darknode" } }, (r) => { const o = { status: r.statusCode, len: r.headers["content-length"] || "", loc: r.headers["location"] || "" }; r.destroy(); res(o); });
     req.on("timeout", () => { req.destroy(); res(null); });
     req.on("error", () => res(null));
     req.end();
@@ -221,7 +224,7 @@ async function cveSearch(q) {
   const isId = /^CVE-\d{4}-\d+$/i.test(q);
   const url = "https://services.nvd.nist.gov/rest/json/cves/2.0?" + (isId ? "cveId=" + q.toUpperCase() : "keywordSearch=" + encodeURIComponent(q)) + "&resultsPerPage=15";
   console.log("  " + gray("searching NVD..."));
-  const r = await fetch(url, { headers: { "User-Agent": "Sentinel" } }).catch((e) => ({ __err: e.message }));
+  const r = await fetch(url, { headers: { "User-Agent": "Darknode" } }).catch((e) => ({ __err: e.message }));
   if (r.__err) { console.log("  " + red(r.__err)); return; }
   if (!r.ok) { console.log("  " + red(r.status + (r.status === 403 ? " — NVD rate limit, wait a moment" : " " + r.statusText))); return; }
   const d = await r.json();
@@ -247,7 +250,7 @@ async function gitClone(url) {
 async function gitPush(msg) {
   const t = ghToken();
   await sh(["add", "-A"]);
-  await sh(["-c", "user.name=Sentinel", "-c", "user.email=sentinel@local", "commit", "-m", msg || "Update via Sentinel"]);
+  await sh(["-c", "user.name=Darknode", "-c", "user.email=darknode@local", "commit", "-m", msg || "Update via Darknode"]);
   const remote = (await sh(["remote", "get-url", "origin"])).stdout.trim();
   const branch = (await sh(["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
   const p = await sh(["push", ghAuth(remote, t), "HEAD:" + branch]);
@@ -261,7 +264,7 @@ async function gitPull() {
 }
 async function ghApiJson(path, method, body) {
   const t = ghToken();
-  const opt = { method: method || "GET", headers: { Accept: "application/vnd.github+json", "User-Agent": "Sentinel" } };
+  const opt = { method: method || "GET", headers: { Accept: "application/vnd.github+json", "User-Agent": "Darknode" } };
   if (t) opt.headers.Authorization = "Bearer " + t;
   if (body) { opt.body = JSON.stringify(body); opt.headers["Content-Type"] = "application/json"; }
   const r = await fetch("https://api.github.com" + path, opt).catch((e) => ({ __err: e.message }));
@@ -389,7 +392,7 @@ async function menuSubs() {
 }
 async function menuGit() {
   h1("GitHub");
-  console.log("  token: " + (ghToken() ? green("set (env)") : red("not set — export SENTINEL_GH_TOKEN=ghp_...")));
+  console.log("  token: " + (ghToken() ? green("set (env)") : red("not set — export DARKNODE_GH_TOKEN=ghp_...")));
   console.log("  actions: clone push pull status log diff branch checkout repos new issues prs issue pr comment gists gist\n");
   const act = await ask("action:");
   console.log("");
@@ -457,14 +460,14 @@ async function menuCheats() {
 function listTools() {
   h1("Tools catalog");
   TOOLS.forEach(([n, cat, inst]) => console.log("  " + bold(n.padEnd(14)) + gray(cat.padEnd(10)) + inst));
-  console.log("\n  " + gray("configure any tool with: ") + "sentinel setup <name>");
+  console.log("\n  " + gray("configure any tool with: ") + "darknode setup <name>");
 }
 // Auto-configure a tool: run its install command, streaming output to the terminal.
 function setupTool(name) {
   return new Promise((resolve) => {
-    if (!name) { console.log("  " + red("usage: sentinel setup <tool>   e.g. sentinel setup nmap")); return resolve(); }
+    if (!name) { console.log("  " + red("usage: darknode setup <tool>   e.g. darknode setup nmap")); return resolve(); }
     const t = TOOLS.find((x) => x[0].toLowerCase() === String(name).toLowerCase());
-    if (!t) { console.log("  " + red("unknown tool. see: sentinel tools")); return resolve(); }
+    if (!t) { console.log("  " + red("unknown tool. see: darknode tools")); return resolve(); }
     let inst = t[2];
     if (process.platform !== "win32" && inst.startsWith("sudo ") && process.getuid && process.getuid() !== 0 && process.env.SENTINEL_NO_PKEXEC !== "1") {
       // prefer a graphical prompt if available, else sudo will prompt in the terminal
@@ -494,7 +497,7 @@ function labList() {
     console.log("  " + " ".repeat(12) + cmd);
     console.log("  " + " ".repeat(12) + gray("url ") + url + "   " + gray("login ") + creds + "\n");
   });
-  console.log("  " + gray("tip: ") + "sentinel lab <id>" + gray("  prints one target's launch command"));
+  console.log("  " + gray("tip: ") + "darknode lab <id>" + gray("  prints one target's launch command"));
 }
 function labOne(id) {
   const t = PRACTICE.find((x) => x[0] === String(id).toLowerCase());
@@ -527,7 +530,7 @@ async function labCmd(rest) {
   if (sub === "down") return labDown(rest[1]);
   if (PRACTICE.find((x) => x[0] === sub)) return labOne(sub);
   if (LAB_TARGETS[sub]) return labUp(sub, rest.slice(1));
-  console.log("  " + red("unknown lab command") + gray("  — sentinel lab [doctor | up <target> | sandbox | down] · practice ids: " + PRACTICE.map((x) => x[0]).join(", ")));
+  console.log("  " + red("unknown lab command") + gray("  — darknode lab [doctor | up <target> | sandbox | down] · practice ids: " + PRACTICE.map((x) => x[0]).join(", ")));
 }
 
 function labDoctor() {
@@ -540,10 +543,10 @@ function labDoctor() {
   const anyVM = hasBin("vboxmanage") || hasBin("VBoxManage") || hasBin("qemu-system-x86_64");
   const anyDocker = hasBin("docker");
   console.log("");
-  if (anyDocker) console.log("  " + green("→ ") + bold("sentinel lab up juice-shop") + gray("   isolated web target (docker, 127.0.0.1 only)"));
-  if (anyVM) console.log("  " + green("→ ") + bold("sentinel lab up metasploitable") + gray("   isolated VM target (host-only network)"));
+  if (anyDocker) console.log("  " + green("→ ") + bold("darknode lab up juice-shop") + gray("   isolated web target (docker, 127.0.0.1 only)"));
+  if (anyVM) console.log("  " + green("→ ") + bold("darknode lab up metasploitable") + gray("   isolated VM target (host-only network)"));
   if (!anyVM && !anyDocker) console.log("  " + yellow("no hypervisor or Docker found") + gray(" — install Docker (light) or VirtualBox (full VMs), then re-run"));
-  console.log("  " + green("→ ") + bold("sentinel lab sandbox") + gray("   air-gapped malware-detonation recipe"));
+  console.log("  " + green("→ ") + bold("darknode lab sandbox") + gray("   air-gapped malware-detonation recipe"));
 }
 
 function labUp(target, opts) {
@@ -556,7 +559,7 @@ function labUp(target, opts) {
     const cmd = "docker run --rm -d --name nexus-lab-" + target + " -p 127.0.0.1:" + t.hostPort + ":" + t.port + " " + t.image;
     console.log("  " + gray("isolated launch (bound to loopback — not reachable from your LAN):"));
     console.log("    " + bold(cmd));
-    console.log("  " + gray("then attack ") + cyan("http://127.0.0.1:" + t.hostPort) + gray("   ·  teardown: ") + "sentinel lab down " + target);
+    console.log("  " + gray("then attack ") + cyan("http://127.0.0.1:" + t.hostPort) + gray("   ·  teardown: ") + "darknode lab down " + target);
     if (run) {
       if (!hasBin("docker")) { console.log("\n  " + red("--run: docker not found") + gray(" — install Docker or run the command above yourself")); return; }
       console.log("\n  " + gray("--run: starting…"));
@@ -589,7 +592,7 @@ function labSandbox() {
   ];
   const w = Math.max.apply(null, stack.map((s) => s[0].length));
   stack.forEach(([k, v]) => console.log("  " + bold(cyan(k.padEnd(w))) + "  " + v));
-  console.log("\n  " + gray("checklist: ") + "sentinel lab doctor" + gray("   ·  vulnerable practice targets: ") + "sentinel lab");
+  console.log("\n  " + gray("checklist: ") + "darknode lab doctor" + gray("   ·  vulnerable practice targets: ") + "darknode lab");
   console.log("  " + gray("recommended flow: import REMnux → snapshot 'clean' → start INetSim → drop sample → detonate → revert snapshot."));
 }
 
@@ -685,7 +688,7 @@ function fileHash(f) {
 // script can drive Nexus programmatically. POST /run {goal} runs one headless
 // turn (via the real `nexus --print` path in a child, so engine behavior is
 // identical) and returns its output. Same safety shape as the honeypot bridge:
-// 127.0.0.1 only + Bearer token. `sentinel nexus serve [port]`.
+// 127.0.0.1 only + Bearer token. `darknode nexus serve [port]`.
 async function nexusServe(args, ctx) {
   const crypto = require("crypto");
   const port = parseInt((args || []).find((a) => /^\d+$/.test(a)) || process.env.SENTINEL_SERVE_PORT || "", 10) || 8765;
@@ -767,7 +770,7 @@ function nexusUpdate(opts) {
   const cp = require("child_process"), fs = require("fs"), path = require("path");
   const dir = __dirname;
   const run = (c, a) => cp.spawnSync(c, a, { cwd: dir, encoding: "utf8", timeout: 60000 });
-  if (!fs.existsSync(path.join(dir, ".git"))) return "installed at " + dir + "\nnot a git checkout — update with:  npm install -g sentinel-cli@latest\n(or re-pull from wherever you cloned it)";
+  if (!fs.existsSync(path.join(dir, ".git"))) return "installed at " + dir + "\nnot a git checkout — update with:  npm install -g darknode-cli@latest\n(or re-pull from wherever you cloned it)";
   if (!hasBin("git")) return "git not found — install git to self-update, or reinstall the CLI.";
   const f = run("git", ["fetch", "--quiet", "origin"]);
   if (f.status !== 0) return "update check failed: " + (((f.stderr || "") + (f.error ? f.error.message : "")).trim() || "git fetch error");
@@ -779,15 +782,15 @@ function nexusUpdate(opts) {
   const log = run("git", ["log", "--oneline", "-6", "HEAD.." + remote]).stdout.trim();
   const L = [behind + " update(s) available for v" + VERSION + ":"];
   if (log) L.push(log.split("\n").map((l) => "  " + l).join("\n"));
-  if (!apply) { L.push("run  " + cyan("sentinel update") + "  (or  /update apply  in the TUI) to install."); return L.join("\n"); }
+  if (!apply) { L.push("run  " + cyan("darknode update") + "  (or  /update apply  in the TUI) to install."); return L.join("\n"); }
   const dirty = run("git", ["status", "--porcelain"]).stdout.trim();
   if (dirty) { L.push("can't auto-update — you have local changes in " + dir + ". Commit or stash them first."); return L.join("\n"); }
   const pull = run("git", ["pull", "--ff-only", "--quiet"]);
   if (pull.status !== 0) { L.push("update failed: " + (((pull.stderr || "") + (pull.error ? pull.error.message : "")).trim() || "git pull error")); return L.join("\n"); }
   const changed = (run("git", ["diff", "--name-only", local, "HEAD"]).stdout) || "";
   if (/package(-lock)?\.json/.test(changed) && hasBin("npm")) { const ni = cp.spawnSync("npm", ["install", "--silent", "--no-audit", "--no-fund"], { cwd: dir, encoding: "utf8", timeout: 600000 }); if (ni.status !== 0) L.push("note: npm install after update reported an issue — run `npm install` in " + dir); }
-  let newV = VERSION; try { const m = fs.readFileSync(path.join(dir, "sentinel.js"), "utf8").match(/const VERSION = "([^"]+)"/); if (m) newV = m[1]; } catch (_) {}
-  L.push(green("updated") + " v" + VERSION + " → v" + newV + " — restart Nexus (" + cyan("/exit") + ", then " + cyan("sentinel nexus") + ") to load it.");
+  let newV = VERSION; try { const m = fs.readFileSync(path.join(dir, "darknode.js"), "utf8").match(/const VERSION = "([^"]+)"/); if (m) newV = m[1]; } catch (_) {}
+  L.push(green("updated") + " v" + VERSION + " → v" + newV + " — restart Nexus (" + cyan("/exit") + ", then " + cyan("darknode nexus") + ") to load it.");
   return L.join("\n");
 }
 
@@ -800,9 +803,9 @@ async function cli(args) {
   else if (cmd === "headers") { const r = await headers(rest[0] || ""); if (r.err) { console.log(r.err); return; } console.log(r.status + " server:" + r.server); SEC.forEach(([k, label]) => console.log((r.h[k] !== undefined ? "[+] " : "[-] ") + label)); }
   else if (cmd === "cert") { const c = await certInspect(rest[0] || ""); if (!c.ok) { console.log(c.error); return; } console.log("Protocol " + c.protocol + " " + c.cipher); console.log("Subject  " + c.subject); console.log("Issuer   " + c.issuer); console.log("Valid    " + c.valid_from + " -> " + c.valid_to + (c.daysLeft != null ? " (" + c.daysLeft + "d left)" : "")); console.log("SAN      " + c.san); console.log("SHA-256  " + c.fp); }
   else if (cmd === "subs") { const r = await subs(rest[0] || ""); if (r.err) { console.log(r.err); return; } r.forEach((s) => console.log(s)); }
-  else if (cmd === "nmap") { const host = rest[0]; if (!host) return usage(); if (hasBin("nmap")) await runTool("nmap", rest.length > 1 ? rest : ["-T4", "-F", host]); else { console.log(yellow("nmap not installed — using Sentinel's native scanner instead.")); await scan(host, parsePorts(rest[1])); } }
+  else if (cmd === "nmap") { const host = rest[0]; if (!host) return usage(); if (hasBin("nmap")) await runTool("nmap", rest.length > 1 ? rest : ["-T4", "-F", host]); else { console.log(yellow("nmap not installed — using Darknode's native scanner instead.")); await scan(host, parsePorts(rest[1])); } }
   else if (cmd === "nuclei") { const t = rest[0]; if (!t) return usage(); if (!hasBin("nuclei")) { console.log(red("nuclei not installed — get it: https://github.com/projectdiscovery/nuclei  (go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest)")); return; } await runTool("nuclei", ["-u", t, ...rest.slice(1)]); }
-  else if (cmd === "hashcat") { if (!hasBin("hashcat")) { console.log(red("hashcat not installed — apt install hashcat  /  brew install hashcat")); return; } const hf = rest[0], mode = rest[1]; if (!hf || !mode) { console.log("usage: sentinel hashcat <hashfile> <mode> [wordlist]\n  common modes:  0 MD5 · 100 SHA1 · 1400 SHA256 · 1700 SHA512 · 1800 sha512crypt · 3200 bcrypt · 1000 NTLM · 5600 NetNTLMv2 · 22000 WPA\n  straight/dictionary attack against the wordlist (rockyou by default)"); return; } await runTool("hashcat", ["-m", mode, "-a", "0", hf, rest[2] || "/usr/share/wordlists/rockyou.txt"]); }
+  else if (cmd === "hashcat") { if (!hasBin("hashcat")) { console.log(red("hashcat not installed — apt install hashcat  /  brew install hashcat")); return; } const hf = rest[0], mode = rest[1]; if (!hf || !mode) { console.log("usage: darknode hashcat <hashfile> <mode> [wordlist]\n  common modes:  0 MD5 · 100 SHA1 · 1400 SHA256 · 1700 SHA512 · 1800 sha512crypt · 3200 bcrypt · 1000 NTLM · 5600 NetNTLMv2 · 22000 WPA\n  straight/dictionary attack against the wordlist (rockyou by default)"); return; } await runTool("hashcat", ["-m", mode, "-a", "0", hf, rest[2] || "/usr/share/wordlists/rockyou.txt"]); }
   else if (cmd === "subrecon") { if (!rest[0]) return usage(); await subrecon(rest[0]); }
   else if (cmd === "cve") await cveSearch(rest.join(" "));
   else if (cmd === "fuzz") await fuzz(rest[0], rest[1]);
@@ -825,12 +828,12 @@ async function cli(args) {
     else if (sub === "comment") await ghComment(rest[1], rest[2], rest.slice(3).join(" "));
     else if (sub === "gists") await ghGists();
     else if (sub === "gist") await ghNewGist(rest[1], rest.slice(2).join(" "));
-    else console.log("git clone|push|pull|status|log|diff|branch|checkout|repos|new|issues|prs|issue|pr|comment|gists|gist  (token: SENTINEL_GH_TOKEN)");
+    else console.log("git clone|push|pull|status|log|diff|branch|checkout|repos|new|issues|prs|issue|pr|comment|gists|gist  (token: DARKNODE_GH_TOKEN)");
   }
-  else if (cmd === "totp") { const secret = rest.join(" ").replace(/\s+/g, ""); const code = totp(secret); if (!code) { console.log(red("usage: sentinel totp <base32-secret>   — generate a TOTP 2FA code")); } else { console.log(bold(cyan(code))); const left = secondsRemaining(30); console.log(gray("  valid " + left + "s" + (left <= 5 ? " (expiring — a new code is imminent)" : ""))); } }
+  else if (cmd === "totp") { const secret = rest.join(" ").replace(/\s+/g, ""); const code = totp(secret); if (!code) { console.log(red("usage: darknode totp <base32-secret>   — generate a TOTP 2FA code")); } else { console.log(bold(cyan(code))); const left = secondsRemaining(30); console.log(gray("  valid " + left + "s" + (left <= 5 ? " (expiring — a new code is imminent)" : ""))); } }
   else if (cmd === "hash") console.log(hashes(rest.join(" ")));
   else if (cmd === "lab") { await labCmd(rest); }
-  else if (cmd === "update") { banner(); h1("Update Nexus / Sentinel CLI"); const check = rest.includes("--check") || rest.includes("-n"); console.log("  installed  " + gray(__dirname) + "\n  version    " + cyan("v" + VERSION) + "\n"); console.log("  " + nexusUpdate({ apply: !check }).split("\n").join("\n  ") + "\n"); }
+  else if (cmd === "update") { banner(); h1("Update Nexus / Darknode CLI"); const check = rest.includes("--check") || rest.includes("-n"); console.log("  installed  " + gray(__dirname) + "\n  version    " + cyan("v" + VERSION) + "\n"); console.log("  " + nexusUpdate({ apply: !check }).split("\n").join("\n  ") + "\n"); }
   else if (cmd === "payloads") printPayloads(rest[0]);
   else if (cmd === "genpass") console.log(genPass(rest[0]));
   else if (cmd === "myip") console.log(await myIp());
@@ -844,20 +847,20 @@ async function cli(args) {
       const apiToken = process.env.SENTINEL_API_TOKEN || null;
       const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken });
       srv.listen(apiPort, "0.0.0.0", () => {
-        h1("Sentinel API Server"); console.log("  " + green("listening ") + cyan("http://0.0.0.0:" + apiPort));
-        if (t) console.log("  token     " + bold(t)); else console.log("  " + yellow("no API key required (set SENTINEL_API_TOKEN to require one)"));
+        h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://0.0.0.0:" + apiPort));
+        if (t) console.log("  token     " + bold(t)); else console.log("  " + yellow("no API key required (set DARKNODE_API_TOKEN to require one)"));
         console.log("\n  " + gray("health  ") + "curl http://localhost:" + apiPort + "/health");
         console.log("  " + gray("scan    ") + "curl -s http://localhost:" + apiPort + "/api/v1/scan/url -H 'Content-Type: application/json' -d '{\"url\":\"https://target.com\"}'");
         console.log("\n  " + gray("Ctrl-C to stop"));
       });
       srv.on("error", (e) => { console.log(red("  api server failed: " + (e && e.message || e))); process.exit(1); });
       await new Promise(() => {});
-    } else if (sub === "stop") { console.log(gray("  send SIGTERM to the sentinel api process to stop it")); }
-    else { console.log("sentinel api start [--port 8080]   start the REST API server\nsentinel api stop                  stop the server"); }
+    } else if (sub === "stop") { console.log(gray("  send SIGTERM to the darknode api process to stop it")); }
+    else { console.log("darknode api start [--port 8080]   start the REST API server\ndarknode api stop                  stop the server"); }
   }
   else if (cmd === "serve") { serveDir(rest[0], rest[1]); await new Promise(() => {}); }
   else if (cmd === "listen") { listen(rest[0]); await new Promise(() => {}); }
-  else if (cmd === "tools") { h1("Tools"); TOOLS.forEach(([n, cat, inst]) => console.log("  " + bold(n.padEnd(14)) + gray(cat.padEnd(10)) + (inst.split(" ").slice(0,3).join(" ")))); console.log("\n  " + gray("configure any tool with: ") + "sentinel setup <name>"); }
+  else if (cmd === "tools") { h1("Tools"); TOOLS.forEach(([n, cat, inst]) => console.log("  " + bold(n.padEnd(14)) + gray(cat.padEnd(10)) + (inst.split(" ").slice(0,3).join(" ")))); console.log("\n  " + gray("configure any tool with: ") + "darknode setup <name>"); }
   else if (cmd === "setup") await setupTool(rest[0]);
   else if (cmd === "init") nexusInit();
   else if (cmd === "docs" || cmd === "doc" || (cmd === "help" && rest[0])) nexusDocs(rest[0]);
@@ -865,21 +868,21 @@ async function cli(args) {
     const a0 = (rest[0] || "").toLowerCase();
     if (a0 === "--help" || a0 === "-h" || a0 === "help") loginHelp();
     else if (a0 === "config") loginConfigWrite(rest.slice(1));
-    else if (a0 === "status" || a0 === "whoami") { const a = nexusAuth(); console.log(a ? "  " + green("signed in as ") + (a.name || a.email || a.uid) : "  " + gray("not signed in — paste your code: `sentinel login` (see `sentinel login --help`)")); }
+    else if (a0 === "status" || a0 === "whoami") { const a = nexusAuth(); console.log(a ? "  " + green("signed in as ") + (a.name || a.email || a.uid) : "  " + gray("not signed in — paste your code: `darknode login` (see `darknode login --help`)")); }
     else if (["google", "g", "github", "gh"].includes(a0)) { try { await nexusLogin(a0); } catch (e) { console.log("  " + red(e.message)); } }
     else { try { const code = rest[0] || await ask("Paste your code from the website (Settings → Nexus CLI):"); await nexusLoginCode(code); } catch (e) { console.log("  " + red(e.message)); } }
   }
   else if (cmd === "logout") console.log(nexusLogout() ? "  " + green("signed out.") : "  " + gray("was not signed in."));
   else if (cmd === "whoami") { const a = nexusAuth(); console.log(a ? "  " + (a.name || a.email || a.uid) + gray("  " + String(a.provider).replace(".com", "")) : "  " + gray("not signed in")); }
   else if (cmd === "policy") {
-    if (rest[0] === "init") { const fs = require("fs"), path = require("path"); const dir = path.join(process.cwd(), ".nexus"), f = path.join(dir, "policy.json"); if (fs.existsSync(f)) console.log("  " + yellow(".nexus/policy.json already exists — not overwriting")); else { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, JSON.stringify(POLICY_DEFAULTS, null, 2) + "\n"); console.log("  " + green("created ") + ".nexus/policy.json" + gray(" — a starting policy; tighten protected paths, denied commands, and limits, then ") + cyan("sentinel policy") + gray(" to review")); } return; }
+    if (rest[0] === "init") { const fs = require("fs"), path = require("path"); const dir = path.join(process.cwd(), ".nexus"), f = path.join(dir, "policy.json"); if (fs.existsSync(f)) console.log("  " + yellow(".nexus/policy.json already exists — not overwriting")); else { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, JSON.stringify(POLICY_DEFAULTS, null, 2) + "\n"); console.log("  " + green("created ") + ".nexus/policy.json" + gray(" — a starting policy; tighten protected paths, denied commands, and limits, then ") + cyan("darknode policy") + gray(" to review")); } return; }
     const p = loadPolicy(process.cwd());
     if (rest[0] === "--json") { console.log(JSON.stringify(p, null, 2)); }
-    else { banner(); h1("Effective security policy" + (p.org ? "  (ORG-ENFORCED)" : "")); const row = (k, v) => console.log("  " + k.padEnd(22) + v); row("source", p.org ? "org floor (~/.sentinel/policy.json) + local .nexus/policy.json" : ".nexus/policy.json (or defaults)"); row("protected paths", (p.protectedPaths || []).length + "  " + gray((p.protectedPaths || []).slice(0, 6).join(", ") + ((p.protectedPaths || []).length > 6 ? " …" : ""))); row("denied commands", (p.deniedCommands || []).length ? p.deniedCommands.join(", ") : gray("(built-in destructive guard only)")); row("max files / turn", p.maxFilesPerTurn || gray("unlimited")); row("block secret writes", p.blockSecrets ? green("on") : red("off")); row("network", p.allowNetwork ? "allowed" : red("blocked")); row("audit", p.audit ? "on (.nexus/audit.jsonl, hash-chained)" : gray("off")); const warns = policyWarnings(process.cwd()); if (warns.length) { console.log("\n  " + yellow("config warnings:")); warns.forEach((wn) => console.log("    " + yellow("• " + wn))); } console.log("\n  " + gray("machine-readable: ") + cyan("sentinel policy --json") + "\n"); }
+    else { banner(); h1("Effective security policy" + (p.org ? "  (ORG-ENFORCED)" : "")); const row = (k, v) => console.log("  " + k.padEnd(22) + v); row("source", p.org ? "org floor (~/.darknode/policy.json) + local .nexus/policy.json" : ".nexus/policy.json (or defaults)"); row("protected paths", (p.protectedPaths || []).length + "  " + gray((p.protectedPaths || []).slice(0, 6).join(", ") + ((p.protectedPaths || []).length > 6 ? " …" : ""))); row("denied commands", (p.deniedCommands || []).length ? p.deniedCommands.join(", ") : gray("(built-in destructive guard only)")); row("max files / turn", p.maxFilesPerTurn || gray("unlimited")); row("block secret writes", p.blockSecrets ? green("on") : red("off")); row("network", p.allowNetwork ? "allowed" : red("blocked")); row("audit", p.audit ? "on (.nexus/audit.jsonl, hash-chained)" : gray("off")); const warns = policyWarnings(process.cwd()); if (warns.length) { console.log("\n  " + yellow("config warnings:")); warns.forEach((wn) => console.log("    " + yellow("• " + wn))); } console.log("\n  " + gray("machine-readable: ") + cyan("darknode policy --json") + "\n"); }
   }
   else if (cmd === "audit") {
     if (rest[0] === "verify") { const v = auditVerify(process.cwd()); if (v.empty) { console.log("  " + gray("audit trail is empty — nothing to verify")); process.exit(0); } console.log(v.ok ? "  " + green("OK") + " audit trail intact — " + v.count + " record(s), hash chain verified" : "  " + red("TAMPERED") + " — " + v.reason + " at record #" + v.badLine + " of " + v.count); process.exit(v.ok ? 0 : 1); } // CI gate: non-zero exit on tamper
-    else { try { const fs = require("fs"), path = require("path"); const raw = fs.readFileSync(path.join(process.cwd(), ".nexus", "audit.jsonl"), "utf8").trim().split("\n").filter(Boolean); const show = (rest[0] === "--json") ? raw.slice(-50).join("\n") : raw.slice(-20).map((l) => { try { const e = JSON.parse(l); return "  " + gray((e.ts || "").slice(0, 19).replace("T", " ")) + " " + (e.status === "blocked" ? red("blocked") : e.status === "error" ? yellow("error  ") : green("ok     ")) + " " + (e.tool || "") + gray(" " + (e.path || e.cmd || "") + (e.reason ? " — " + e.reason : "")); } catch (_) { return ""; } }).filter(Boolean).join("\n"); const v = auditVerify(process.cwd()); console.log(show + "\n  " + (v.ok ? green("chain verified (" + v.count + ")") : red("CHAIN BROKEN — sentinel audit verify"))); } catch (_) { console.log("  " + gray("no audit trail (.nexus/audit.jsonl) in this directory")); } }
+    else { try { const fs = require("fs"), path = require("path"); const raw = fs.readFileSync(path.join(process.cwd(), ".nexus", "audit.jsonl"), "utf8").trim().split("\n").filter(Boolean); const show = (rest[0] === "--json") ? raw.slice(-50).join("\n") : raw.slice(-20).map((l) => { try { const e = JSON.parse(l); return "  " + gray((e.ts || "").slice(0, 19).replace("T", " ")) + " " + (e.status === "blocked" ? red("blocked") : e.status === "error" ? yellow("error  ") : green("ok     ")) + " " + (e.tool || "") + gray(" " + (e.path || e.cmd || "") + (e.reason ? " — " + e.reason : "")); } catch (_) { return ""; } }).filter(Boolean).join("\n"); const v = auditVerify(process.cwd()); console.log(show + "\n  " + (v.ok ? green("chain verified (" + v.count + ")") : red("CHAIN BROKEN — darknode audit verify"))); } catch (_) { console.log("  " + gray("no audit trail (.nexus/audit.jsonl) in this directory")); } }
   }
   else if (cmd === "report") {
     // Headless AI cost/usage report for finance, CI, and chargeback — reads the
@@ -889,7 +892,7 @@ async function cli(args) {
     const recs = loadUsage(process.cwd(), since ? { since } : {});
     const s = summarize(recs);
     if (rest.includes("--json")) console.log(JSON.stringify(s, null, 2));
-    else if (!recs.length) console.log("  " + gray("no usage recorded in .nexus/usage.jsonl" + (since ? " since " + since : "") + " — run some Nexus turns first (sentinel nexus)"));
+    else if (!recs.length) console.log("  " + gray("no usage recorded in .nexus/usage.jsonl" + (since ? " since " + since : "") + " — run some Nexus turns first (darknode nexus)"));
     else console.log("\n" + renderReport(s, { project: path.basename(process.cwd()) }) + "\n");
   }
   else if (cmd === "savings") {
@@ -901,7 +904,7 @@ async function cli(args) {
     const recs = loadUsage(process.cwd(), since ? { since } : {});
     const a = analyzeSavings(recs, !isNaN(frac) ? { mechanicalFraction: frac } : {});
     if (rest.includes("--json")) console.log(JSON.stringify(a, null, 2));
-    else if (!recs.length) console.log("  " + gray("no usage recorded in .nexus/usage.jsonl" + (since ? " since " + since : "") + " — run some Nexus turns first (sentinel nexus)"));
+    else if (!recs.length) console.log("  " + gray("no usage recorded in .nexus/usage.jsonl" + (since ? " since " + since : "") + " — run some Nexus turns first (darknode nexus)"));
     else console.log("\n" + renderSavings(a, { project: path.basename(process.cwd()) }) + "\n");
   }
   else if (cmd === "changelog") {
@@ -972,7 +975,7 @@ async function cli(args) {
     // Enterprise SOC2/audit export: a signed bundle over audit + usage + policy.
     const fs = require("fs");
     if (rest[0] === "verify") {
-      const f = rest[1]; if (!f) { console.log(red("usage: sentinel compliance verify <bundle.json>")); process.exit(2); }
+      const f = rest[1]; if (!f) { console.log(red("usage: darknode compliance verify <bundle.json>")); process.exit(2); }
       try { const b = JSON.parse(fs.readFileSync(f, "utf8")); const key = process.env.SENTINEL_SIGNING_KEY || ""; const v = verifyBundle(b, key || undefined);
         const sig = v.sigOk === null ? (b.signature ? gray("signature present — set SENTINEL_SIGNING_KEY to verify it") : gray("unsigned")) : (v.sigOk ? green("signature valid") : red("signature INVALID"));
         console.log("  integrity  " + (v.hashOk ? green("OK — bundle not altered") : red("TAMPERED")) + "\n  signature  " + sig);
@@ -995,12 +998,12 @@ async function cli(args) {
     banner(); h1("Nexus doctor");
     console.log("  " + bold("AI engines") + gray("  (● installed)"));
     for (const e of ENGINE_ORDER) { const on = engineAvail(e); console.log("    " + (on ? green("●") : gray("○")) + " " + e.padEnd(9) + gray(ENGINES[e].label) + (!on && ENGINES[e].install ? gray("  — install: ") + cyan(ENGINES[e].install) : "")); }
-    console.log("    " + (reach ? green("●") : yellow("○")) + " " + "ollama".padEnd(9) + gray(reach ? "server reachable" : "server not reachable — start Ollama or run `sentinel nexus setup`"));
-    console.log("\n  " + bold("Account") + "  " + (auth ? green("signed in ") + gray("as " + health.account) : gray("not signed in — `sentinel login`")));
+    console.log("    " + (reach ? green("●") : yellow("○")) + " " + "ollama".padEnd(9) + gray(reach ? "server reachable" : "server not reachable — start Ollama or run `darknode nexus setup`"));
+    console.log("\n  " + bold("Account") + "  " + (auth ? green("signed in ") + gray("as " + health.account) : gray("not signed in — `darknode login`")));
     console.log("\n  " + bold("Security policy") + "  " + (warns.length ? yellow(warns.length + " warning(s)") : green("valid")));
     warns.forEach((w) => console.log("    " + yellow("• " + w)));
     console.log("\n  " + bold("Audit trail") + "  " + (v.empty ? gray("empty (no enforced actions yet)") : v.ok ? green("intact") + gray(" — " + v.count + " records, hash chain verified") : red("TAMPERED") + " — " + v.reason));
-    console.log("\n  " + (problem ? yellow("some checks need attention") : green("all systems healthy")) + gray("   (machine-readable: sentinel doctor --json)") + "\n");
+    console.log("\n  " + (problem ? yellow("some checks need attention") : green("all systems healthy")) + gray("   (machine-readable: darknode doctor --json)") + "\n");
     process.exit(problem ? 1 : 0);
   }
   else if (cmd === "nexus" || cmd === "code" || cmd === "ai") {
@@ -1023,11 +1026,11 @@ async function cli(args) {
 
 // ========== global config, auth (Firebase-backed /login) & first-run setup ==========
 // Nexus keeps machine-wide state (login tokens, Firebase keys, setup marker) in
-// ~/.sentinel/ so a signed-in session and installed models persist across every
+// ~/.darknode/ so a signed-in session and installed models persist across every
 // project, unlike the per-project .nexus/ dir.
-function sentinelHome() { const os = require("os"), path = require("path"), fs = require("fs"); const d = path.join(os.homedir(), ".sentinel"); try { fs.mkdirSync(d, { recursive: true }); } catch (_) {} return d; }
-function readGlobal(name, def) { const fs = require("fs"), path = require("path"); try { return JSON.parse(fs.readFileSync(path.join(sentinelHome(), name), "utf8")); } catch (_) { return def === undefined ? null : def; } }
-function writeGlobal(name, obj) { const fs = require("fs"), path = require("path"); try { const p = path.join(sentinelHome(), name); fs.writeFileSync(p, JSON.stringify(obj, null, 2)); try { fs.chmodSync(p, 0o600); } catch (_) {} return true; } catch (_) { return false; } } // 0600: tokens are secrets
+function darknodeHome() { const os = require("os"), path = require("path"), fs = require("fs"); const d = path.join(os.homedir(), ".darknode"); try { fs.mkdirSync(d, { recursive: true }); } catch (_) {} return d; }
+function readGlobal(name, def) { const fs = require("fs"), path = require("path"); try { return JSON.parse(fs.readFileSync(path.join(darknodeHome(), name), "utf8")); } catch (_) { return def === undefined ? null : def; } }
+function writeGlobal(name, obj) { const fs = require("fs"), path = require("path"); try { const p = path.join(darknodeHome(), name); fs.writeFileSync(p, JSON.stringify(obj, null, 2)); try { fs.chmodSync(p, 0o600); } catch (_) {} return true; } catch (_) { return false; } } // 0600: tokens are secrets
 
 // Minimal dependency-free HTTP(S) JSON client (the whole CLI ships with zero deps).
 function httpReq(opts) {
@@ -1053,11 +1056,11 @@ function openBrowser(url) {
 }
 
 // ---- Firebase Identity Toolkit REST (verifies the user against the project) ----
-// Bundled PUBLIC config for the Sentinel web project — a Firebase web apiKey only
+// Bundled PUBLIC config for the Darknode web project — a Firebase web apiKey only
 // identifies the project, it is not a secret (it ships in the website's JS too).
-// This makes `sentinel login` work out-of-the-box with the website's accounts; a
-// ~/.sentinel/firebase.json overrides any field (e.g. to point at your own project).
-const DEFAULT_FIREBASE = { apiKey: "AIzaSyD3CJO7PLQdRvPOWDqehSlRwEeA5odCTDE", authDomain: "sentinel-b4194.firebaseapp.com", projectId: "sentinel-b4194" };
+// This makes `darknode login` work out-of-the-box with the website's accounts; a
+// ~/.darknode/firebase.json overrides any field (e.g. to point at your own project).
+const DEFAULT_FIREBASE = { apiKey: "AIzaSyD3CJO7PLQdRvPOWDqehSlRwEeA5odCTDE", authDomain: "darknode-b4194.firebaseapp.com", projectId: "darknode-b4194" };
 function firebaseCfg() { return Object.assign({}, DEFAULT_FIREBASE, readGlobal("firebase.json", {}) || {}); }
 function firebaseReady(c) { c = c || firebaseCfg(); return !!(c && c.apiKey); }
 async function firebaseSignInWithIdp(providerId, idpToken) {
@@ -1117,11 +1120,11 @@ async function googleLoopbackFlow(clientId, clientSecret, log) {
 }
 
 function nexusAuth() { return readGlobal("auth.json", null); }
-function nexusLogout() { const fs = require("fs"), path = require("path"); try { fs.unlinkSync(path.join(sentinelHome(), "auth.json")); return true; } catch (_) { return false; } }
+function nexusLogout() { const fs = require("fs"), path = require("path"); try { fs.unlinkSync(path.join(darknodeHome(), "auth.json")); return true; } catch (_) { return false; } }
 async function nexusLogin(provider, log) {
   log = log || ((s) => console.log("  " + s));
   const c = firebaseCfg();
-  if (!firebaseReady(c)) { log(red("Firebase isn't configured yet.")); log("Save your web config to " + cyan(require("path").join(sentinelHome(), "firebase.json")) + " — see " + cyan("sentinel login --help")); return { ok: false, needConfig: true }; }
+  if (!firebaseReady(c)) { log(red("Firebase isn't configured yet.")); log("Save your web config to " + cyan(require("path").join(darknodeHome(), "firebase.json")) + " — see " + cyan("darknode login --help")); return { ok: false, needConfig: true }; }
   provider = (provider || "").toLowerCase();
   let idpToken, providerId;
   if (provider === "github" || provider === "gh") {
@@ -1132,7 +1135,7 @@ async function nexusLogin(provider, log) {
     idpToken = tok;
   } else if (provider === "google" || provider === "g") {
     providerId = "google.com";
-    if (!c.googleClientId || !c.googleClientSecret) throw new Error("googleClientId/googleClientSecret not set in firebase.json (see `sentinel login --help`)");
+    if (!c.googleClientId || !c.googleClientSecret) throw new Error("googleClientId/googleClientSecret not set in firebase.json (see `darknode login --help`)");
     idpToken = await googleLoopbackFlow(c.googleClientId, c.googleClientSecret, log);
   } else throw new Error("usage: login google | login github");
   log("verifying with Firebase…");
@@ -1162,13 +1165,13 @@ async function nexusLoginCode(code, log) {
 function loginHelp() {
   banner(); h1("Nexus login");
   console.log("  The easy way — no OAuth setup, same account as the website:\n");
-  console.log("  " + bold("1.") + " Sign in at the Sentinel website (Google, GitHub, or email).");
+  console.log("  " + bold("1.") + " Sign in at the Darknode website (Google, GitHub, or email).");
   console.log("  " + bold("2.") + " Open " + bold("Settings → Nexus CLI") + " and copy your code.");
-  console.log("  " + bold("3.") + " Here, run " + cyan("sentinel login") + gray(" (it will prompt) — or ") + cyan("sentinel login <code>") + gray(" — and paste it."));
-  console.log("     " + gray("In the Nexus TUI: type ") + cyan("/login <code>") + gray(". Check with ") + cyan("sentinel whoami") + gray("."));
-  console.log("\n  " + gray("Advanced: ") + cyan("sentinel login google") + gray(" / ") + cyan("github") + gray(" do a direct OAuth flow — that path needs your own keys in ") + require("path").join(sentinelHome(), "firebase.json") + gray(" (googleClientId/Secret, githubClientId). Most people should use the code above instead.") + "\n");
+  console.log("  " + bold("3.") + " Here, run " + cyan("darknode login") + gray(" (it will prompt) — or ") + cyan("darknode login <code>") + gray(" — and paste it."));
+  console.log("     " + gray("In the Nexus TUI: type ") + cyan("/login <code>") + gray(". Check with ") + cyan("darknode whoami") + gray("."));
+  console.log("\n  " + gray("Advanced: ") + cyan("darknode login google") + gray(" / ") + cyan("github") + gray(" do a direct OAuth flow — that path needs your own keys in ") + require("path").join(darknodeHome(), "firebase.json") + gray(" (googleClientId/Secret, githubClientId). Most people should use the code above instead.") + "\n");
 }
-function loginConfigWrite(kv) { const cur = firebaseCfg() || {}; let n = 0; for (const p of kv) { const i = p.indexOf("="); if (i > 0) { cur[p.slice(0, i)] = p.slice(i + 1); n++; } } writeGlobal("firebase.json", cur); console.log("  " + green("saved " + n + " field(s) → ") + require("path").join(sentinelHome(), "firebase.json")); }
+function loginConfigWrite(kv) { const cur = firebaseCfg() || {}; let n = 0; for (const p of kv) { const i = p.indexOf("="); if (i > 0) { cur[p.slice(0, i)] = p.slice(i + 1); n++; } } writeGlobal("firebase.json", cur); console.log("  " + green("saved " + n + " field(s) → ") + require("path").join(darknodeHome(), "firebase.json")); }
 
 // ---- Ollama auto-install + model pull (first-run "download everything" flow) ----
 function ollamaReachable() { return new Promise((res) => { const r = require("http").get({ host: process.env.OLLAMA_HOST || "127.0.0.1", port: +(process.env.OLLAMA_PORT || 11434), path: "/api/tags", timeout: 1500 }, () => res(true)); r.on("error", () => res(false)); r.on("timeout", () => { r.destroy(); res(false); }); }); }
@@ -1193,7 +1196,7 @@ async function nexusSetup(opts) {
     else log(gray("skipped model download."));
   } else if (await confirm("Ollama isn't installed. Install it + the useful local models now? [Y/n]")) {
     if (await installOllama(log) && await ensureOllamaServer(log)) await pullUseful();
-  } else log(gray("skipped — run ") + cyan("sentinel nexus setup") + gray(" anytime to install Ollama + models."));
+  } else log(gray("skipped — run ") + cyan("darknode nexus setup") + gray(" anytime to install Ollama + models."));
   const st = readGlobal("state.json", {}) || {}; st.setupDone = true; st.setupTs = Date.now(); writeGlobal("state.json", st);
   log(green("setup complete."));
 }
@@ -1212,7 +1215,7 @@ const KNOWN_ARGKEYS = new Set(["path", "command", "content", "query", "q", "url"
 const KNOWN_TOOLS = new Set(["read_file", "write_file", "edit_file", "list_dir", "run_command", "run_background", "check_background", "stop_background", "search", "grep", "find", "find_files", "glob", "http_fetch", "web_fetch", "fetch_url", "http", "web_search", "search_web", "google", "todo_write", "todos", "todo_list", "write_todos", "sysinfo", "system_info", "list_processes", "ps", "make_dir", "mkdir", "move", "rename", "move_file", "copy", "copy_file", "delete", "delete_file", "rm", "remember", "discover", "spawn_agents"]);
 // A tool "name" that is really a shell command line — weak models often emit
 // {tool:"cat /etc/passwd"} or {tool:"ls /bin/*"} instead of run_command.
-const SHELL_CMD = /^(sudo\s+)?(ls|cat|grep|egrep|fgrep|echo|cd|pwd|whoami|id|uname|hostname|ps|top|df|du|free|date|env|printenv|which|type|find|locate|head|tail|awk|sed|cut|tr|sort|uniq|wc|xargs|tee|curl|wget|ping|traceroute|nmap|nc|ncat|dig|host|nslookup|ip|ifconfig|iwconfig|netstat|ss|arp|route|cp|mv|rm|mkdir|rmdir|touch|ln|stat|file|chmod|chown|tar|gzip|gunzip|zip|unzip|git|make|gcc|python3?|node|npm|npx|pip3?|bash|sh|zsh|kill|pkill|killall|systemctl|service|apt|apt-get|dpkg|ssh|scp|rsync|sentinel|nexus|nikto|sqlmap|hydra|john|hashcat|gobuster|ffuf|masscan|whatweb|searchsploit|msfconsole)(\s|$)/i;
+const SHELL_CMD = /^(sudo\s+)?(ls|cat|grep|egrep|fgrep|echo|cd|pwd|whoami|id|uname|hostname|ps|top|df|du|free|date|env|printenv|which|type|find|locate|head|tail|awk|sed|cut|tr|sort|uniq|wc|xargs|tee|curl|wget|ping|traceroute|nmap|nc|ncat|dig|host|nslookup|ip|ifconfig|iwconfig|netstat|ss|arp|route|cp|mv|rm|mkdir|rmdir|touch|ln|stat|file|chmod|chown|tar|gzip|gunzip|zip|unzip|git|make|gcc|python3?|node|npm|npx|pip3?|bash|sh|zsh|kill|pkill|killall|systemctl|service|apt|apt-get|dpkg|ssh|scp|rsync|darknode|nexus|nikto|sqlmap|hydra|john|hashcat|gobuster|ffuf|masscan|whatweb|searchsploit|msfconsole)(\s|$)/i;
 function looksLikeCommand(s) { s = String(s || "").trim(); return SHELL_CMD.test(s) || /^\.{0,2}\//.test(s) || (/\s/.test(s) && /[\/*.~|>]/.test(s)); }
 function normalizeToolCall(o) {
   let name = o && o.tool, a = o && o.args;
@@ -1275,12 +1278,12 @@ function coderShell(command, cwd) {
     p.on("error", (e) => { clearTimeout(to); resolve({ code: -1, output: "spawn error: " + e.message }); });
   });
 }
-// ---------- Nexus documentation (shared by `sentinel docs` and the TUI /docs browser) ----------
+// ---------- Nexus documentation (shared by `darknode docs` and the TUI /docs browser) ----------
 const NEXUS_DOCS = {
   overview: { title: "Overview", body:
-    "Nexus is a terminal AI coding agent built into the Sentinel CLI. It drives one of three\nengines from a single dependency-free binary:\n  claude    — the Claude Code CLI in the cloud (strongest; needs `claude` installed + logged in)\n  ollama    — a free, private, local model on your machine (needs Ollama)\n  opencode  — the OpenCode CLI\n\nIt reads & writes files, runs commands, checkpoints every change, shows real token cost\nlive, saves tokens by delegating cheap work to a weaker/local model, and keeps secrets off\nthe cloud. Launch it with `sentinel nexus --tui`. Type / inside for the command menu." },
+    "Nexus is a terminal AI coding agent built into the Darknode CLI. It drives one of three\nengines from a single dependency-free binary:\n  claude    — the Claude Code CLI in the cloud (strongest; needs `claude` installed + logged in)\n  ollama    — a free, private, local model on your machine (needs Ollama)\n  opencode  — the OpenCode CLI\n\nIt reads & writes files, runs commands, checkpoints every change, shows real token cost\nlive, saves tokens by delegating cheap work to a weaker/local model, and keeps secrets off\nthe cloud. Launch it with `darknode nexus --tui`. Type / inside for the command menu." },
   quickstart: { title: "Quick start", body:
-    "  sentinel init                 scaffold .nexus/ (project context Nexus reads each session)\n  sentinel nexus --tui          full-screen agent (Claude if installed, else local)\n  sentinel nexus --tui -e ollama  drive a 100% local, private, free agent\n  sentinel nexus \"add tests to server.js and run them\"   one-shot task\n\nFree local setup:\n  curl -fsSL https://ollama.com/install.sh | sh\n  ollama pull gpt-oss:20b      # fast local agent (~14GB); pull gpt-oss:120b for max power (~63GB)" },
+    "  darknode init                 scaffold .nexus/ (project context Nexus reads each session)\n  darknode nexus --tui          full-screen agent (Claude if installed, else local)\n  darknode nexus --tui -e ollama  drive a 100% local, private, free agent\n  darknode nexus \"add tests to server.js and run them\"   one-shot task\n\nFree local setup:\n  curl -fsSL https://ollama.com/install.sh | sh\n  ollama pull gpt-oss:20b      # fast local agent (~14GB); pull gpt-oss:120b for max power (~63GB)" },
   engines: { title: "Engines & models", body:
     "  /engine <name>                   switch AI: claude · gemini · codex · opencode · aider · ollama\n  /model [name]                    show/set the model\n  /models                          list cloud tiers + installed local models\n  /fallback <model>                auto-retry on a cheaper model when rate-limited\n  /cowork <strong> <weak>          strong model codes; weak (cheaper Claude tier OR\n                                   a free local model via ollama:<name>) does cheap work\n  Aliases: opus · sonnet · haiku · fable (or full names like claude-haiku-4-5-...)" },
   cost: { title: "Saving cost", body:
@@ -1309,7 +1312,7 @@ function docList() { return DOC_ORDER.map((k) => "  " + k.padEnd(12) + gray(NEXU
 function nexusDocs(topic) {
   banner();
   const key = (topic || "").toLowerCase().replace(/^\//, "");
-  if (!key || key === "help") { console.log("  " + bold("Nexus documentation") + "\n\n  " + gray("sentinel docs <topic>") + "  ·  topics:\n\n" + docList() + "\n\n  " + gray("or read it all: ") + cyan("sentinel docs all") + "\n"); return; }
+  if (!key || key === "help") { console.log("  " + bold("Nexus documentation") + "\n\n  " + gray("darknode docs <topic>") + "  ·  topics:\n\n" + docList() + "\n\n  " + gray("or read it all: ") + cyan("darknode docs all") + "\n"); return; }
   if (key === "all") { for (const k of DOC_ORDER) { console.log("\n  " + bold(cyan("▌ " + NEXUS_DOCS[k].title))); console.log("  " + NEXUS_DOCS[k].body.replace(/\n/g, "\n  ") + "\n"); } return; }
   const d = NEXUS_DOCS[key] || Object.entries(NEXUS_DOCS).find(([k, v]) => k.startsWith(key) || v.title.toLowerCase().includes(key))?.[1];
   if (!d) { console.log("  " + red("no doc topic '" + key + "'") + "\n\n  topics:\n" + docList() + "\n"); return; }
@@ -1319,8 +1322,8 @@ function nexusHelp() {
   banner();
   console.log("  " + bold("Nexus") + " — terminal AI coding agent (local Ollama)\n");
   console.log("  " + bold("USAGE"));
-  console.log("    sentinel nexus [options] [task]     one-shot task, or interactive REPL if no task given");
-  console.log("    sentinel nexus                      interactive session\n");
+  console.log("    darknode nexus [options] [task]     one-shot task, or interactive REPL if no task given");
+  console.log("    darknode nexus                      interactive session\n");
   console.log("  " + bold("OPTIONS"));
   console.log("    -e, --engine <name>                claude (default if installed) | ollama | opencode");
   console.log("    -m, --model <name>                 ollama model (ollama engine)");
@@ -1368,8 +1371,8 @@ async function aiCoder(argv) {
   let engine = enginePref || cfg.engine || (avail.claude ? "claude" : "ollama");
   if (engine !== "ollama" && !avail[engine]) engine = avail.claude ? "claude" : "ollama";
   // The full-screen TUI is the default interactive experience now — the old
-  // line-based `sentinel nexus` REPL has been retired for interactive use. Fall
-  // through to the non-TUI path only for a one-shot task (`sentinel nexus
+  // line-based `darknode nexus` REPL has been retired for interactive use. Fall
+  // through to the non-TUI path only for a one-shot task (`darknode nexus
   // "..."`), --print, or a non-interactive stdout.
   if (parts[0] === "serve") return nexusServe(parts.slice(1), { engine });
   const oneShot = parts.length > 0;
@@ -1509,7 +1512,7 @@ function runTool(bin, args) { return new Promise((res) => { let p; try { p = spa
 // Reuses the existing subs()/headers() primitives; concurrency-capped.
 async function subrecon(domain) {
   domain = (domain || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-  if (!domain) { console.log("usage: sentinel subrecon <domain>"); return; }
+  if (!domain) { console.log("usage: darknode subrecon <domain>"); return; }
   console.log(cyan("subrecon " + domain) + gray("  passive subdomains → resolve → live HTTP"));
   let list = [];
   try { const r = await subs(domain); if (Array.isArray(r)) list = r; else if (r && r.err) { console.log(r.err); return; } } catch (e) { console.log(red(String((e && e.message) || e))); return; }
@@ -1633,9 +1636,9 @@ function nexusRestore(cwd, tree, paths) {
 // A repo's .nexus/mcp.json (MCP servers) and hooks.json BOTH run commands, so merely
 // launching Nexus inside an untrusted clone could execute arbitrary code. We only honor
 // them for repos the operator has explicitly trusted. Trust lives OUTSIDE the repo
-// (~/.sentinel/trusted-repos.json) so a malicious repo can't mark itself trusted.
+// (~/.darknode/trusted-repos.json) so a malicious repo can't mark itself trusted.
 let _untrustedRepoConfig = false;
-function trustFile() { return require("path").join(sentinelHome(), "trusted-repos.json"); }
+function trustFile() { return require("path").join(darknodeHome(), "trusted-repos.json"); }
 function isRepoTrusted(cwd) {
   if (process.env.SENTINEL_TRUST_REPO === "1") return true;
   try { const list = JSON.parse(require("fs").readFileSync(trustFile(), "utf8")); return Array.isArray(list) && list.includes(require("path").resolve(cwd)); } catch (_) { return false; }
@@ -1686,15 +1689,15 @@ const { appendUsage, loadUsage, summarize, renderReport, analyzeSavings, renderS
 const { resolveOperator } = require("./lib/governance/identity"); // operator/team attribution — SSO env → config → OS user (lib/identity.js)
 const { buildBundle, verifyBundle, renderBundleMd } = require("./lib/governance/compliance"); // signed audit+usage compliance bundle (lib/compliance.js)
 const { validatePolicy, validateTeam } = require("./lib/cli/validate"); // config validation (lib/validate.js)
-// Read + validate the raw .nexus/policy.json and ~/.sentinel/policy.json; returns warning strings.
-function policyWarnings(cwd) { const fs = require("fs"), path = require("path"); const w = []; for (const [label, p] of [["local .nexus/policy.json", path.join(cwd, ".nexus", "policy.json")], ["org ~/.sentinel/policy.json", path.join(sentinelHome(), "policy.json")]]) { let raw; try { raw = fs.readFileSync(p, "utf8"); } catch (_) { continue; } let obj; try { obj = JSON.parse(raw); } catch (e) { w.push(label + ": invalid JSON (" + e.message + ")"); continue; } for (const m of validatePolicy(obj)) w.push(label + ": " + m); } return w; }
-// Two-tier policy: an ORG floor at ~/.sentinel/policy.json (set by an admin) that a
+// Read + validate the raw .nexus/policy.json and ~/.darknode/policy.json; returns warning strings.
+function policyWarnings(cwd) { const fs = require("fs"), path = require("path"); const w = []; for (const [label, p] of [["local .nexus/policy.json", path.join(cwd, ".nexus", "policy.json")], ["org ~/.darknode/policy.json", path.join(darknodeHome(), "policy.json")]]) { let raw; try { raw = fs.readFileSync(p, "utf8"); } catch (_) { continue; } let obj; try { obj = JSON.parse(raw); } catch (e) { w.push(label + ": invalid JSON (" + e.message + ")"); continue; } for (const m of validatePolicy(obj)) w.push(label + ": " + m); } return w; }
+// Two-tier policy: an ORG floor at ~/.darknode/policy.json (set by an admin) that a
 // local .nexus/policy.json can only make STRICTER, never weaken — protected paths and
 // denied commands union, boolean guards ratchet on, and the file limit takes the min.
 function loadPolicy(cwd) {
   const fs = require("fs"), path = require("path");
   const read = (p) => { try { return JSON.parse(fs.readFileSync(p, "utf8")) || {}; } catch (_) { return {}; } };
-  const org = read(path.join(sentinelHome(), "policy.json"));
+  const org = read(path.join(darknodeHome(), "policy.json"));
   const local = read(path.join(cwd, ".nexus", "policy.json"));
   const uniq = (a) => [...new Set(a.filter(Boolean))];
   const p = Object.assign({}, POLICY_DEFAULTS, local, org); // org wins on any scalar it sets
@@ -1767,7 +1770,7 @@ async function runSubagents(engine, tasks, cwd, model, onProgress, ctl, pickMode
 const { scanSecrets, maskSecrets, classifyDanger, compactOutput } = require("./lib/governance/security"); // security utils (lib/security.js)
 // ---- permission rules (allow/deny) — a Claude-Code-style allowlist for the local agent ----
 // A rule is "tool", "tool:glob" (glob on the command/path/url), or "Bash(glob)" (= run_command),
-// plus "*" wildcard. deny wins over allow; an allow rule auto-approves & bypasses the Sentinel guard.
+// plus "*" wildcard. deny wins over allow; an allow rule auto-approves & bypasses the Darknode guard.
 // synonym → canonical tool name, so a rule written for any alias matches the tool
 // the agent actually invokes (e.g. rule "web_fetch" matches the invoked "http_fetch").
 const PERM_CANON = { run_command: "run_command", run_background: "run_command", bash: "run_command", shell: "run_command", cmd: "run_command", write_file: "write_file", write: "write_file", edit_file: "edit_file", edit: "edit_file", read_file: "read_file", read: "read_file", delete: "delete", delete_file: "delete", rm: "delete", http_fetch: "web_fetch", web_fetch: "web_fetch", fetch_url: "web_fetch", http: "web_fetch", web_search: "web_search", search_web: "web_search", google: "web_search" };
@@ -1881,8 +1884,8 @@ async function deviceTool(name, a, cwd) {
 // Rough Claude price table ($ per 1M tokens: input, output). Used only to ESTIMATE
 // whether delegating a task to a cheaper model saves more than the delegation overhead.
 const { priceOf, isMechanical, shouldDelegate } = require("./lib/nexus/pricing"); // cost model (lib/pricing.js)
-// Sentinel preflight — classify a shell command's destructive intent (inspired by Glitch's
-// Sentinel, improved: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
+// Darknode preflight — classify a shell command's destructive intent (inspired by Glitch's
+// Darknode, improved: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
 const { oneline, extractJson } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
 async function planGoal(engine, model, goal, memory) {
   const prompt = "You are a senior engineer planning autonomous work. Break the GOAL into an ordered list of concrete, independently-verifiable tasks (about 5-15). Return ONLY a JSON array of short task strings — no prose, no markdown.\n\nGOAL: " + goal + (memory ? "\n\nPROJECT MEMORY:\n" + memory : "");
@@ -1917,7 +1920,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
       else if (name === "list_dir") result = { items: fs.readdirSync(path.resolve(cwd, a.path || "."), { withFileTypes: true }).map((e) => e.isDirectory() ? e.name + "/" : e.name).slice(0, 200) };
       else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = { ok: true }; log += "\nwrote " + a.path; console.log("    " + green("write ") + a.path); }
       else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); if (!t.includes(a.find)) result = { error: "find not present" }; else { fs.writeFileSync(fp, t.replace(a.find, a.replace == null ? "" : a.replace)); result = { ok: true }; log += "\nedited " + a.path; console.log("    " + green("edit ") + a.path); } }
-      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = { error: "blocked by Sentinel (destructive: " + dg.why + ")" }; console.log("    " + red("blocked ") + dg.why); } else { console.log("    " + mag("$ ") + a.command); const r = await coderShell(a.command, cwd); result = { code: r.code, output: compactOutput(r.output, 4000) }; log += "\n$ " + a.command + "\n" + r.output.slice(0, 1200); } }
+      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = { error: "blocked by Darknode (destructive: " + dg.why + ")" }; console.log("    " + red("blocked ") + dg.why); } else { console.log("    " + mag("$ ") + a.command); const r = await coderShell(a.command, cwd); result = { code: r.code, output: compactOutput(r.output, 4000) }; log += "\n$ " + a.command + "\n" + r.output.slice(0, 1200); } }
       else { const dr = await deviceTool(name, a, cwd); result = dr !== null ? dr : { error: "unknown tool " + name }; }
     } catch (e) { result = { error: e.message }; }
     if (!(result && typeof result.error === "string" && result.error.startsWith("unknown tool"))) didTool = true;
@@ -1934,7 +1937,7 @@ function parseUntil(s) {
 }
 function nexusRunHelp() {
   banner(); console.log("  " + bold("Nexus run") + " — autonomous, multi-level goal execution\n");
-  console.log("  " + bold("USAGE") + "\n    sentinel nexus run \"<goal>\" [options]\n    sentinel nexus overnight \"<goal>\"   (alias for run --overnight)\n");
+  console.log("  " + bold("USAGE") + "\n    darknode nexus run \"<goal>\" [options]\n    darknode nexus overnight \"<goal>\"   (alias for run --overnight)\n");
   console.log("  " + bold("OPTIONS"));
   console.log("    -e, --engine <name>   claude (default) | hybrid (local does the easy work, Claude the hard — cheapest) | ollama | opencode");
   console.log("    -n, --overnight       keep working the plan with retries until done or --until");
@@ -1950,7 +1953,7 @@ async function nexusAgents(argv) {
   let engine = ""; const tasks = [];
   for (let i = 0; i < arr.length; i++) { if (arr[i] === "-e" || arr[i] === "--engine") engine = arr[++i] || ""; else tasks.push(arr[i]); }
   const cwd = process.cwd();
-  if (!tasks.length) { banner(); console.log("  " + bold("Nexus agents") + " — run independent tasks in parallel\n\n  " + gray("usage: ") + cyan("sentinel nexus agents \"add tests\" \"write docs\" \"fix lint\"") + gray("  [-e claude|gemini|codex|opencode|aider|ollama]") + "\n"); return; }
+  if (!tasks.length) { banner(); console.log("  " + bold("Nexus agents") + " — run independent tasks in parallel\n\n  " + gray("usage: ") + cyan("darknode nexus agents \"add tests\" \"write docs\" \"fix lint\"") + gray("  [-e claude|gemini|codex|opencode|aider|ollama]") + "\n"); return; }
   let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8")); } catch (_) {}
   engine = engine || cfg.engine || (hasBin("claude") ? "claude" : "ollama");
   let model = cfg.model || process.env.SENTINEL_MODEL || "";
@@ -1992,7 +1995,7 @@ async function nexusRun(argv) {
   if (resume && fs.existsSync(stateFile)) { try { state = JSON.parse(fs.readFileSync(stateFile, "utf8")); } catch (_) { console.log("  " + red("can't resume — the saved run state is unreadable")); return; } banner(); h1("Nexus — resuming run"); }
   else {
     const goal = goalParts.join(" ").trim();
-    if (!goal) { console.log("  " + red("provide a goal:  sentinel nexus run \"build X\"")); return; }
+    if (!goal) { console.log("  " + red("provide a goal:  darknode nexus run \"build X\"")); return; }
     // A greeting / trivial message isn't a goal to decompose — just answer, don't plan or run tools.
     if (isChitchat(goal)) {
       banner(); let reply = "";
@@ -2000,7 +2003,7 @@ async function nexusRun(argv) {
         if (engine === "ollama" || engine === "hybrid") { if (model) reply = await ollamaChat(model, [{ role: "system", content: "You are Nexus, a friendly terminal AI assistant on a security workstation. Reply briefly and warmly — no tools, no tasks." }, { role: "user", content: goal }]); }
         else { reply = (await runEngineTask(engine, goal, cwd, false)).output; }
       } catch (_) {}
-      console.log("  " + bold("nexus") + "  " + ((reply || "").trim() || "Hi! I'm Nexus. Give me a goal — e.g. `sentinel nexus run \"add tests to server.js\"` — and I'll plan and do it.") + "\n");
+      console.log("  " + bold("nexus") + "  " + ((reply || "").trim() || "Hi! I'm Nexus. Give me a goal — e.g. `darknode nexus run \"add tests to server.js\"` — and I'll plan and do it.") + "\n");
       return;
     }
     banner(); h1("Nexus — planning");
@@ -2018,7 +2021,7 @@ async function nexusRun(argv) {
   while (true) {
     const t = state.tasks.find((x) => !x.done && !x.failed);
     if (!t) break;
-    if (deadline && Date.now() > deadline) { console.log("  " + gray("time limit reached; pausing. Resume with:  sentinel nexus run --resume")); break; }
+    if (deadline && Date.now() > deadline) { console.log("  " + gray("time limit reached; pausing. Resume with:  darknode nexus run --resume")); break; }
     console.log("  " + cyan("[" + t.id + "/" + state.tasks.length + "] ") + bold(t.title)); t.tries++;
     const ctx = "GOAL: " + state.goal + "\nDone so far: " + (state.tasks.filter((x) => x.done).map((x) => x.title).join("; ") || "(none)") + (memory ? "\nPROJECT MEMORY:\n" + memory : "");
     const taskPrompt = "Work in the current project directory. " + ctx + "\n\nComplete ONLY this task, then briefly report what you did:\nTASK: " + t.title;
@@ -2099,7 +2102,7 @@ function nexusTui(engine, cwd, nexusMd) {
     // @path inlines a file's contents into the prompt sent to the engine (display keeps the @mention)
     const inlineAts = (t) => t.replace(/(^|\s)@(\S+)/g, (m, pre, f) => { try { const c = fs.readFileSync(path.resolve(cwd, f), "utf8"); return pre + "\n\n--- " + f + " ---\n" + c.slice(0, 12000) + "\n--- end " + f + " ---\n"; } catch (_) { return m; } });
     // !cmd runs a shell command directly (Claude-Code-style passthrough); output shown inline
-    const runBang = (c) => { const dg = classifyDanger(c); if (dg.level !== "ok" && guard !== "off") transcript.push({ role: "system", text: "Sentinel: this looks destructive (" + dg.why + ") — running it because you typed it directly" }); const blk = { role: "system", text: "$ " + c + "\nrunning…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); coderShell(c, cwd).then((r) => { const o = (r.output || "").replace(/[ \t\r\n]+$/, ""); blk.text = "$ " + c + "\n" + (o || "(no output)") + (r.code ? "\n[exit " + r.code + "]" : ""); busy = false; ctl = null; render(); }); };
+    const runBang = (c) => { const dg = classifyDanger(c); if (dg.level !== "ok" && guard !== "off") transcript.push({ role: "system", text: "Darknode: this looks destructive (" + dg.why + ") — running it because you typed it directly" }); const blk = { role: "system", text: "$ " + c + "\nrunning…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); coderShell(c, cwd).then((r) => { const o = (r.output || "").replace(/[ \t\r\n]+$/, ""); blk.text = "$ " + c + "\n" + (o || "(no output)") + (r.code ? "\n[exit " + r.code + "]" : ""); busy = false; ctl = null; render(); }); };
     // #note appends a durable memory to .nexus/NEXUS.md
     const addMemory = (line) => { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; c += "- " + line + "\n"; fs.writeFileSync(md, c); transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + line }); } catch (e) { transcript.push({ role: "system", text: "could not save note: " + e.message }); } };
     // ---- ansi-aware width helpers ----
@@ -2168,7 +2171,7 @@ function nexusTui(engine, cwd, nexusMd) {
       ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "session savings (tokens & cost avoided)"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "built-in documentation (/docs <topic>)"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
       ["/tree", "show the project file tree"], ["/theme", "change the color theme"],
       ["/color", "set the accent color · /color <name|0-255|#hex> · /color reset"], ["/colors", "list accent colors"], ["/gradient", "set the logo gradient · /gradient <theme|reset>"], ["/mouse", "toggle mouse capture · /mouse off to select & copy text"],
-      ["/hack", "offensive-security mode — pentest/CTF persona + the Sentinel toolkit"],
+      ["/hack", "offensive-security mode — pentest/CTF persona + the Darknode toolkit"],
       ["/ai-prompt", "AI rewrites & sharpens your prompt, then loads it to edit/send"],
       ["/offline", "local-only privacy lock"],
       ["/todo", "scan the project for TODO/FIXME/HACK markers (/todo <TAG> filters)"],
@@ -2191,7 +2194,7 @@ function nexusTui(engine, cwd, nexusMd) {
     const policy = loadPolicy(cwd); // enterprise guardrails (.nexus/policy.json)
     const styleMap = allStyles(path.join(cwd, ".nexus", "styles")); // built-in + custom output styles
     const styleDir = (n) => styleMap[n] || "";
-    const HACK_DIR = "HACK MODE: act as a senior offensive-security engineer on an AUTHORIZED engagement (pentest / red-team / CTF / the operator's own lab). Work the kill-chain — recon, enumeration, vuln analysis, exploitation, post-exploitation, and defensive remediation — and reach for the built-in Sentinel toolkit via run_command (on PATH as `sentinel`): scan <host> [ports], dns, whois, headers, cert, subs, cve <product>, fuzz <url>, payloads <sqli|xss|lfi|cmdi|ssti|ssrf>, revshell <lang> <ip> <port>, dorks <domain>, encode/decode, hash, entropy, totp, jwt <token>, ports, ipinfo, myip — chaining them with your own commands. Explain each step and the finding it yields, and note the defensive fix. Operate ONLY on systems the operator owns or is explicitly authorized to test; if a target is out of scope or clearly not theirs, refuse and say why.";
+    const HACK_DIR = "HACK MODE: act as a senior offensive-security engineer on an AUTHORIZED engagement (pentest / red-team / CTF / the operator's own lab). Work the kill-chain — recon, enumeration, vuln analysis, exploitation, post-exploitation, and defensive remediation — and reach for the built-in Darknode toolkit via run_command (on PATH as `darknode`): scan <host> [ports], dns, whois, headers, cert, subs, cve <product>, fuzz <url>, payloads <sqli|xss|lfi|cmdi|ssti|ssrf>, revshell <lang> <ip> <port>, dorks <domain>, encode/decode, hash, entropy, totp, jwt <token>, ports, ipinfo, myip — chaining them with your own commands. Explain each step and the finding it yields, and note the defensive fix. Operate ONLY on systems the operator owns or is explicitly authorized to test; if a target is out of scope or clearly not theirs, refuse and say why.";
     const bgJobs = createBgJobs(); // long-running background commands (run_background/check_background)
     const policyPrompt = () => { const pp = []; if (policy.protectedPaths && policy.protectedPaths.length) pp.push("Never create, edit, move or delete these protected paths: " + policy.protectedPaths.join(", ") + "."); if (policy.deniedCommands && policy.deniedCommands.length) pp.push("Never run commands matching: " + policy.deniedCommands.join(", ") + "."); if (policy.maxFilesPerTurn) pp.push("Change at most " + policy.maxFilesPerTurn + " file(s) per turn."); if (!policy.allowNetwork) pp.push("Do not make network requests."); return pp.length ? "\n\nSECURITY POLICY (enforced — follow exactly):\n- " + pp.join("\n- ") : ""; };
     let mcpServers = []; // connected { name, call, tools } (or { name, error })
@@ -2613,7 +2616,7 @@ function nexusTui(engine, cwd, nexusMd) {
             if (mode === 2 && (["write_file", "edit_file", "run_command", "delete", "delete_file", "rm", "move", "move_file", "rename", "copy", "copy_file", "make_dir", "mkdir", "spawn_agents"].includes(name) || String(name).startsWith("mcp__"))) { result = { error: "plan mode is on — file/system changes are blocked. Describe the plan instead, then switch mode with shift+tab to execute." }; blocked = true; card.status = "err"; }
             const _perm = permDecision(perms, name, a); // permission allowlist (/permissions)
             if (!blocked && _perm === "deny") { result = { error: "denied by a permission rule (/permissions) — the operator disallowed this. They can /allow it or run it directly." }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "permission rule denied " + name + (a.command ? " (" + oneline(a.command, 40) + ")" : a.path ? " (" + a.path + ")" : "") }); }
-            if (!blocked && _perm !== "allow" && (name === "run_command" || name === "run_background") && guard !== "off") { const d = classifyDanger(a.command); if (d.level === "block" && guard === "enforce") { result = { error: "BLOCKED by Sentinel guard: " + d.why + " (/guard off to allow, or run it yourself with !)" }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "Sentinel guard blocked a destructive command — " + d.why + ": " + oneline(a.command, 46) }); } else if (d.level !== "ok") transcript.push({ role: "system", text: "Sentinel: " + d.why + " — " + oneline(a.command, 46) + (d.level === "block" ? " (allowed; guard is " + guard + ")" : "") }); }
+            if (!blocked && _perm !== "allow" && (name === "run_command" || name === "run_background") && guard !== "off") { const d = classifyDanger(a.command); if (d.level === "block" && guard === "enforce") { result = { error: "BLOCKED by Darknode guard: " + d.why + " (/guard off to allow, or run it yourself with !)" }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "Darknode guard blocked a destructive command — " + d.why + ": " + oneline(a.command, 46) }); } else if (d.level !== "ok") transcript.push({ role: "system", text: "Darknode: " + d.why + " — " + oneline(a.command, 46) + (d.level === "block" ? " (allowed; guard is " + guard + ")" : "") }); }
             // ---- enterprise policy guardrails (.nexus/policy.json) ----
             if (!blocked) {
               const act = (name === "run_command" || name === "run_background") ? { type: "run", command: a.command }
@@ -2684,7 +2687,7 @@ function nexusTui(engine, cwd, nexusMd) {
           try { saveSession(); } catch (_) {} render();
         });
     };
-    // quick TCP connect scan (Nexus ships with the Sentinel security toolkit)
+    // quick TCP connect scan (Nexus ships with the Darknode security toolkit)
     const quickScan = (host, ports) => new Promise((resolve) => {
       const net = require("net"); const open = []; let done = 0;
       if (!ports.length) return resolve([]);
@@ -2947,9 +2950,9 @@ function nexusTui(engine, cwd, nexusMd) {
       else if (cmd === "/context") transcript.push({ role: "system", text: "context: " + fmtK(sess.ctxUsed) + " / " + fmtK(sess.ctxWindow) + " tokens (" + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "%)  ·  window " + fmtK(sess.ctxWindow) });
       else if (cmd === "/cost") transcript.push({ role: "system", text: PAID[engine] ? ("session: ↑" + fmtK(sess.inTok) + " in · ↓" + fmtK(sess.outTok) + " out" + (sess.cost ? " · $" + sess.cost.toFixed(4) : "") + (costCap ? " · cap $" + costCap.toFixed(2) : "")) : "engine is local (Ollama) — free, no token charges" });
       else if (cmd === "/budget") { const v = parseFloat(arg); if (arg && !isNaN(v) && v > 0) { costCap = v; transcript.push({ role: "system", text: "budget cap set to $" + v.toFixed(2) + " — turns pause when session cost reaches it" }); } else if (arg === "off" || arg === "0") { costCap = 0; transcript.push({ role: "system", text: "budget cap removed" }); } else transcript.push({ role: "system", text: "usage: /budget <usd>  (e.g. /budget 5.00, or /budget off)" }); }
-      else if (cmd === "/report") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet" + (since ? " since " + since : "") + " (.nexus/usage.jsonl fills up as you run turns)" }); } else { const s = summarize(recs); if (parts[0] === "json") transcript.push({ role: "system", text: JSON.stringify(s, null, 2) }); else { const rep = renderReport(s, { project: path.basename(cwd) }); if (parts[0] === "save") { try { const f = path.join(cwd, ".nexus", "usage-report.md"); fs.writeFileSync(f, "```\n" + rep + "\n```\n"); transcript.push({ role: "system", text: "saved usage report to " + f }); } catch (e) { transcript.push({ role: "system", text: "could not save report: " + (e && e.message || e) }); } } else transcript.push({ role: "system", text: rep + "\n\n  /report json · /report save · /report since 2026-08-01 · headless: sentinel report" }); } } }
-      else if (cmd === "/savings") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet — the savings analysis needs some Nexus turns in .nexus/usage.jsonl first" }); } else { const a = analyzeSavings(recs); transcript.push({ role: "system", text: (parts[0] === "json" ? JSON.stringify(a, null, 2) : renderSavings(a, { project: path.basename(cwd) }) + "\n\n  headless: sentinel savings") }); } }
-      else if (cmd === "/compliance") { try { const key = process.env.SENTINEL_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (SENTINEL_SIGNING_KEY)" : "\n  tip: set SENTINEL_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: sentinel compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
+      else if (cmd === "/report") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet" + (since ? " since " + since : "") + " (.nexus/usage.jsonl fills up as you run turns)" }); } else { const s = summarize(recs); if (parts[0] === "json") transcript.push({ role: "system", text: JSON.stringify(s, null, 2) }); else { const rep = renderReport(s, { project: path.basename(cwd) }); if (parts[0] === "save") { try { const f = path.join(cwd, ".nexus", "usage-report.md"); fs.writeFileSync(f, "```\n" + rep + "\n```\n"); transcript.push({ role: "system", text: "saved usage report to " + f }); } catch (e) { transcript.push({ role: "system", text: "could not save report: " + (e && e.message || e) }); } } else transcript.push({ role: "system", text: rep + "\n\n  /report json · /report save · /report since 2026-08-01 · headless: darknode report" }); } } }
+      else if (cmd === "/savings") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet — the savings analysis needs some Nexus turns in .nexus/usage.jsonl first" }); } else { const a = analyzeSavings(recs); transcript.push({ role: "system", text: (parts[0] === "json" ? JSON.stringify(a, null, 2) : renderSavings(a, { project: path.basename(cwd) }) + "\n\n  headless: darknode savings") }); } }
+      else if (cmd === "/compliance") { try { const key = process.env.SENTINEL_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (SENTINEL_SIGNING_KEY)" : "\n  tip: set SENTINEL_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: darknode compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
       else if (cmd === "/undo") { if (!checkpoints.length) transcript.push({ role: "system", text: "nothing to undo (no checkpoints this session, or not a git repo)" }); else { const ck = checkpoints.pop(); const nowTree = nexusCheckpoint(cwd); const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok && nowTree) redoStack.push({ tree: nowTree, label: ck.label, paths: ck.paths }); transcript.push({ role: "system", text: ok ? ("undid \"" + ck.label + "\" — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed this turn (unrelated edits untouched)" : "the working tree") + " (/redo to reapply)") : "undo failed (git error)" }); } }
       else if (cmd === "/redo") { const r = redoStack.pop(); if (!r) transcript.push({ role: "system", text: "nothing to redo" }); else { const ok = nexusRestore(cwd, r.tree, r.paths); if (ok) checkpoints.push({ tree: r.tree, label: r.label, ts: Date.now(), paths: r.paths }); transcript.push({ role: "system", text: ok ? ("redid — reapplied the changes from \"" + r.label + "\"") : "redo failed (git error)" }); } }
       else if (cmd === "/race") { if (!argstr) transcript.push({ role: "system", text: "usage: /race <prompt>  — runs it on every available engine (claude/local/opencode) at once and shows all answers" }); else raceEngines(argstr); }
@@ -3076,7 +3079,7 @@ function nexusTui(engine, cwd, nexusMd) {
         }
       }
       else if (cmd === "/bench") { if (!argstr) transcript.push({ role: "system", text: "usage: /bench <prompt> — runs it on each engine and reports a speed / tokens / cost table" }); else benchEngines(argstr); }
-      else if (cmd === "/guard") { if (["enforce", "warn", "off"].includes(arg)) { guard = arg; transcript.push({ role: "system", text: "Sentinel guard set to " + arg + (arg === "enforce" ? " — destructive agent commands (rm -rf, git reset --hard, dd, mkfs, pipe-to-shell, fork bombs, …) are blocked" : arg === "warn" ? " — destructive commands are flagged but allowed" : " — destructive-command checks disabled") }); } else transcript.push({ role: "system", text: "Sentinel guard is " + guard + ".  usage: /guard enforce|warn|off  — preflights the local agent's shell commands for destructive intent" }); }
+      else if (cmd === "/guard") { if (["enforce", "warn", "off"].includes(arg)) { guard = arg; transcript.push({ role: "system", text: "Darknode guard set to " + arg + (arg === "enforce" ? " — destructive agent commands (rm -rf, git reset --hard, dd, mkfs, pipe-to-shell, fork bombs, …) are blocked" : arg === "warn" ? " — destructive commands are flagged but allowed" : " — destructive-command checks disabled") }); } else transcript.push({ role: "system", text: "Darknode guard is " + guard + ".  usage: /guard enforce|warn|off  — preflights the local agent's shell commands for destructive intent" }); }
       else if (cmd === "/settings" || cmd === "/options" || cmd === "/config") {
         const v = { engine, model: (sess.model && sess.model !== engine ? sess.model : ""), effort, fallback, style, lean, cowork, costCap, cost: sess.cost, mode: (MODES[mode] && MODES[mode].k) || "auto-accept", guard, policyOrg: policy.org, audit: policy.audit, redact, offline, notify, ctxPct: sess.ctxWindow ? Math.min(100, Math.round((sess.ctxUsed / sess.ctxWindow) * 100)) : null, pins: pinned.size, bgRunning: bgJobs.running() };
         let text = bold("Settings") + gray("   change any option with the command shown");
@@ -3097,7 +3100,7 @@ function nexusTui(engine, cwd, nexusMd) {
       else if (cmd === "/lean") { lean = !lean; transcript.push({ role: "system", text: "lean mode " + (lean ? "ON — Nexus asks the model for minimal output (no preamble/recap), which cuts the expensive OUTPUT tokens" : "off") }); }
       else if (cmd === "/style") { if (arg && styleMap[arg] !== undefined) { style = arg; transcript.push({ role: "system", text: "output style: " + bold(arg) + (arg === "default" ? "" : " — " + styleDir(arg)) + gray("  (applies to every engine)") }); } else transcript.push({ role: "system", text: "output styles (shape HOW the AI works — add your own as .nexus/styles/<name>.md):\n" + Object.keys(styleMap).map((n) => "  " + (n === style ? cyan("● " + n) : "  " + n) + gray(n === "default" ? "" : "  " + styleDir(n).slice(0, 60))).join("\n") + "\n  usage: /style <name>" }); }
       else if (cmd === "/effort") { if (["low", "medium", "high", "xhigh", "max"].includes(arg)) { effort = arg; transcript.push({ role: "system", text: "effort set to " + arg + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; transcript.push({ role: "system", text: "effort reset to the model default" }); } else transcript.push({ role: "system", text: "effort: " + (effort || "default") + ".  usage: /effort low|medium|high  (lower = fewer thinking tokens = cheaper)" }); }
-      else if (cmd === "/hack") { hack = arg === "on" ? true : arg === "off" ? false : !hack; transcript.push({ role: "system", text: hack ? red("● HACK MODE") + " — Nexus is now an offensive-security specialist for AUTHORIZED engagements, with the full Sentinel toolkit (scan · dns · cert · subs · cve · payloads · revshell · dorks · jwt · hash · totp · encode …) available via run_command. Systems you own or are explicitly in-scope to test only. " + gray("/hack off to exit") : "hack mode OFF — back to the standard coding agent" }); }
+      else if (cmd === "/hack") { hack = arg === "on" ? true : arg === "off" ? false : !hack; transcript.push({ role: "system", text: hack ? red("● HACK MODE") + " — Nexus is now an offensive-security specialist for AUTHORIZED engagements, with the full Darknode toolkit (scan · dns · cert · subs · cve · payloads · revshell · dorks · jwt · hash · totp · encode …) available via run_command. Systems you own or are explicitly in-scope to test only. " + gray("/hack off to exit") : "hack mode OFF — back to the standard coding agent" }); }
       else if (cmd === "/ai-prompt" || cmd === "/aiprompt") {
         const raw = argstr.trim();
         if (!raw) transcript.push({ role: "system", text: "usage: /ai-prompt <rough prompt> — the AI rewrites & sharpens it, then drops the result in your input box to edit or send" });
@@ -3132,7 +3135,7 @@ function nexusTui(engine, cwd, nexusMd) {
       }
       else if (cmd === "/recent") { try { let files = _cp.execSync("git log -12 --name-only --pretty=format:", { cwd, encoding: "utf8" }); let list = [...new Set(files.split("\n").filter(Boolean))]; if (!list.length) { try { list = [...new Set(_cp.execSync("git ls-files -m -o --exclude-standard", { cwd, encoding: "utf8" }).split("\n").filter(Boolean))]; } catch (_) {} } transcript.push({ role: "system", text: list.length ? ("recently changed files (last commits):\n" + list.slice(0, 30).map((f) => "  " + f).join("\n") + (list.length > 30 ? "\n  … +" + (list.length - 30) + " more" : "") + "\n(tip: /pin one to keep it in context)") : "no changes found" }); } catch (_) { transcript.push({ role: "system", text: "/recent needs a git repo" }); } }
       else if (cmd === "/keys") transcript.push({ role: "system", text: "keys:\n  Enter          send   ·   \\ then Enter = newline\n  Shift+Tab      cycle mode (normal / auto-accept / plan)\n  Ctrl+O         expand tool detail   ·   Ctrl+C  stop turn (again = quit)\n  ↑ / ↓          input history   ·   Tab  complete /command or @path\n  wheel · PgUp/PgDn · Home/End   scroll   (PgUp/PgDn also pages the / menu)\n  copy text:     /mouse off  (or hold Shift while selecting)\n  prefixes:  /command  ·  @file  ·  !shell  ·  #note" });
-      else if (cmd === "/version" || cmd === "/about") transcript.push({ role: "system", text: "Nexus (sentinel " + VERSION + ") — the multi-engine AI coding agent. Engines: claude · ollama (local) · opencode. Type / for the command menu." });
+      else if (cmd === "/version" || cmd === "/about") transcript.push({ role: "system", text: "Nexus (darknode " + VERSION + ") — the multi-engine AI coding agent. Engines: claude · ollama (local) · opencode. Type / for the command menu." });
       else if (cmd === "/docs" || cmd === "/doc" || cmd === "/help?") { const key = (arg || "").toLowerCase().replace(/^\//, ""); scroll = 0; if (!key) transcript.push({ role: "system", text: "docs — /docs <topic> (or /docs all):\n" + DOC_ORDER.map((k) => "  " + k.padEnd(12) + NEXUS_DOCS[k].title).join("\n") }); else if (key === "all") transcript.push({ role: "system", text: DOC_ORDER.map((k) => "── " + NEXUS_DOCS[k].title + " ──\n" + NEXUS_DOCS[k].body).join("\n\n") }); else { const d = NEXUS_DOCS[key] || Object.entries(NEXUS_DOCS).find(([k, v]) => k.startsWith(key) || v.title.toLowerCase().includes(key))?.[1]; transcript.push({ role: "system", text: d ? (d.title + "\n\n" + d.body) : ("no doc topic '" + key + "' — /docs to list topics") }); } }
       else if (cmd === "/impact") { const BLEND = 6; const avoided = (impact.localTok / 1e6) * BLEND; transcript.push({ role: "system", text: "Impact Receipt (this session):\n  local turns   " + impact.localTurns + "   free · ~" + fmtK(impact.localTok) + " tokens\n  cloud turns   " + impact.cloudTurns + "   ↑" + fmtK(impact.cloudInTok) + " ↓" + fmtK(impact.cloudOutTok) + " tok · $" + impact.cloudCost.toFixed(4) + "\n  cost avoided  ~$" + avoided.toFixed(4) + "   (est. if those local turns had run on the cloud @ ~$" + BLEND + "/M tokens)" + (cowork.on || impact.delegated ? "\n  cowork        " + impact.delegated + " task(s) delegated to " + (cowork.weak || "the weak model") + " · ~$" + impact.coworkSaved.toFixed(4) + " saved" : "") + (impact.cachedHits ? "\n  cache hits    " + impact.cachedHits + " free repeat(s) · ~$" + impact.cachedSaved.toFixed(4) + " saved" : "") + (impact.squeezeTok ? "\n  squeezed      ~" + fmtK(impact.squeezeTok) + " input tokens trimmed (dedup + whitespace)" : "") + "\n  net: spent $" + impact.cloudCost.toFixed(4) + ", avoided ~$" + (avoided + impact.coworkSaved + impact.cachedSaved).toFixed(4) }); }
       else if (cmd === "/cache") { const a2 = (arg || "").toLowerCase(); if (a2 === "off") { cacheOn = false; transcript.push({ role: "system", text: "response cache OFF — every turn runs fresh." }); } else if (a2 === "on") { cacheOn = true; transcript.push({ role: "system", text: "response cache ON — an exact repeat of a read-only answer is served free." }); } else if (a2 === "clear") { cacheClear(cwd); transcript.push({ role: "system", text: "response cache cleared (.nexus/cache)." }); } else { const s = cacheStats(cwd); transcript.push({ role: "system", text: "response cache " + (cacheOn ? green("ON") : red("OFF")) + "  ·  " + s.entries + " entr" + (s.entries === 1 ? "y" : "ies") + " · " + s.hits + " hit(s) · saved ~" + fmtK(s.savedTok) + " tokens" + (s.savedCost ? " ($" + s.savedCost.toFixed(4) + ")" : "") + "\n  serves an EXACT repeat of a read-only answer for free; changed context re-runs automatically.\n  /cache on · /cache off · /cache clear" }); } render(); }
@@ -3305,12 +3308,12 @@ function nexusTui(engine, cwd, nexusMd) {
         else { engine = arg; sess.model = arg; sess.userModel = false; sess.ctxWindow = CTXW[arg] || 200000; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; oMsgs.length = 1; transcript.push({ role: "system", text: "engine switched to " + arg + " (" + ENGINES[arg].label + ") — cost meter now tracks " + (PAID[arg] ? arg + " (billed)" : arg + " (local · free)") + "; fresh conversation" }); }
       }
       else if (documentedVerbs().has(cmd.slice(1)) && !NEXUS_NO_BRIDGE.has(cmd.slice(1))) {
-        // Bridge: run any documented `sentinel <verb>` as an in-Nexus /command, so
+        // Bridge: run any documented `darknode <verb>` as an in-Nexus /command, so
         // nothing (report, savings, changelog, compliance, scan, cheats, …) has to
         // be run outside Nexus. Runs the real CLI in a child (NO_COLOR, isolated,
         // non-blocking) and drops its output into the transcript.
         const verb = cmd.slice(1);
-        const blk = { role: "system", text: gray("$ sentinel " + verb + (argstr ? " " + argstr : "") + "  …") };
+        const blk = { role: "system", text: gray("$ darknode " + verb + (argstr ? " " + argstr : "") + "  …") };
         transcript.push(blk); scroll = 0; render();
         try {
           const child = _cp.spawn(process.execPath, [__filename, verb].concat(argstr ? argstr.split(/\s+/).filter(Boolean) : []),
@@ -3319,7 +3322,7 @@ function nexusTui(engine, cwd, nexusMd) {
           const cap = (b) => { buf += b; if (buf.length > 2e5) buf = buf.slice(-2e5); };
           child.stdout.on("data", cap); child.stderr.on("data", cap);
           child.on("close", (code) => { blk.text = (buf.trim() || "(no output)") + (code ? gray("\n[exit " + code + "]") : ""); render(); });
-          child.on("error", (e) => { blk.text = "failed to run `sentinel " + verb + "`: " + (e && e.message || e); render(); });
+          child.on("error", (e) => { blk.text = "failed to run `darknode " + verb + "`: " + (e && e.message || e); render(); });
         } catch (e) { blk.text = "failed: " + (e && e.message || e); render(); }
       }
       else transcript.push({ role: "system", text: "unknown command '" + cmd + "' — try /help" });
@@ -3465,20 +3468,20 @@ function nexusInit() {
   if (!created.length) console.log("  " + gray("already initialized (.nexus/ exists)"));
   if (detected.length) console.log("\n  " + gray("detected: ") + detected.join(gray(" · ")));
   console.log("\n  " + bold("Next steps"));
-  console.log("    " + cyan("sentinel nexus") + gray("                 start a chat session"));
-  console.log("    " + cyan("sentinel nexus run \"<goal>\"") + gray("     autonomous multi-step run"));
+  console.log("    " + cyan("darknode nexus") + gray("                 start a chat session"));
+  console.log("    " + cyan("darknode nexus run \"<goal>\"") + gray("     autonomous multi-step run"));
   console.log("    " + gray("edit ") + ".nexus/NEXUS.md" + gray(" to give the agent project context") + "\n");
 }
 function usage() {
   banner();
   console.log(`  ${bold("USAGE")}
-    sentinel [command] [args]         run a command, or just ${cyan("sentinel")} for the interactive menu
+    darknode [command] [args]         run a command, or just ${cyan("darknode")} for the interactive menu
 
   ${bold("QUICK START")} ${gray("— new here? try one of these")}
-    ${cyan("sentinel nexus")}                    ${gray("★ AI coding agent in your terminal (cloud or free local model)")}
-    ${cyan("sentinel scan")} <host>              ${gray("fast port scan of a target you're allowed to test")}
-    ${cyan("sentinel")}                          ${gray("browse every tool from an interactive menu")}
-    ${cyan("sentinel docs quickstart")}          ${gray("the full getting-started guide")}
+    ${cyan("darknode nexus")}                    ${gray("★ AI coding agent in your terminal (cloud or free local model)")}
+    ${cyan("darknode scan")} <host>              ${gray("fast port scan of a target you're allowed to test")}
+    ${cyan("darknode")}                          ${gray("browse every tool from an interactive menu")}
+    ${cyan("darknode docs quickstart")}          ${gray("the full getting-started guide")}
 ${gray("    No AI engine yet? Free & private, runs on your machine:")}
     ${gray("$")} curl -fsSL https://ollama.com/install.sh | sh  ${gray("&&")}  ollama pull gpt-oss:20b
 
@@ -3491,10 +3494,10 @@ ${renderCommands(COMMAND_GROUPS, { color: cyan, cheats: Object.keys(CHEATS).join
     NO_COLOR=1                        disable colored output
 
   ${bold("EXAMPLES")}
-    ${gray("$")} sentinel nexus                            ${gray("# open the AI coder (chat)")}
-    ${gray("$")} sentinel nexus "add tests to server.js"   ${gray("# one-shot AI task")}
-    ${gray("$")} sentinel scan 10.10.14.7 top              ${gray("# port scan")}
-    ${gray("$")} sentinel revshell bash 10.10.14.7 4444    ${gray("# reverse-shell one-liner")}
+    ${gray("$")} darknode nexus                            ${gray("# open the AI coder (chat)")}
+    ${gray("$")} darknode nexus "add tests to server.js"   ${gray("# one-shot AI task")}
+    ${gray("$")} darknode scan 10.10.14.7 top              ${gray("# port scan")}
+    ${gray("$")} darknode revshell bash 10.10.14.7 4444    ${gray("# reverse-shell one-liner")}
 
   ${gray("Use only on systems you are authorized to test.")}
 `);
@@ -3504,7 +3507,7 @@ ${renderCommands(COMMAND_GROUPS, { color: cyan, cheats: Object.keys(CHEATS).join
 process.on("SIGINT", () => { if (tuiActive) return; console.log("\n  " + gray("interrupted — stay sharp.") + "\n"); process.exit(130); });
 const args = process.argv.slice(2);
 if (args[0] === "-v" || args[0] === "--version") {
-  console.log("sentinel " + VERSION); // first line stays machine-parseable
+  console.log("darknode " + VERSION); // first line stays machine-parseable
   if (!args.includes("--short")) {
     console.log(gray("  node " + process.version + " · " + process.platform + "/" + process.arch));
     const inst = ENGINE_ORDER.filter((e) => e !== "ollama" && engineAvail(e));

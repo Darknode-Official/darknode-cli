@@ -42,7 +42,7 @@
   "license": "UNLICENSED",
   "files": [
     "darknode.js",
-    "sentinel.js",
+    "darknode-legacy.js",
     "lib/",
     "test/",
     "scripts/"

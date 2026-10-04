@@ -10,7 +10,7 @@ preference. This gate is the enforcement point and the evidence trail.
 `DARKNODE_ENGAGEMENT=<id>` puts `darknode` in **engagement mode**. In that mode:
 
 - Only tools in the gated registry run (`engagement-gate.js` `TOOLS`): `scan headers cert dns whois ipinfo subs subrecon fuzz nmap nuclei`.
-  Everything else that touches the network or spawns things (`nexus`, `api`, `serve`, `listen`, `git`, `setup`, the interactive menu, `sentinel.js`) is refused. Offline helpers (hash, encode, cheat sheets…) still work. It is an allow-list.
+  Everything else that touches the network or spawns things (`nexus`, `api`, `serve`, `listen`, `git`, `setup`, the interactive menu, `darknode-legacy.js`) is refused. Offline helpers (hash, encode, cheat sheets…) still work. It is an allow-list.
 - Before each run the gate checks, and **denies on any failure**:
   1. a signed authorization exists for the engagement, signed by a key in `authorizers.json`
   2. the record is valid (client signatory, agreement ref + sha256 of the signed PDF, asset-ownership attestation, window, emergency contact, ≥1 scope entry, permitted action classes)

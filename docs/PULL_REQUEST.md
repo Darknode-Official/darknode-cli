@@ -9,7 +9,7 @@ starts decomposing the monolith into a tested `lib/` layer.
   Ollama). A flag for one engine can't leak into another — enforced by tests.
 - **Enterprise guardrails**: policy file (protected paths / denied commands / write
   limits / secret blocking), an org floor local config can only tighten, and a
-  **tamper-evident hash-chained audit trail** (`sentinel audit verify` for CI).
+  **tamper-evident hash-chained audit trail** (`darknode audit verify` for CI).
 - **Multi-model `/team`** workspace: architect -> builder -> independent reviewer,
   looping until PASS.
 - **From Claude Code & Glitch**: output styles (+ custom), `remember`, `discover`,
@@ -21,8 +21,8 @@ starts decomposing the monolith into a tested `lib/` layer.
 
 ```
 npm test                                   # 102 assertions, all green
-node --check sentinel.js lib/*.js test/*.js
-node sentinel.js --version                 # boots
+node --check darknode-legacy.js lib/*.js test/*.js
+node darknode-legacy.js --version                 # boots
 ```
 
 ## Notes
@@ -30,5 +30,5 @@ node sentinel.js --version                 # boots
 - The CI workflow file (`.github/workflows/ci.yml`) is included in the branch but was
   held back from the push because the PAT lacks the `workflow` scope. Add it via the
   Actions UI or push with a `workflow`-scoped token to turn CI on.
-- The terminal UI, engine runners, and command dispatch remain in `sentinel.js` for
+- The terminal UI, engine runners, and command dispatch remain in `darknode-legacy.js` for
   now; they're refactored only where verifiable without a live TTY.

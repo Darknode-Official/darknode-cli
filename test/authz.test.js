@@ -224,8 +224,8 @@ G.guard(ID, "scan", ["evil.example.org"], () => { ran++; }).catch(() => {}).then
   r = run(["nmap", "-iL", "x", "127.0.0.1"]); ok("darknode nmap with target-list flag refused", r.status === 1 && /BAD_ARGS/.test(r.stderr));
   r = run(["uuid"]); ok("offline helper still works", r.status === 0 && /^[0-9a-f-]{36}/.test(r.stdout));
   r = run(["scan", "127.0.0.1", "1"], { DARKNODE_ENGAGEMENT: "no-such-engagement" }); ok("engagement without authorization refused", r.status === 1 && /NO_AUTHORIZATION/.test(r.stderr));
-  r = cp.spawnSync(process.execPath, [path.join(__dirname, "..", "sentinel.js"), "scan", "127.0.0.1"], { encoding: "utf8", env: Object.assign({}, process.env, { DARKNODE_ENGAGEMENT: ID2 }) });
-  ok("legacy sentinel.js refuses to run in engagement mode", r.status === 1 && /ungated/.test(r.stderr));
+  r = cp.spawnSync(process.execPath, [path.join(__dirname, "..", "darknode-legacy.js"), "scan", "127.0.0.1"], { encoding: "utf8", env: Object.assign({}, process.env, { DARKNODE_ENGAGEMENT: ID2 }) });
+  ok("legacy entry refuses to run in engagement mode", r.status === 1 && /ungated/.test(r.stderr));
   r = run(["authz", "status", ID2], { DARKNODE_ENGAGEMENT: "" }); ok("authz status reports the engagement in force", r.status === 0 && /IN FORCE/.test(r.stdout) && /intact/.test(r.stdout));
   r = run(["authz", "check", ID2, "scan", "127.0.0.9"], { DARKNODE_ENGAGEMENT: "" }); ok("authz check: dry-run deny", r.status === 1 && /NOT_IN_SCOPE/.test(r.stdout));
   r = run(["authz", "revoke", ID2, "--reason", "test"], { DARKNODE_ENGAGEMENT: "" }); ok("authz revoke", r.status === 0);
