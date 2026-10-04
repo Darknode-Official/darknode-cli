@@ -2052,7 +2052,7 @@ async function nexusRun(argv) {
     else if (a === "-h" || a === "--help") return nexusRunHelp();
     else goalParts.push(a);
   }
-  const cwd = process.cwd(), NEXUS = path.join(cwd, ".nexus"); fs.mkdirSync(NEXUS, { recursive: true });
+  const cwd = process.cwd(), NEXUS = path.join(cwd, ".nexus"); fs.mkdirSync(NEXUS, { recursive: true }); secureNexus(cwd);
   const stateFile = path.join(NEXUS, "run.json"), reportFile = path.join(NEXUS, "report.md"), memFile = path.join(NEXUS, "memory.md");
   const memory = (() => { try { return fs.readFileSync(memFile, "utf8"); } catch (_) { return ""; } })();
   const avail = {}; for (const e of ENGINE_ORDER) avail[e] = engineAvail(e);
@@ -3184,7 +3184,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       })();
     };
     // ---- slash commands ----
-    const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "session.json"), JSON.stringify({ engine, model: sess.model, transcript, sess, ts: Date.now() })); } catch (_) {} };
+    const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "session.json"), JSON.stringify({ engine, model: sess.model, transcript, sess, ts: Date.now() })); secureNexus(cwd); } catch (_) {} };
 
     // ---- localhost dashboard (/dashboard) — live web view of this agent session ----
     let dashServer = null;              // { url, port, close } once started
@@ -3631,7 +3631,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
       else if (cmd === "/offline") { offline = !offline; if (offline && (PAID[engine] || apiConfigured())) { if (apiConfigured()) delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = "ollama"; sess.ctxWindow = CTXW.ollama || 8192; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; cont = false; oMsgs.length = 1; transcript.push({ role: "system", text: "offline lock ON — switched to the local engine; cloud engines and remote APIs are blocked, nothing leaves this machine" }); } else transcript.push({ role: "system", text: offline ? "offline lock ON — cloud engines & remote APIs blocked; nothing leaves this machine" : "offline lock off — cloud engines allowed again" }); }
       else if (cmd === "/checkpoints") { transcript.push({ role: "system", text: checkpoints.length ? ("checkpoints (newest last):\n" + checkpoints.map((c, i) => "  #" + (i + 1) + "  " + c.label).join("\n") + "\n/undo restores the most recent") : "no checkpoints yet" }); }
-      else if (cmd === "/init") { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"), cfg = path.join(dir, "config.json"); const made = []; if (!fs.existsSync(md)) { fs.writeFileSync(md, "# Nexus project instructions\n\nNexus loads this file every session.\n\n## Project\n- (describe your project)\n\n## Conventions\n- (style, patterns to follow)\n\n## Build / run / test\n- (commands)\n"); made.push("NEXUS.md"); } if (!fs.existsSync(cfg)) { fs.writeFileSync(cfg, JSON.stringify({ engine, model: "" }, null, 2) + "\n"); made.push("config.json"); } if (gitignoreNexus(cwd)) made.push(".gitignore"); transcript.push({ role: "system", text: made.length ? "initialized .nexus/ (" + made.join(", ") + ") — edit NEXUS.md to give Nexus project context" : ".nexus/ already exists" }); } catch (e) { transcript.push({ role: "system", text: "init failed: " + e.message }); } }
+      else if (cmd === "/init") { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"), cfg = path.join(dir, "config.json"); const made = []; if (!fs.existsSync(md)) { fs.writeFileSync(md, "# Nexus project instructions\n\nNexus loads this file every session.\n\n## Project\n- (describe your project)\n\n## Conventions\n- (style, patterns to follow)\n\n## Build / run / test\n- (commands)\n"); made.push("NEXUS.md"); } if (!fs.existsSync(cfg)) { fs.writeFileSync(cfg, JSON.stringify({ engine, model: "" }, null, 2) + "\n"); made.push("config.json"); } secureNexus(cwd); if (gitignoreNexus(cwd)) made.push(".gitignore"); transcript.push({ role: "system", text: made.length ? "initialized .nexus/ (" + made.join(", ") + ") — edit NEXUS.md to give Nexus project context" : ".nexus/ already exists" }); } catch (e) { transcript.push({ role: "system", text: "init failed: " + e.message }); } }
       else if (cmd === "/login") {
         const a0 = (arg || "").trim();
         if (!a0) { const a = nexusAuth(); transcript.push({ role: "system", text: (a ? "signed in as " + (a.name || a.email || a.uid) + "\n" : "") + "paste your code from the website (Settings → Nexus CLI): type  /login <code>\n(advanced: /login google or /login github)" }); }
@@ -4019,6 +4019,23 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
   });
 }
 // add `.nexus/` to .gitignore (Nexus's state dir shouldn't clutter git); returns true if it added it
+// Tighten permissions on .nexus so another local account on a shared host cannot
+// read config/session files that may hold engine API keys or conversation text.
+// Directory -> 0700 (owner only), sensitive files -> 0600. Best-effort and
+// no-op on platforms (e.g. Windows) where chmod has no effect.
+function secureNexus(cwd) {
+  try {
+    const fs = require("fs"), path = require("path");
+    const dir = path.join(cwd, ".nexus");
+    if (!fs.existsSync(dir)) return;
+    try { fs.chmodSync(dir, 0o700); } catch (_) {}
+    const sensitive = ["config.json", "session.json", "usage.jsonl", "mcp.json", "permissions.json", "todos.json", "plan.json", "index.json", "snippets.json"];
+    for (const f of sensitive) {
+      const p = path.join(dir, f);
+      try { if (fs.existsSync(p)) fs.chmodSync(p, 0o600); } catch (_) {}
+    }
+  } catch (_) {}
+}
 function gitignoreNexus(cwd) {
   try {
     const fs = require("fs"), path = require("path");
@@ -4045,6 +4062,7 @@ function nexusInit() {
   let created = [];
   if (!fs.existsSync(mdPath)) { fs.writeFileSync(mdPath, "# Nexus project instructions\n\nNexus loads this file at the start of every session. Describe the project, conventions, and how to build/run/test it so the agent has context.\n\n## Project\n" + (detected.length ? detected.map((d) => "- " + d).join("\n") : "- (describe your project here)") + "\n\n## Conventions\n- (code style, patterns to follow, things to avoid)\n\n## Build / run / test\n- (commands to build, run, and test)\n"); created.push("NEXUS.md"); }
   if (!fs.existsSync(cfgPath)) { fs.writeFileSync(cfgPath, JSON.stringify({ engine: hasBin("claude") ? "claude" : "ollama", model: process.env.DARKNODE_MODEL || "" }, null, 2) + "\n"); created.push("config.json"); }
+  secureNexus(cwd);
   banner(); h1("Nexus initialized");
   created.forEach((f) => console.log("  " + green("created ") + ".nexus/" + f));
   if (!created.length) console.log("  " + gray("already initialized (.nexus/ exists)"));
