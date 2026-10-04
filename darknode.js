@@ -997,6 +997,27 @@ async function cliRun(args, gate) {
       console.log("  " + gray("largest:")); s.largest.slice(0, 6).forEach((f) => console.log("    " + gray(String(f.lines).padStart(6) + "  ") + f.file));
     }
   }
+  else if (cmd === "guard") {
+    // Guardrails gate: evaluate a proposed command or file write against policy +
+    // the destructive-command classifier + the secret scanner. Prints the verdict
+    // and exits non-zero on deny — usable as an agent pre-flight or a CI gate.
+    //   darknode guard "<command>"           darknode guard --write <path> [content…]
+    //   --strict  deny (not ask) when a secret would be exposed
+    const { POLICY_DEFAULTS } = require("./lib/governance/policy");
+    const wi = rest.indexOf("--write");
+    const action = wi >= 0
+      ? { type: "write", path: rest[wi + 1], content: rest.slice(wi + 2).filter((a) => !a.startsWith("--")).join(" ") }
+      : { type: "command", command: rest.filter((a) => !a.startsWith("--")).join(" ") };
+    if ((action.type === "command" && !action.command) || (action.type === "write" && !action.path)) {
+      console.log(red('  usage: darknode guard "<command>"   |   darknode guard --write <path> [content]')); return;
+    }
+    const v = guardAction(action, POLICY_DEFAULTS, { denyOnSecret: rest.includes("--strict") });
+    const C = { allow: green, ask: yellow, deny: red };
+    console.log("  " + (C[v.decision] || gray)(v.decision.toUpperCase()) + gray("   risk: " + v.risk));
+    if (v.reasons.length) v.reasons.forEach((r) => console.log("    " + yellow("•") + " " + gray("[" + r.source + "] ") + r.why));
+    else console.log("    " + gray("no guardrail triggered"));
+    process.exitCode = v.decision === "deny" ? 2 : 0;
+  }
   else if (cmd === "capindex" || cmd === "capmap" || cmd === "caps") {
     // Capability index — label every source module with what it can actually DO
     // (process exec, dynamic eval, secret access, network, fs writes…) with
@@ -1918,6 +1939,7 @@ const CACHE_TTL = 24 * 3600 * 1000; // response-cache entries expire after 24h
 const { TAGS: TODO_TAGS, scanTree: scanTodos, summarizeTodos, rankTodos } = require("./lib/nexus/todos"); // tech-debt marker scanner (lib/nexus/todos.js)
 const { summarizeStats, rankedLangs, scanStats } = require("./lib/nexus/codestats"); // codebase overview (lib/nexus/codestats.js)
 const { indexFiles: capIndexFiles, renderIndex: capRenderIndex } = require("./lib/nexus/capindex"); // capability/requirements index (lib/nexus/capindex.js)
+const { evaluateAction: guardAction } = require("./lib/nexus/guardrails"); // unified action gate: policy+danger+secrets (lib/nexus/guardrails.js)
 const { auditDeps, scanImports } = require("./lib/nexus/deps"); // dependency hygiene audit (lib/nexus/deps.js)
 const { auditEnv, readEnvFiles, scanEnvTree } = require("./lib/nexus/envaudit"); // env-var hygiene audit (lib/nexus/envaudit.js)
 const { buildReviewPrompt, countBySeverity, SEVERITY } = require("./lib/nexus/review"); // multi-lens /ultrareview (lib/nexus/review.js)

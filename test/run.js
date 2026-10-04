@@ -10,6 +10,7 @@ const { scanSecrets, maskSecrets, classifyDanger, compactOutput } = require("../
 const { styleNames, styleDirective } = require("../lib/cli/styles");
 const { mergeMemory } = require("../lib/nexus/memory");
 const { scanCapabilities, fileRisk, levelFor, indexFiles } = require("../lib/nexus/capindex");
+const { evaluateAction: guardEval } = require("../lib/nexus/guardrails");
 const { STYLES, allStyles, loadStyles } = require("../lib/cli/styles");
 const { TOOL_CATALOG, discoverTools } = require("../lib/nexus/tools");
 const { createBgJobs, MAX_BUF } = require("../lib/nexus/bgjobs");
@@ -86,6 +87,22 @@ group("capability index (what a module can DO)");
   ok("rollup flags the critical module", idx.rollup.critical.includes("danger.js") && !idx.rollup.critical.includes("calm.js"));
   eq("rollup counts tags", idx.rollup.byTag.net, 1);
   eq("rollup maxLevel", idx.rollup.maxLevel, "critical");
+}
+
+group("guardrails (one gate: policy + danger + secrets)");
+{
+  const P = { protectedPaths: [".env", "*.key"], deniedCommands: [], allowNetwork: true };
+  eq("destructive command -> deny", guardEval({ type: "command", command: "rm -rf /" }, P).decision, "deny");
+  eq("sudo -> ask (warn)", guardEval({ type: "command", command: "sudo apt update" }, P).decision, "ask");
+  eq("benign command -> allow", guardEval({ type: "command", command: "ls -la" }, P).decision, "allow");
+  eq("write to protected path -> deny", guardEval({ type: "write", path: ".env", content: "x" }, P).decision, "deny");
+  const sec = guardEval({ type: "write", path: "notes.txt", content: "aws AKIAIOSFODNN7EXAMPLE key" }, P);
+  eq("secret in content -> ask by default", sec.decision, "ask");
+  ok("secret reason is reported", sec.reasons.some((r) => r.source === "secret"));
+  eq("secret -> deny under --strict", guardEval({ type: "write", path: "notes.txt", content: "AKIAIOSFODNN7EXAMPLE" }, P, { denyOnSecret: true }).decision, "deny");
+  const both = guardEval({ type: "command", command: "sudo rm -rf /" }, P);
+  eq("strongest escalation wins (block over warn)", both.decision, "deny");
+  ok("multiple reasons can fire", both.reasons.length >= 1);
 }
 
 group("parsers (gemini/codex structured output → real tokens)");
