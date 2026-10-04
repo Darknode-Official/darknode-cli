@@ -9,6 +9,7 @@ const { ENGINES, ENGINE_ORDER, engineCap } = require("../lib/nexus/engines");
 const { scanSecrets, maskSecrets, classifyDanger, compactOutput } = require("../lib/governance/security");
 const { styleNames, styleDirective } = require("../lib/cli/styles");
 const { mergeMemory } = require("../lib/nexus/memory");
+const { scanCapabilities, fileRisk, levelFor, indexFiles } = require("../lib/nexus/capindex");
 const { STYLES, allStyles, loadStyles } = require("../lib/cli/styles");
 const { TOOL_CATALOG, discoverTools } = require("../lib/nexus/tools");
 const { createBgJobs, MAX_BUF } = require("../lib/nexus/bgjobs");
@@ -51,6 +52,41 @@ ok("isMechanical: NOT refactor", !isMechanical("refactor the auth module"));
 ok("shouldDelegate opus->haiku on big output", shouldDelegate(5000, 2000, "opus", "haiku") === true);
 ok("shouldDelegate same model = false", shouldDelegate(5000, 2000, "opus", "opus") === false);
 ok("shouldDelegate weak-not-cheaper = false", shouldDelegate(5000, 2000, "haiku", "opus") === false);
+
+group("capability index (what a module can DO)");
+{
+  const src = [
+    "// exec here is only a comment and must be ignored",
+    "const cp = require('child_process');",
+    "cp.execSync('ls');",
+    "const r = await fetch('https://x');",
+    "const k = process.env.API_TOKEN;",
+    "fs.writeFileSync('/tmp/x', data);",
+    "eval(userInput);",
+  ].join("\n");
+  const caps = scanCapabilities(src);
+  const tags = caps.map((c) => c.tag);
+  ok("detects exec/eval/secrets/net/fs-write", ["eval", "exec", "secrets", "fs-write", "net"].every((t) => tags.includes(t)));
+  ok("comment-only mention is ignored", !caps.some((c) => c.hits.some((h) => h.line === 1)));
+  const execCap = caps.find((c) => c.tag === "exec");
+  ok("hit carries a real line number", execCap && execCap.hits.some((h) => h.line === 3));
+  ok("empty/garbage input is safe", scanCapabilities(null).length === 0 && scanCapabilities(123).length === 0);
+
+  eq("fileRisk = worst capability (eval=10 -> critical)", fileRisk(caps).level, "critical");
+  eq("levelFor thresholds: 5 -> medium", levelFor(5), "medium");
+  eq("levelFor thresholds: 2 -> low", levelFor(2), "low");
+  eq("levelFor thresholds: 0 -> none", levelFor(0), "none");
+
+  const idx = indexFiles([
+    { path: "danger.js", code: "eval(x)" },
+    { path: "calm.js", code: "const n = 1 + 1;" },
+    { path: "mid.js", code: "fetch('https://y')" },
+  ]);
+  eq("index sorts highest-risk first", idx.files[0].path, "danger.js");
+  ok("rollup flags the critical module", idx.rollup.critical.includes("danger.js") && !idx.rollup.critical.includes("calm.js"));
+  eq("rollup counts tags", idx.rollup.byTag.net, 1);
+  eq("rollup maxLevel", idx.rollup.maxLevel, "critical");
+}
 
 group("parsers (gemini/codex structured output → real tokens)");
 {

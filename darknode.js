@@ -997,6 +997,27 @@ async function cliRun(args, gate) {
       console.log("  " + gray("largest:")); s.largest.slice(0, 6).forEach((f) => console.log("    " + gray(String(f.lines).padStart(6) + "  ") + f.file));
     }
   }
+  else if (cmd === "capindex" || cmd === "capmap" || cmd === "caps") {
+    // Capability index — label every source module with what it can actually DO
+    // (process exec, dynamic eval, secret access, network, fs writes…) with
+    // line-level evidence and a risk score. A fast security read of a repo
+    // before you trust it, ship it, or hand it to an agent. --json / --all.
+    const fs = require("fs"), path = require("path");
+    const root = rest.find((a) => !a.startsWith("--")) || process.cwd();
+    const SKIP = /(^|\/)(\.git|node_modules|dist|build|out|target|\.nexus|\.cache|\.next|coverage|__pycache__|\.venv|venv|vendor)(\/|$)/;
+    const EXT = /\.(js|mjs|cjs|ts|tsx|jsx|py|rb|go|php|sh|bash)$/i;
+    const files = [];
+    const walk = (d) => { if (files.length >= 5000) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(fp)) continue; if (e.isDirectory()) walk(fp); else if (EXT.test(e.name)) { let code; try { if (fs.statSync(fp).size > 800000) continue; code = fs.readFileSync(fp, "utf8"); } catch (_) { continue; } files.push({ path: path.relative(root, fp), code }); } } };
+    try { const st = fs.statSync(root); if (st.isFile()) files.push({ path: path.basename(root), code: fs.readFileSync(root, "utf8") }); else walk(root); } catch (e) { console.log(red("  cannot read " + root + ": " + e.message)); return; }
+    const index = capIndexFiles(files);
+    if (rest.includes("--json")) { console.log(JSON.stringify(index, null, 2)); return; }
+    if (!index.rollup.total) { console.log("  " + gray("no source files found under " + root)); return; }
+    const COLOR = { critical: red, high: red, medium: yellow, low: gray, none: gray };
+    for (const ln of capRenderIndex(index, { top: rest.includes("--all") ? index.files.length : 40, all: rest.includes("--all") })) {
+      const lvl = ln.slice(0, 9).trim().toLowerCase();
+      console.log("  " + (COLOR[lvl] ? COLOR[lvl](ln) : ln));
+    }
+  }
   else if (cmd === "todo" || cmd === "todos") {
     // Headless tech-debt scan — for humans and as a CI gate (--max N exits 1 if exceeded).
     const mi = rest.indexOf("--max"); const max = mi >= 0 ? parseInt(rest[mi + 1], 10) : NaN;
@@ -1896,6 +1917,7 @@ const { squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats } =
 const CACHE_TTL = 24 * 3600 * 1000; // response-cache entries expire after 24h
 const { TAGS: TODO_TAGS, scanTree: scanTodos, summarizeTodos, rankTodos } = require("./lib/nexus/todos"); // tech-debt marker scanner (lib/nexus/todos.js)
 const { summarizeStats, rankedLangs, scanStats } = require("./lib/nexus/codestats"); // codebase overview (lib/nexus/codestats.js)
+const { indexFiles: capIndexFiles, renderIndex: capRenderIndex } = require("./lib/nexus/capindex"); // capability/requirements index (lib/nexus/capindex.js)
 const { auditDeps, scanImports } = require("./lib/nexus/deps"); // dependency hygiene audit (lib/nexus/deps.js)
 const { auditEnv, readEnvFiles, scanEnvTree } = require("./lib/nexus/envaudit"); // env-var hygiene audit (lib/nexus/envaudit.js)
 const { buildReviewPrompt, countBySeverity, SEVERITY } = require("./lib/nexus/review"); // multi-lens /ultrareview (lib/nexus/review.js)
