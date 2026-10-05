@@ -219,6 +219,22 @@ group("NX-011: published command reference is generated, not hand-kept");
   ok("commandCount matches the rows", built.commandCount === built.groups.reduce((n, g) => n + g.commands.length, 0));
 }
 
+group("NX-002 default posture: active commands need local target or authorization");
+{
+  const DG = require("../lib/governance/default-guard");
+  for (const t of ["127.0.0.1", "localhost", "10.1.2.3", "192.168.0.5", "172.16.9.9", "172.31.0.1", "::1", "app.internal", "box.local", "target.test", "169.254.1.1", "100.64.0.1"])
+    ok("local/private allowed: " + t, DG.guardActive("scan", t, {}).allow);
+  for (const t of ["1.2.3.4", "scanme.nmap.org", "8.8.8.8", "https://example.com/x", "target.com:8443", "172.32.0.1", "2001:4860:4860::8888"])
+    ok("remote refused without auth: " + t, !DG.guardActive("scan", t, {}).allow);
+  ok("remote allowed with --authorized", DG.guardActive("nmap", "1.2.3.4", { authorized: true }).allow);
+  ok("passive dns is never guarded here", DG.guardActive("dns", "8.8.8.8", {}).allow);
+  ok("passive whois is never guarded here", DG.guardActive("whois", "example.com", {}).allow);
+  eq("hostOf strips scheme/userinfo/port/path", DG.hostOf("https://user@Example.com:8443/a/b?x"), "example.com");
+  ok("IPv6 loopback is local", DG.isLocalTarget("::1"));
+  ok("public IPv6 is remote", !DG.isLocalTarget("2001:4860:4860::8888"));
+  ok("a public DNS resolver is remote, not local", !DG.isLocalTarget("8.8.8.8"));
+}
+
 group("output styles (Claude-Code idea)");
 {
   ok("default → empty directive", styleDirective("default") === "");

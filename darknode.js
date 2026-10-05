@@ -829,7 +829,20 @@ async function cli(args) {
   } catch (e) { if (e instanceof G.GateDenied) return deny(e); throw e; }
 }
 async function cliRun(args, gate) {
-  const [cmd, ...rest] = args;
+  let [cmd, ...rest] = args;
+  // NX-002 default posture: outside engagement mode, active-interaction commands
+  // need a local/private target or explicit authorization (--authorized or
+  // DARKNODE_AUTHORIZED=1). Engagement mode has its own stronger signed gate.
+  const _authorized = rest.includes("--authorized") || process.env.DARKNODE_AUTHORIZED === "1";
+  if (_authorized) rest = rest.filter((a) => a !== "--authorized");
+  if (!process.env.DARKNODE_ENGAGEMENT) {
+    const DG = require("./lib/governance/default-guard");
+    if (DG.ACTIVE.has(cmd)) {
+      const _target = rest.find((a) => a && a[0] !== "-") || rest[0];
+      const _g = DG.guardActive(cmd, _target, { authorized: _authorized });
+      if (!_g.allow) { console.error("  " + red("refused: ") + _g.reason); process.exitCode = 2; return; }
+    }
+  }
   if (CMD_MAP[cmd]) { console.log(CMD_MAP[cmd].run({ rest, c: { red, green, yellow, cyan, gray, bold } })); }
   else if (cmd === "scan") { const host = rest[0]; if (!host) return usage(); await scan(host, parsePorts(rest[1])); }
   else if (cmd === "dns") { const recs = await dnsLookup(rest[0] || ""); recs.forEach(([k, v]) => console.log(k.padEnd(6) + v)); }

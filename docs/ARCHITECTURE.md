@@ -161,6 +161,16 @@ wired only to the `darknode guard` preview command (`darknode.js:1014`). The liv
 TUI loop re-implements the same composition inline (§5) rather than calling it —
 a consolidation opportunity tracked under NX-002.
 
+### 4d. Default-posture guard (always on at the CLI verb layer)
+`lib/governance/default-guard.js`. Outside engagement mode, active-interaction
+verbs (`scan`, `nmap`, `nuclei`, `fuzz`) are refused against a **non-local**
+target unless the operator passes `--authorized` / `DARKNODE_AUTHORIZED=1`.
+Local/private targets (loopback, RFC1918, link-local, CGNAT, `*.local` /
+`*.internal` / `*.test` …) run freely; passive recon (`dns`, `whois`, `cert`,
+`headers`, `subs`) is never blocked here. Wired at the top of `cliRun`
+(`darknode.js:832`), it fails the command with exit 2 before any network touch.
+Engagement mode bypasses it in favour of the stronger signed gate (§4b).
+
 ## 5. Tool surface & the pre-exec gate
 
 Canonical schemas: `lib/nexus/native-tools.js:21-49` (`TOOL_SCHEMAS`).
