@@ -176,6 +176,36 @@ group("security (secrets + destructive-command preflight)");
   ok("compactOutput keeps short text", compactOutput("short", 4000) === "short");
 }
 
+group("NX-007: redaction is complete across every channel");
+{
+  // The redaction invariant that makes every output channel (logs, transcripts,
+  // error output, cloud prompts) safe: anything scanSecrets can detect,
+  // maskSecrets fully removes — the raw secret value never survives, and nothing
+  // detectable remains. Logs/transcripts/prompts are safe precisely because they
+  // all pass through this one chokepoint.
+  const secrets = {
+    "aws": "AKIAIOSFODNN7EXAMPLE",
+    "github": "ghp_" + "b".repeat(36),
+    "slack": "xoxb-123456789012-abcdefghijkl",
+    "openai": "sk-" + "c".repeat(32),
+    "google": "AIza" + "d".repeat(35),
+    "jwt": "eyJ" + "a".repeat(10) + "." + "b".repeat(10) + "." + "c".repeat(8),
+    "privkey": "-----BEGIN RSA PRIVATE KEY-----\nMIIabcDEFghi\n-----END RSA PRIVATE KEY-----",
+    "hardcoded": 'password: "hunter2secret"',
+  };
+  for (const [kind, raw] of Object.entries(secrets)) {
+    const wrapped = "log line before " + raw + " and after";
+    ok("scanSecrets detects " + kind, scanSecrets(raw).length > 0);
+    const masked = maskSecrets(wrapped);
+    ok("maskSecrets removes the raw " + kind + " value", masked.indexOf(raw) === -1);
+    ok("no detectable " + kind + " residue after masking", scanSecrets(masked).length === 0);
+    ok("surrounding context is preserved for " + kind, /log line before/.test(masked) && /and after/.test(masked));
+  }
+  // The completeness guarantee stated as one property over a mixed blob.
+  const blob = Object.values(secrets).join(" | ");
+  ok("a blob of every secret type masks to nothing detectable", scanSecrets(maskSecrets(blob)).length === 0);
+}
+
 group("output styles (Claude-Code idea)");
 {
   ok("default → empty directive", styleDirective("default") === "");

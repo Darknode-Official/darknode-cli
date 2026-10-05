@@ -138,6 +138,24 @@ eq("one out-of-scope target poisons the whole batch", ev(env, ["app.example.com"
 let creepOk = true; for (let i = 0; i < 5; i++) { if (!ev(env, ["app.example.com"]).allow) creepOk = false; }
 ok("5 in-scope allowances do not accumulate into scope", creepOk && ev(env, ["evil.example.org"]).code === "NOT_IN_SCOPE");
 
+group("NX-007: stored state is owner-only (POSIX)");
+if (process.platform === "win32") {
+  ok("skipped on win32 (chmod is a no-op)", true);
+} else {
+  // `darknode init` writes .nexus/config.json then secureNexus()'s it. Assert a
+  // second local principal cannot read it: mode must grant nothing to group/other.
+  const pcwd = fs.mkdtempSync(path.join(os.tmpdir(), "darknode-perm-"));
+  const pr = cp.spawnSync(process.execPath, [path.join(__dirname, "..", "darknode.js"), "init"],
+    { cwd: pcwd, encoding: "utf8", timeout: 30000, env: Object.assign({}, process.env, { DARKNODE_HOME: HOME, DARKNODE_ENGAGEMENT: "" }) });
+  const cfg = path.join(pcwd, ".nexus", "config.json");
+  ok("darknode init created .nexus/config.json (exit " + pr.status + ")", fs.existsSync(cfg));
+  if (fs.existsSync(cfg)) {
+    eq("config.json is 0600 — no group/other access", fs.statSync(cfg).mode & 0o777, 0o600);
+    eq(".nexus dir is 0700 — owner-only", fs.statSync(path.join(pcwd, ".nexus")).mode & 0o777, 0o700);
+  }
+  fs.rmSync(pcwd, { recursive: true, force: true });
+}
+
 group("tool grammar (parseInvocation)");
 const P = (t, a) => G.parseInvocation(t, a);
 eq("nmap: flags + attached -T4 + target", P("nmap", ["-sT", "-T4", "-p", "1-1024", "app.example.com"]).targets, ["app.example.com"]);
