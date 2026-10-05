@@ -276,3 +276,9 @@ deterministic scorer, a provenance-gated task schema, per-seed cost/latency/toke
 metrics with mean+variance, and a reserved held-out set. It measures the agent
 loop and security capabilities; no baseline is produced yet (needs real engine
 runs). See `eval/README.md`.
+
+`lib/nexus/finding-validate.js` is the NX-005 C3 finding-validation capability: it
+re-confirms every reported finding against the cited evidence, normalises kinds,
+deduplicates, and drops non-reproducing findings — the deterministic false-positive
+gate the security-capability category depends on. Its measured FP-rate still
+requires real engine runs on the harness above and is not yet produced.

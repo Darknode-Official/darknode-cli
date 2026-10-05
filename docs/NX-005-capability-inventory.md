@@ -51,9 +51,15 @@ Legend: **[E]** exists in the tree today · **[P]** partial · **[G]** gap to bu
 
 ---
 
-## Proposed build order (smallest verifiable increments)
-1. **C3 finding-validation** — highest leverage; it is the FP-rate gate the whole
-   category lives or dies on. Build first, measured on NX-008.
+## Build order (smallest verifiable increments)
+1. **C3 finding-validation** — *built* (`lib/nexus/finding-validate.js`, NX-005 C3
+   test group in `test/run.js`). The deterministic core is done: every reported
+   finding is re-confirmed against the cited evidence, synonyms are normalised to a
+   canonical kind, duplicates collapse, and anything that no longer reproduces is
+   dropped with a reason — the mechanism that removes false positives without a
+   model. **What is NOT done:** the *measured* FP-rate on a ground-truth corpus
+   (the actual ship gate) still requires real engine runs on the NX-008 harness and
+   has not been produced; it is not fabricated here.
 2. **A4/A5 SCA + reachability + verified fix** — the clearest "agent, not scanner"
    differentiator; measured reachability accuracy + fix pass-rate.
 3. **B2/B3 container & CI/CD config review** — high-signal, deterministic ground

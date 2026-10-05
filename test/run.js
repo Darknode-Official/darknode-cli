@@ -262,6 +262,44 @@ group("NX-008: eval harness scoring + task admissibility");
   ok("every shipped dev task is admissible", tasks.every(h.admissible));
 }
 
+group("NX-005 C3: findings are re-confirmed against evidence (false-positive gate)");
+{
+  const { validateFindings, parseFindingLines, normKind } = require("../lib/nexus/finding-validate");
+  // Deterministic sandbox: the file content is injected, so no real I/O.
+  const AWS = "AKIA" + "IOSFODNN7EXAMPLE"; // split so this test string is not itself a committed secret
+  const files = {
+    "config.js": "const key = '" + AWS + "';",
+    "clean.js": "const port = 8080; // nothing secret here",
+  };
+  const read = (p) => (Object.prototype.hasOwnProperty.call(files, p) ? files[p] : null);
+
+  const r1 = validateFindings([{ kind: "aws", path: "config.js" }], read);
+  ok("a finding that reproduces at its path is kept", r1.validated.length === 1 && r1.validated[0].kind === "aws-key" && r1.validated[0].reproduced === true);
+  ok("a kept finding carries its canonical kind, not the raw label", r1.validated[0].kind === "aws-key" && r1.dropped.length === 0);
+
+  const r2 = validateFindings([{ kind: "aws-key", path: "clean.js" }], read);
+  ok("a finding whose secret is NOT at the cited path is dropped as non-reproducing", r2.validated.length === 0 && r2.dropped.length === 1 && /does not reproduce/.test(r2.dropped[0].reason));
+
+  const r3 = validateFindings([{ kind: "aws-key", path: "ghost.js" }], read);
+  ok("a finding at a path that does not exist is dropped (does not reproduce)", r3.validated.length === 0 && /path not found/.test(r3.dropped[0].reason));
+
+  const r4 = validateFindings([{ kind: "aws", path: "config.js" }, { kind: "aws-key", path: "config.js" }], read);
+  ok("synonyms collapse so the same finding is not reported twice", r4.validated.length === 1 && r4.dropped.length === 1 && r4.dropped[0].reason === "duplicate");
+
+  const r5 = validateFindings([{ kind: "", path: "config.js" }, { kind: "aws", path: "" }], read);
+  ok("a finding missing a kind or a path is dropped, never silently kept", r5.validated.length === 0 && r5.dropped.length === 2 && r5.dropped.every((d) => /missing/.test(d.reason)));
+
+  ok("kind normalisation folds scanner labels and agent synonyms onto one canonical kind", normKind("AWS access key id") === "aws-key" && normKind("GitHub token") === "github-token" && normKind("gh-token") === "github-token");
+  ok("an unknown kind is passed through lower-cased, not dropped by normalisation", normKind("Custom-Rule-42") === "custom-rule-42");
+
+  const parsed = parseFindingLines("aws:config.js\n  github-token: src/app.js  \nnot a finding line\n");
+  ok("agent 'kind:path' output lines parse; prose lines are ignored", parsed.length === 2 && parsed[0].kind === "aws" && parsed[1].path === "src/app.js");
+
+  // The whole point: a mixed batch of real + bogus findings yields only the reproduced ones.
+  const mixed = validateFindings(parseFindingLines("aws:config.js\napi-key:clean.js\naws:ghost.js"), read);
+  ok("mixed batch: only the reproducing finding survives; the rest are dropped with reasons", mixed.validated.length === 1 && mixed.dropped.length === 2);
+}
+
 group("output styles (Claude-Code idea)");
 {
   ok("default → empty directive", styleDirective("default") === "");
