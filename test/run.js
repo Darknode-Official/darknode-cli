@@ -206,6 +206,19 @@ group("NX-007: redaction is complete across every channel");
   ok("a blob of every secret type masks to nothing detectable", scanSecrets(maskSecrets(blob)).length === 0);
 }
 
+group("NX-011: published command reference is generated, not hand-kept");
+{
+  const fs = require("fs");
+  const gen = require("../scripts/export-command-ref");
+  const fresh = gen.serialize();
+  let onDisk = null; try { onDisk = fs.readFileSync(gen.OUT, "utf8"); } catch (_) {}
+  ok("command-ref.json exists (run: node scripts/export-command-ref.js)", onDisk !== null);
+  ok("command-ref.json is up to date vs lib/cli/reference.js (stale => CI fails)", onDisk === fresh);
+  const built = gen.build();
+  ok("every documented command has a usage + description", built.groups.every((g) => g.commands.every((c) => c.usage && c.desc)));
+  ok("commandCount matches the rows", built.commandCount === built.groups.reduce((n, g) => n + g.commands.length, 0));
+}
+
 group("output styles (Claude-Code idea)");
 {
   ok("default → empty directive", styleDirective("default") === "");

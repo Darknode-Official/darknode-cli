@@ -45,6 +45,7 @@
     "darknode-legacy.js",
     "lib/",
     "test/",
-    "scripts/"
+    "scripts/",
+    "command-ref.json"
   ]
 }
