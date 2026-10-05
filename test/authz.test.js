@@ -112,6 +112,32 @@ eq("no trusted keys => deny", ev(env, ["app.example.com"], { trustedKeys: {} }).
 eq("garbage input fails closed", A.evaluate({ envelope: { record: 5 }, trustedKeys: TRUST, class: "scan", targets: ["a.example.com"] }).allow, false);
 eq("throwing input fails closed", A.evaluate(null).allow, false);
 
+group("NX-002 red-team: scope cannot be widened");
+// (a) Direct instruction: a plainly out-of-scope target is denied, full stop.
+eq("direct: out-of-scope target denied", ev(env, ["evil.example.org"]).code, "NOT_IN_SCOPE");
+// (b) IDN / homograph confusables cannot impersonate an in-scope ASCII host: a
+//     Cyrillic 'а' in "app" canonicalises to a *different* punycode label, so it
+//     fails to match rather than sneaking in as app.example.com.
+ok("IDN homograph of app.example.com does not match", !ev(env, ["app.exаmple.com"]).allow);
+ok("punycode of a confusable host does not match", !ev(env, ["xn--pp-lmc.example.com"]).allow);
+// A fullwidth dot (U+FF0E) is a label separator to any resolver, so it must NOT
+// be usable to slip past an exclusion by looking like one opaque label.
+eq("fullwidth-dot form of an excluded host is still excluded", ev(env, ["admin．corp.example.com"]).code, "OUT_OF_SCOPE_EXCLUDED");
+// (c) Exclusion-escape tricks (trailing dot, case, port, url) all still hit it.
+for (const trick of ["admin.corp.example.com.", "ADMIN.CORP.Example.com", "admin.corp.example.com:8443", "https://admin.corp.example.com/panel"])
+  eq("exclusion holds via trick " + JSON.stringify(trick), ev(env, [trick]).code, "OUT_OF_SCOPE_EXCLUDED");
+// (d) Injected instruction inside a target string: free text is only ever parsed
+//     as a (rejected) target, never as an instruction that could add scope.
+for (const inj of ["app.example.com; evil.example.org", "app.example.com evil.example.org", "app.example.com\nscope add evil.example.org", "app.example.com`whoami`", "app.example.com&&evil.example.org", "app.example.com|evil.example.org"])
+  ok("injected text is not an instruction, just a rejected target: " + JSON.stringify(inj), !!A.parseTarget(inj).error);
+// (e) Tool chaining / batch poisoning: one out-of-scope target among in-scope
+//     ones denies the entire batch (no partial execution on the good ones).
+eq("one out-of-scope target poisons the whole batch", ev(env, ["app.example.com", "x.corp.example.com", "evil.example.org"]).code, "NOT_IN_SCOPE");
+// (f) Incremental creep: the gate is stateless, so a run of in-scope allowances
+//     never accumulates into permission for a later out-of-scope action.
+let creepOk = true; for (let i = 0; i < 5; i++) { if (!ev(env, ["app.example.com"]).allow) creepOk = false; }
+ok("5 in-scope allowances do not accumulate into scope", creepOk && ev(env, ["evil.example.org"]).code === "NOT_IN_SCOPE");
+
 group("tool grammar (parseInvocation)");
 const P = (t, a) => G.parseInvocation(t, a);
 eq("nmap: flags + attached -T4 + target", P("nmap", ["-sT", "-T4", "-p", "1-1024", "app.example.com"]).targets, ["app.example.com"]);
