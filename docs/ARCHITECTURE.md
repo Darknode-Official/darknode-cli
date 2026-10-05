@@ -270,3 +270,9 @@ node --check darknode.js lib/**/*.js test/*.js
 ```
 `.github/workflows/ci.yml` runs `node --check` + `npm test` + a CLI smoke test on
 Node 18/20/22; `.github/workflows/build-mac-cli.yml` builds the macOS binary.
+
+`eval/` is the NX-008 evaluation harness (`node eval/harness.js --dry`): a
+deterministic scorer, a provenance-gated task schema, per-seed cost/latency/token
+metrics with mean+variance, and a reserved held-out set. It measures the agent
+loop and security capabilities; no baseline is produced yet (needs real engine
+runs). See `eval/README.md`.

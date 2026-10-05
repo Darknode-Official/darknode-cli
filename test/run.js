@@ -235,6 +235,33 @@ group("NX-002 default posture: active commands need local target or authorizatio
   ok("a public DNS resolver is remote, not local", !DG.isLocalTarget("8.8.8.8"));
 }
 
+group("NX-008: eval harness scoring + task admissibility");
+{
+  const { scoreRun, aggregate } = require("../eval/score");
+  const h = require("../eval/harness");
+  const p = require("path");
+  ok("command exit 0 => pass", scoreRun({ type: "command" }, { code: 0 }).pass);
+  ok("command exit 1 => fail", !scoreRun({ type: "command" }, { code: 1 }).pass);
+  const perfect = scoreRun({ type: "finding", groundTruth: ["a:1", "b:2"] }, { findings: ["a:1", "b:2"] });
+  ok("finding perfect => pass, 0 FP, P=R=1", perfect.pass && perfect.fp === 0 && perfect.precision === 1 && perfect.recall === 1);
+  const fp = scoreRun({ type: "finding", groundTruth: ["a:1"] }, { findings: ["a:1", "c:3"] });
+  ok("a false positive drops precision and fails the task", !fp.pass && fp.fp === 1 && fp.precision === 0.5);
+  const fn = scoreRun({ type: "finding", groundTruth: ["a:1", "b:2"] }, { findings: ["a:1"] });
+  ok("a miss drops recall", !fn.pass && fn.fn === 1 && fn.recall === 0.5);
+  const agg = aggregate([
+    { score: { pass: true }, metrics: { latencyMs: 100, tokens: 10, costUsd: 0.01 } },
+    { score: { pass: false }, metrics: { latencyMs: 300, tokens: 30, costUsd: 0.03 } },
+  ]);
+  ok("pass-rate is a fraction, not rounded to works/doesn't", agg.passRate === 0.5);
+  ok("variance is reported, not only the mean", agg.latencyMs.mean === 200 && agg.latencyMs.variance > 0);
+  ok("task without provenance is excluded", !h.admissible({ id: "x", axis: "a", type: "command", prompt: "p", verify: "true", contamination: "c" }));
+  ok("task without contamination argument is excluded", !h.admissible({ id: "x", axis: "a", type: "command", prompt: "p", verify: "true", provenance: "p" }));
+  ok("a complete command task is admissible", h.admissible({ id: "x", axis: "a", type: "command", prompt: "p", verify: "true", provenance: "p", contamination: "c" }));
+  const tasks = h.loadTasks(p.join(__dirname, "..", "eval", "tasks"));
+  ok("the shipped dev tasks all parse", tasks.length >= 3);
+  ok("every shipped dev task is admissible", tasks.every(h.admissible));
+}
+
 group("output styles (Claude-Code idea)");
 {
   ok("default → empty directive", styleDirective("default") === "");

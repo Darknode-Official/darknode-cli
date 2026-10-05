@@ -1,0 +1,11 @@
+{
+  "id": "fix-failing-sum",
+  "axis": "diagnosis-from-failing-trace",
+  "type": "command",
+  "provenance": "authored 2026-10-04 for this harness; unpublished",
+  "contamination": "private, newly authored; post-dates all engine training cutoffs",
+  "setup": "mkdir -p lib && printf 'function sum(a, b) { return a - b; }\\nmodule.exports = { sum };\\n' > lib/sum.js && printf 'const {sum}=require(\"./lib/sum\");\\nif(sum(2,3)!==5){console.error(\"FAIL sum(2,3) expected 5 got \"+sum(2,3));process.exit(1)}\\nconsole.log(\"ok\")\\n' > test.js",
+  "prompt": "`node test.js` fails. Find and fix the bug in lib/sum.js so the test passes. Do not edit test.js.",
+  "verify": "node test.js",
+  "timeoutMs": 300000
+}
