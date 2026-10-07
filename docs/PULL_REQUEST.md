@@ -9,7 +9,7 @@ starts decomposing the monolith into a tested `lib/` layer.
   Ollama). A flag for one engine can't leak into another — enforced by tests.
 - **Enterprise guardrails**: policy file (protected paths / denied commands / write
   limits / secret blocking), an org floor local config can only tighten, and a
-  **tamper-evident hash-chained audit trail** (`sentinel audit verify` for CI).
+  **tamper-evident hash-chained audit trail** (`darknode audit verify` for CI).
 - **Multi-model `/team`** workspace: architect -> builder -> independent reviewer,
   looping until PASS.
 - **From Claude Code & Glitch**: output styles (+ custom), `remember`, `discover`,

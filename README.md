@@ -1,6 +1,6 @@
-# Sentinel CLI
+# Darknode CLI
 
-The terminal edition of Sentinel — a single command that drives a full security
+The terminal edition of Darknode — a single command that drives a full security
 toolkit and hosts **Nexus**, the AI coding agent. Recon, exploitation helpers,
 practice labs, governance, and an autonomous AI layer, all from your shell.
 
@@ -31,7 +31,7 @@ against your workspace with a live token/cost readout.
 ## Project Structure
 
 ```
-sentinel-cli/
+darknode-cli/
 ├── sentinel.js           # entry point + command dispatch
 ├── lib/
 │   ├── cli/              # command implementations & shared CLI helpers
@@ -49,8 +49,8 @@ sentinel-cli/
 
 ```
 # from source (Node 18+)
-git clone https://github.com/Darknode-Official/sentinel-cli
-cd sentinel-cli && npm install && node sentinel.js
+git clone https://github.com/Darknode-Official/darknode-cli
+cd darknode-cli && npm install && node sentinel.js
 
 # or grab a standalone binary from Releases and put it on PATH
 ```
@@ -58,9 +58,9 @@ cd sentinel-cli && npm install && node sentinel.js
 ## Usage
 
 ```
-sentinel nexus --tui        # the AI coding agent
-sentinel nexus --engine ollama   # local, private models
-sentinel <tool> ...         # drive the security toolkit
+darknode nexus --tui        # the AI coding agent
+darknode nexus --engine ollama   # local, private models
+darknode <tool> ...         # drive the security toolkit
 ```
 
 ## Running Tests

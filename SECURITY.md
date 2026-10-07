@@ -9,7 +9,7 @@ affected version. We aim to acknowledge reports promptly and coordinate disclosu
 
 ## Responsible use
 
-Sentinel is offensive-security tooling — only use it against systems you own or
+Darknode is offensive-security tooling — only use it against systems you own or
 are explicitly authorized to test. The full ethics and ground rules are in
 [RESPONSIBLE_USE.md](RESPONSIBLE_USE.md).
 
@@ -30,6 +30,6 @@ path in the CLI.
 - **Secret handling** — files are scanned for credentials before writing, and text is
   redacted before it is sent to a cloud engine.
 - **Tamper-evident audit** — enforced actions are appended to a hash-chained
-  `.nexus/audit.jsonl`; run `sentinel audit verify` to check its integrity.
+  `.nexus/audit.jsonl`; run `darknode audit verify` to check its integrity.
 
-Verify your setup at any time with `sentinel doctor`.
+Verify your setup at any time with `darknode doctor`.

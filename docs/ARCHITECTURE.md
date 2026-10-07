@@ -1,6 +1,6 @@
 # Architecture
 
-Sentinel is a dependency-free Node CLI. The security console and tools live in
+Darknode is a dependency-free Node CLI. The security console and tools live in
 `sentinel.js`; **Nexus**, the terminal AI coding agent, is the largest subsystem.
 Pure, testable logic is being progressively extracted into `lib/` so the domain
 model is decoupled from the terminal UI.
@@ -45,12 +45,12 @@ lib/                   pure, testable logic in four domain subpackages
     tools.js             local-agent tool catalog + `discover` keyword search
     bgjobs.js            background-command manager (run_background/check/stop)
     memory.js            durable-note merge with dedup (the agent `remember` tool)
-    todos.js             tech-debt marker scanner (TODO/FIXME/HACK) — /todo, sentinel todo
-    codestats.js         codebase overview: files/lines/languages — /stats, sentinel stats
-    deps.js              dependency hygiene: unused + undeclared imports — /deps, sentinel deps
-    envaudit.js          env-var audit: code refs vs .env.example — /env, sentinel env
+    todos.js             tech-debt marker scanner (TODO/FIXME/HACK) — /todo, darknode todo
+    codestats.js         codebase overview: files/lines/languages — /stats, darknode stats
+    deps.js              dependency hygiene: unused + undeclared imports — /deps, darknode deps
+    envaudit.js          env-var audit: code refs vs .env.example — /env, darknode env
     review.js            multi-lens code-review prompt builder — /ultrareview
-    changelog.js         release-notes generator from git history — /changelog, sentinel changelog
+    changelog.js         release-notes generator from git history — /changelog, darknode changelog
   governance/          enterprise policy, audit, cost & compliance
     policy.js            guardrails engine: policyCheck + tamper-evident audit chain
     security.js          scanSecrets / maskSecrets / classifyDanger / compactOutput
@@ -113,7 +113,7 @@ is appended per turn.
   asserts no Claude-only flag appears in any other engine's argv.
 - **Least privilege.** The local agent's file/command tools are checked against
   `.nexus/policy.json` (protected paths, denied commands, per-turn write limit,
-  secret-write blocking) *before* execution. An org floor at `~/.sentinel/policy.json`
+  secret-write blocking) *before* execution. An org floor at `~/.darknode/policy.json`
   can only be made stricter locally, never weaker.
 - **Provenance.** Every enforced tool action is appended to a hash-chained
   `.nexus/audit.jsonl`; `auditVerify` (via `/audit verify`) detects any edit,

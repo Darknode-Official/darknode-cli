@@ -1,14 +1,14 @@
 # Contributing
 
-Thanks for helping improve Sentinel / Nexus.
+Thanks for helping improve Darknode / Nexus.
 
 ## Setup
 
 No dependencies to install — it runs on Node 18+.
 
 ```
-git clone https://github.com/Darknode-Official/sentinel-cli
-cd sentinel-cli
+git clone https://github.com/Darknode-Official/darknode-cli
+cd darknode-cli
 npm test
 ```
 
