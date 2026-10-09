@@ -1724,6 +1724,62 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("loadCheckpoints reads back exactly the persisted, bisectable checkpoints", loaded.length === 1 && loaded[0].tree === "tX" && loaded[0].label === "do a thing");
   } catch (e) { ok("bisect test threw: " + (e && e.message), false); }
 
+  // explain-break — instant "git blame for the agent's turns": correlate a failing test to the
+  // turn whose changes most likely caused it, with no test execution. Pure, deterministic.
+  group("explain-break (blame the turn that broke the test)");
+  try {
+    const EB = require("../lib/nexus/explainbreak");
+
+    // extractRefs pulls referenced file paths (with line) and candidate symbols out of output.
+    const refs = EB.extractRefs("AssertionError: expected parseConfig to return 2\n    at Object.<anonymous> (src/config.js:42:10)\n    at Module._compile (node:internal)");
+    ok("extractRefs captures a referenced file path and line", refs.paths.some((p) => p.path === "src/config.js" && p.line === 42));
+    ok("extractRefs captures a meaningful symbol and drops stopwords", refs.symbols.includes("parseConfig") && !refs.symbols.includes("expected"));
+    ok("extractRefs ignores urls, not file paths", !refs.paths.some((p) => /^https?:/.test(p.path)));
+
+    // samePath comparison modes
+    ok("samePath detects an exact match", EB.samePath("./src/a.js", "src/a.js") === "exact");
+    ok("samePath detects a suffix match", EB.samePath("pkg/src/a.js", "src/a.js") === "suffix");
+    ok("samePath detects a basename-only match", EB.samePath("x/a.js", "y/a.js") === "base");
+    ok("samePath returns null for unrelated paths", EB.samePath("a.js", "b.js") === null);
+
+    // scoreTurns: the turn that changed the file named in the failure ranks first.
+    const turns = [
+      { label: "scaffold project", ts: 1, paths: ["README.md", "package.json"] },
+      { label: "implement parseConfig", ts: 2, paths: ["src/config.js"] },
+      { label: "tweak styles", ts: 3, paths: ["src/style.css"] },
+    ];
+    const ranked = EB.scoreTurns(refs, turns);
+    ok("scoreTurns ranks the turn that touched the referenced file first", ranked[0].turn === "implement parseConfig" && ranked[0].score >= 100);
+    ok("scoreTurns records the evidence for the top suspect", /config\.js/.test(ranked[0].reasons[0]));
+    ok("an unrelated turn scores far lower", ranked[ranked.length - 1].score < ranked[0].score);
+
+    // symbol-only correlation (no path match) still produces a weaker signal
+    const symTurns = [{ label: "add parseConfig helper", ts: 1, paths: ["lib/helpers.js"] }, { label: "docs", ts: 2, paths: ["README.md"] }];
+    const symRanked = EB.scoreTurns(refs, symTurns);
+    ok("scoreTurns uses symbol overlap when there's no path match", symRanked[0].turn === "add parseConfig helper" && symRanked[0].score > 0 && symRanked[0].score < 100);
+
+    // explainBreak end-to-end: confident when a filename correlates, with a bisect pointer.
+    const verdict = EB.explainBreak("FAIL src/config.js:42 — parseConfig returned 1, expected 2", turns);
+    ok("explainBreak is confident and names the culprit turn when a file correlates", verdict.confident === true && /implement parseConfig/.test(verdict.summary) && /bisect/.test(verdict.summary));
+    ok("explainBreak surfaces the referenced paths and the diagnose category", verdict.referencedPaths.some((p) => /config\.js/.test(p)) && verdict.category === "test-failure");
+
+    // not confident when nothing overlaps — it points at bisect rather than guessing.
+    const vague = EB.explainBreak("Segmentation fault (core dumped)", turns);
+    ok("explainBreak declines to guess when there's no overlap and points to bisect", vague.confident === false && /bisect/.test(vague.summary));
+
+    // --- wiring: provided output + injected timeline ---
+    const wired = await EB.explainBreakTool({ output: "FAIL at src/config.js:42 parseConfig" }, "/repo", { loadCheckpoints: () => turns });
+    ok("explainBreakTool correlates provided output against the injected timeline", wired.confident === true && wired.suspects[0].turn === "implement parseConfig");
+    // wiring: no output given -> runs the test once; a passing test means nothing to explain
+    const passing = await EB.explainBreakTool({}, "/repo", { loadCheckpoints: () => turns, detectTest: () => "npm test", runTest: async () => ({ code: 0, output: "ok" }) });
+    ok("explainBreakTool reports 'passing' when the captured test actually passes", passing.status === "passing");
+    // wiring: no output and no runner -> clear guidance
+    const needOut = await EB.explainBreakTool({}, "/repo", { loadCheckpoints: () => turns });
+    ok("explainBreakTool asks for the failing output when it can't capture one", needOut && /needs the failing test output/.test(needOut.error));
+    const noCps = await EB.explainBreakTool({ output: "FAIL src/config.js:42" }, "/repo", { loadCheckpoints: () => [] });
+    ok("explainBreakTool refuses with no timeline to attribute against", noCps && /no checkpoint timeline/.test(noCps.error));
+  } catch (e) { ok("explain-break test threw: " + (e && e.message), false); }
+
   // agentic browser (CDP WebSocket client) — frame codec, target selection, dispatch shape.
   try {
     const B = require("../lib/nexus/browser");
