@@ -1312,6 +1312,27 @@ ok("shouldCheck: off disables; offline disables", !shouldCheck({ autoUpdate: "of
 ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldCheck({}, 1e12, false) && !shouldCheck({ lastUpdateCheck: 1e12 - 1000 }, 1e12, false) && shouldCheck({ lastUpdateCheck: 1e12 - 5 * 3600 * 1000 }, 1e12, false));
 
 (async () => {
+  // agentic browser (CDP WebSocket client) — frame codec, target selection, dispatch shape.
+  try {
+    const B = require("../lib/nexus/browser");
+    const round = (s) => { const f = B.parseFrame(B.buildFrame(s)); return f && f.payload.toString("utf8"); };
+    ok("ws frame round-trips a short string", round("hello cdp") === "hello cdp");
+    ok("ws frame round-trips a 300-byte payload (16-bit length)", round("x".repeat(300)) === "x".repeat(300));
+    ok("ws frame round-trips a 70KB payload (64-bit length)", round("y".repeat(70000)) === "y".repeat(70000));
+    ok("parseFrame returns null on an incomplete buffer", B.parseFrame(Buffer.from([0x81])) === null);
+    ok("buildFrame masks client->server frames (mask bit set)", (B.buildFrame("a")[1] & 0x80) !== 0);
+    const targets = [{ type: "page", id: "A", title: "GitHub", url: "https://github.com/x" }, { type: "page", id: "B", title: "Mail", url: "https://mail.example/inbox" }, { type: "background_page", id: "C", url: "chrome://ext" }];
+    eq("pickTarget default -> first page", B.pickTarget(targets, "").id, "A");
+    eq("pickTarget by index", B.pickTarget(targets, 1).id, "B");
+    eq("pickTarget by url substring", B.pickTarget(targets, "mail").id, "B");
+    eq("pickTarget by id", B.pickTarget(targets, "C").id, "C");
+    ok("pickTarget no match -> null", B.pickTarget(targets, "nope") === null);
+    ok("startHint names the chosen port", /9222/.test(B.startHint(9222)));
+    ok("browserTool ignores a non-browser name (null)", (await B.browserTool("read_file", {}, ".")) === null);
+    const st = await B.browserTool("browser_status", { port: 59997 }, ".");
+    ok("browser_status reports unreachable + a how-to-start hint when no debug browser", st && st.reachable === false && /remote-debugging-port/.test(st.hint || ""));
+  } catch (e) { ok("browser test threw: " + (e && e.message), false); }
+
   // native tool loop orchestrator (async, dependency-injected fake model) — proves the
   // edit->run->observe cycle: run tools, feed results back, then finalize.
   try {
