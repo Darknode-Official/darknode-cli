@@ -1,0 +1,53 @@
+{
+  "runId": "2026-09-27T17-44-45-420Z",
+  "agents": [
+    "nexus-local"
+  ],
+  "results": [
+    {
+      "agent": "nexus-local",
+      "task": "fix-csv",
+      "pass": false,
+      "seconds": 392.8,
+      "filesChanged": 0,
+      "killed": true,
+      "exit": null
+    },
+    {
+      "agent": "nexus-local",
+      "task": "fix-range",
+      "pass": false,
+      "seconds": 448,
+      "filesChanged": 2,
+      "killed": true,
+      "exit": null
+    },
+    {
+      "agent": "nexus-local",
+      "task": "fix-stack",
+      "pass": false,
+      "seconds": 358.1,
+      "filesChanged": 0,
+      "killed": true,
+      "exit": null
+    },
+    {
+      "agent": "nexus-local",
+      "task": "impl-fizzbuzz",
+      "pass": false,
+      "seconds": 168.3,
+      "filesChanged": 2,
+      "killed": false,
+      "exit": 0
+    },
+    {
+      "agent": "nexus-local",
+      "task": "multi-file",
+      "pass": false,
+      "seconds": 346.7,
+      "filesChanged": 0,
+      "killed": true,
+      "exit": null
+    }
+  ]
+}

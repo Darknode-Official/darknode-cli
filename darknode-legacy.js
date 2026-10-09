@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 "use strict";
+// Legacy entry point: it predates the authorization & scope gate and is NOT gated.
+// Refuse to run in engagement mode (DARKNODE_ENGAGEMENT) — use darknode.js.
+if (process.env.DARKNODE_ENGAGEMENT) { console.error("the legacy entry is ungated and cannot run in engagement mode; use darknode.js"); process.exit(1); }
+// Back-compat: this legacy entry reads SENTINEL_* env vars directly. Let DARKNODE_*
+// take precedence by copying any DARKNODE_* into the matching SENTINEL_* when unset.
+for (const k of Object.keys(process.env)) { if (k.startsWith("DARKNODE_") && process.env["SENTINEL_" + k.slice(9)] === undefined) process.env["SENTINEL_" + k.slice(9)] = process.env[k]; }
 /*!
  * Darknode — Terminal Edition
- * AI-powered security platform CLI for Windows and Linux.
+ * A dependency-free CLI/TUI security console for Windows and Linux.
  * Uses only Node.js built-ins. Copyright (c) 2026 Darknode. All rights reserved.
  * Use only on systems you own or are explicitly authorized to test.
  */
@@ -16,9 +22,6 @@ const readline = require("readline");
 const os = require("os");
 const dnsp = require("dns").promises;
 const VERSION = "2.45.0";
-
-// ---- backward compat: accept old SENTINEL_* env vars as DARKNODE_* ----
-for (const k of Object.keys(process.env)) { if (k.startsWith("SENTINEL_") && !process.env["DARKNODE_" + k.slice(9)]) process.env["DARKNODE_" + k.slice(9)] = process.env[k]; }
 
 // ---------- colors ----------
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -232,7 +235,7 @@ async function cveSearch(q) {
 
 // ---------- GitHub (system git + token) ----------
 function sh(args, opts) { return new Promise((res) => execFile("git", args, { maxBuffer: 1e7, ...opts }, (err, stdout, stderr) => res({ err, stdout, stderr }))); }
-const ghToken = () => process.env.DARKNODE_GH_TOKEN || process.env.GITHUB_TOKEN || "";
+const ghToken = () => process.env.SENTINEL_GH_TOKEN || process.env.GITHUB_TOKEN || "";
 const ghAuth = (url, t) => (t && /^https:\/\//i.test(url)) ? url.replace(/^https:\/\//i, "https://" + t + "@") : url;
 const ghScrub = (s, t) => String(s || "").split(t || " __none__").join("***").trim();
 async function gitClone(url) {
@@ -466,7 +469,7 @@ function setupTool(name) {
     const t = TOOLS.find((x) => x[0].toLowerCase() === String(name).toLowerCase());
     if (!t) { console.log("  " + red("unknown tool. see: darknode tools")); return resolve(); }
     let inst = t[2];
-    if (process.platform !== "win32" && inst.startsWith("sudo ") && process.getuid && process.getuid() !== 0 && process.env.DARKNODE_NO_PKEXEC !== "1") {
+    if (process.platform !== "win32" && inst.startsWith("sudo ") && process.getuid && process.getuid() !== 0 && process.env.SENTINEL_NO_PKEXEC !== "1") {
       // prefer a graphical prompt if available, else sudo will prompt in the terminal
     }
     h1("Configuring " + t[0]);
@@ -688,8 +691,8 @@ function fileHash(f) {
 // 127.0.0.1 only + Bearer token. `darknode nexus serve [port]`.
 async function nexusServe(args, ctx) {
   const crypto = require("crypto");
-  const port = parseInt((args || []).find((a) => /^\d+$/.test(a)) || process.env.DARKNODE_SERVE_PORT || "", 10) || 8765;
-  const token = process.env.DARKNODE_SERVE_TOKEN || crypto.randomBytes(24).toString("base64url");
+  const port = parseInt((args || []).find((a) => /^\d+$/.test(a)) || process.env.SENTINEL_SERVE_PORT || "", 10) || 8765;
+  const token = process.env.SENTINEL_SERVE_TOKEN || crypto.randomBytes(24).toString("base64url");
   const engineDefault = (ctx && ctx.engine) || "claude";
   const srv = http.createServer((req, res) => {
     const send = (code, obj) => { const b = JSON.stringify(obj); res.writeHead(code, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(b) }); res.end(b); };
@@ -841,7 +844,7 @@ async function cli(args) {
     if (sub === "start") {
       const { createAPIServer } = require("./lib/cli/api-server");
       const portArg = rest.indexOf("--port"); const apiPort = portArg >= 0 ? parseInt(rest[portArg + 1], 10) || 8080 : 8080;
-      const apiToken = process.env.DARKNODE_API_TOKEN || null;
+      const apiToken = process.env.SENTINEL_API_TOKEN || null;
       const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken });
       srv.listen(apiPort, "0.0.0.0", () => {
         h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://0.0.0.0:" + apiPort));
@@ -973,35 +976,18 @@ async function cli(args) {
     const fs = require("fs");
     if (rest[0] === "verify") {
       const f = rest[1]; if (!f) { console.log(red("usage: darknode compliance verify <bundle.json>")); process.exit(2); }
-      try { const b = JSON.parse(fs.readFileSync(f, "utf8")); const key = process.env.DARKNODE_SIGNING_KEY || ""; const v = verifyBundle(b, key || undefined);
-        const sig = v.sigOk === null ? (b.signature ? gray("signature present — set DARKNODE_SIGNING_KEY to verify it") : gray("unsigned")) : (v.sigOk ? green("signature valid") : red("signature INVALID"));
+      try { const b = JSON.parse(fs.readFileSync(f, "utf8")); const key = process.env.SENTINEL_SIGNING_KEY || ""; const v = verifyBundle(b, key || undefined);
+        const sig = v.sigOk === null ? (b.signature ? gray("signature present — set SENTINEL_SIGNING_KEY to verify it") : gray("unsigned")) : (v.sigOk ? green("signature valid") : red("signature INVALID"));
         console.log("  integrity  " + (v.hashOk ? green("OK — bundle not altered") : red("TAMPERED")) + "\n  signature  " + sig);
         process.exit(v.hashOk && v.sigOk !== false ? 0 : 1); // CI gate
       } catch (e) { console.log(red("could not read/parse bundle: " + (e && e.message || e))); process.exit(2); }
     }
     const id = resolveOperator({ cwd: process.cwd() });
-    const key = process.env.DARKNODE_SIGNING_KEY || "";
+    const key = process.env.SENTINEL_SIGNING_KEY || "";
     const b = buildBundle(process.cwd(), { operator: id.operator, team: id.team, signingKey: key || undefined });
     if (rest.includes("--json")) console.log(JSON.stringify(b, null, 2));
     else console.log("\n" + renderBundleMd(b) + "\n");
     const oi = rest.indexOf("--out"); if (oi >= 0 && rest[oi + 1]) { try { fs.writeFileSync(rest[oi + 1], JSON.stringify(b, null, 2)); console.log(gray("  written: " + rest[oi + 1])); } catch (e) { console.log(red("  write failed: " + (e && e.message || e))); } }
-  }
-  else if (cmd === "marketplace") {
-    const sub = (rest[0] || "").toLowerCase();
-    const globalMp = path.join(os.homedir(), ".darknode", "marketplace");
-    if (sub === "list" || sub === "ls" || !sub) {
-      try { const pkgs = fs.readdirSync(globalMp).filter((f) => f.endsWith(".json")).map((f) => { try { return JSON.parse(fs.readFileSync(path.join(globalMp, f), "utf8")); } catch (_) { return null; } }).filter(Boolean);
-      if (!pkgs.length) console.log("  " + gray("no marketplace packages installed"));
-      else { h1("Installed packages"); pkgs.forEach((p) => console.log("  " + cyan((p.name || "?").padEnd(20)) + gray((p.type || "agent").padEnd(10)) + gray("v" + (p.version || "?")))); }
-      } catch (_) { console.log("  " + gray("no marketplace packages installed")); }
-    } else console.log("  " + gray("usage: darknode marketplace [list|install|init]  — or use /marketplace in the TUI"));
-  }
-  else if (cmd === "cron") {
-    const cronFile = path.join(process.cwd(), ".nexus", "cron.json");
-    try { const jobs = JSON.parse(fs.readFileSync(cronFile, "utf8"));
-    if (!jobs.length) console.log("  " + gray("no scheduled jobs"));
-    else { h1("Scheduled jobs"); jobs.forEach((j) => console.log("  " + (j.enabled ? green("●") : gray("○")) + " " + cyan((j.id || "?").padEnd(16)) + gray(j.schedule.padEnd(16)) + (j.goal || "").slice(0, 50))); }
-    } catch (_) { console.log("  " + gray("no scheduled jobs — use /cron in the TUI to create some")); }
   }
   else if (cmd === "doctor") {
     const reach = await ollamaReachable(), auth = nexusAuth(), warns = policyWarnings(process.cwd()), v = auditVerify(process.cwd());
@@ -1042,7 +1028,7 @@ async function cli(args) {
 // Nexus keeps machine-wide state (login tokens, Firebase keys, setup marker) in
 // ~/.darknode/ so a signed-in session and installed models persist across every
 // project, unlike the per-project .nexus/ dir.
-function darknodeHome() { const os = require("os"), path = require("path"), fs = require("fs"); const d = path.join(os.homedir(), ".darknode"); try { fs.mkdirSync(d, { recursive: true }); } catch (_) {} if (!fs.existsSync(d)) { const old = path.join(os.homedir(), ".sentinel"); if (fs.existsSync(old)) return old; } return d; }
+function darknodeHome() { const os = require("os"), path = require("path"), fs = require("fs"); const d = path.join(os.homedir(), ".darknode"); try { fs.mkdirSync(d, { recursive: true }); } catch (_) {} return d; }
 function readGlobal(name, def) { const fs = require("fs"), path = require("path"); try { return JSON.parse(fs.readFileSync(path.join(darknodeHome(), name), "utf8")); } catch (_) { return def === undefined ? null : def; } }
 function writeGlobal(name, obj) { const fs = require("fs"), path = require("path"); try { const p = path.join(darknodeHome(), name); fs.writeFileSync(p, JSON.stringify(obj, null, 2)); try { fs.chmodSync(p, 0o600); } catch (_) {} return true; } catch (_) { return false; } } // 0600: tokens are secrets
 
@@ -1074,7 +1060,7 @@ function openBrowser(url) {
 // identifies the project, it is not a secret (it ships in the website's JS too).
 // This makes `darknode login` work out-of-the-box with the website's accounts; a
 // ~/.darknode/firebase.json overrides any field (e.g. to point at your own project).
-const DEFAULT_FIREBASE = { apiKey: "AIzaSyD3CJO7PLQdRvPOWDqehSlRwEeA5odCTDE", authDomain: "sentinel-b4194.firebaseapp.com", projectId: "sentinel-b4194" };
+const DEFAULT_FIREBASE = { apiKey: "AIzaSyD3CJO7PLQdRvPOWDqehSlRwEeA5odCTDE", authDomain: "darknode-b4194.firebaseapp.com", projectId: "darknode-b4194" };
 function firebaseCfg() { return Object.assign({}, DEFAULT_FIREBASE, readGlobal("firebase.json", {}) || {}); }
 function firebaseReady(c) { c = c || firebaseCfg(); return !!(c && c.apiKey); }
 async function firebaseSignInWithIdp(providerId, idpToken) {
@@ -1196,7 +1182,7 @@ async function ollamaPull(model, log) { log("pulling " + bold(model) + gray(" �
 function firstRunPending() { const st = readGlobal("state.json", null); return !st || !st.setupDone; }
 // The local models Nexus ships with — a strong coding model + an agentic/security
 // model. Override per-call via opts.models. Kept small so first-run stays sane.
-const USEFUL_MODELS = (process.env.DARKNODE_MODELS ? process.env.DARKNODE_MODELS.split(",").map((s) => s.trim()).filter(Boolean) : ["qwen2.5-coder", "hermes3"]);
+const USEFUL_MODELS = (process.env.SENTINEL_MODELS ? process.env.SENTINEL_MODELS.split(",").map((s) => s.trim()).filter(Boolean) : ["qwen2.5-coder", "hermes3"]);
 async function nexusSetup(opts) {
   opts = opts || {}; const log = opts.log || ((s) => console.log("  " + s)); const models = opts.models || USEFUL_MODELS;
   log(bold("Nexus setup"));
@@ -1216,7 +1202,8 @@ async function nexusSetup(opts) {
 }
 
 // ---------- AI coder (terminal AI coding agent, local Ollama, dependency-free) ----------
-const { ollamaChat, ollamaTags, pickCoderModel, apiConfigured, API_BASE, hasAnthropic } = require("./lib/nexus/ollama"); // local/any-model client (lib/ollama.js)
+const { ollamaChat, ollamaTags, pickCoderModel, apiConfigured, ensureDarknodeModel, API_BASE, hasAnthropic } = require("./lib/nexus/ollama"); // local/any-model client (lib/ollama.js)
+let darknodeAutoTried = false; // module-level guard: attempt the first-run darknode auto-install at most once per process
 const CODER_SCHEMA = { type: "object", properties: { thought: { type: "string" }, action: { type: "string", enum: ["tool", "final"] }, tool: { type: "string" }, args: { type: "object" }, final: { type: "string" } }, required: ["thought", "action"] };
 // Weak local models routinely mangle the tool schema — packing args into the
 // tool name ("list_dir{/home/x}", "run_command{ls -l}", "sysinfo{}", "discover(query:sysinfo)"),
@@ -1228,7 +1215,7 @@ const KNOWN_ARGKEYS = new Set(["path", "command", "content", "query", "q", "url"
 const KNOWN_TOOLS = new Set(["read_file", "write_file", "edit_file", "list_dir", "run_command", "run_background", "check_background", "stop_background", "search", "grep", "find", "find_files", "glob", "http_fetch", "web_fetch", "fetch_url", "http", "web_search", "search_web", "google", "todo_write", "todos", "todo_list", "write_todos", "sysinfo", "system_info", "list_processes", "ps", "make_dir", "mkdir", "move", "rename", "move_file", "copy", "copy_file", "delete", "delete_file", "rm", "remember", "discover", "spawn_agents"]);
 // A tool "name" that is really a shell command line — weak models often emit
 // {tool:"cat /etc/passwd"} or {tool:"ls /bin/*"} instead of run_command.
-const SHELL_CMD = /^(sudo\s+)?(ls|cat|grep|egrep|fgrep|echo|cd|pwd|whoami|id|uname|hostname|ps|top|df|du|free|date|env|printenv|which|type|find|locate|head|tail|awk|sed|cut|tr|sort|uniq|wc|xargs|tee|curl|wget|ping|traceroute|nmap|nc|ncat|dig|host|nslookup|ip|ifconfig|iwconfig|netstat|ss|arp|route|cp|mv|rm|mkdir|rmdir|touch|ln|stat|file|chmod|chown|tar|gzip|gunzip|zip|unzip|git|make|gcc|python3?|node|npm|npx|pip3?|bash|sh|zsh|kill|pkill|killall|systemctl|service|apt|apt-get|dpkg|ssh|scp|rsync|darknode|sentinel|nexus|nikto|sqlmap|hydra|john|hashcat|gobuster|ffuf|masscan|whatweb|searchsploit|msfconsole)(\s|$)/i;
+const SHELL_CMD = /^(sudo\s+)?(ls|cat|grep|egrep|fgrep|echo|cd|pwd|whoami|id|uname|hostname|ps|top|df|du|free|date|env|printenv|which|type|find|locate|head|tail|awk|sed|cut|tr|sort|uniq|wc|xargs|tee|curl|wget|ping|traceroute|nmap|nc|ncat|dig|host|nslookup|ip|ifconfig|iwconfig|netstat|ss|arp|route|cp|mv|rm|mkdir|rmdir|touch|ln|stat|file|chmod|chown|tar|gzip|gunzip|zip|unzip|git|make|gcc|python3?|node|npm|npx|pip3?|bash|sh|zsh|kill|pkill|killall|systemctl|service|apt|apt-get|dpkg|ssh|scp|rsync|darknode|nexus|nikto|sqlmap|hydra|john|hashcat|gobuster|ffuf|masscan|whatweb|searchsploit|msfconsole)(\s|$)/i;
 function looksLikeCommand(s) { s = String(s || "").trim(); return SHELL_CMD.test(s) || /^\.{0,2}\//.test(s) || (/\s/.test(s) && /[\/*.~|>]/.test(s)); }
 function normalizeToolCall(o) {
   let name = o && o.tool, a = o && o.args;
@@ -1318,7 +1305,7 @@ const NEXUS_DOCS = {
   config: { title: "Project config (.nexus/)", body:
     "  NEXUS.md        project instructions loaded every session (given to ALL engines)\n  config.json     { engine, model }\n  mcp.json        MCP servers: { mcpServers: { name: { command, args } } }\n  hooks.json      shell hooks: UserPromptSubmit · PreToolUse · PostToolUse · Stop\n  commands/*.md   custom /commands (body = prompt, $ARGUMENTS substituted)\n  snippets.json · plan.json · index.json · session.json   (auto-managed; gitignored)" },
   env: { title: "Environment", body:
-    "  DARKNODE_MODEL   default local model for the ollama engine\n  OLLAMA_HOST / OLLAMA_PORT   point at a remote Ollama (default 127.0.0.1:11434)\n  OLLAMA_TIMEOUT   local request timeout ms (default 300000)\n  NO_COLOR=1       disable colored output" },
+    "  SENTINEL_MODEL   default local model for the ollama engine\n  OLLAMA_HOST / OLLAMA_PORT   point at a remote Ollama (default 127.0.0.1:11434)\n  OLLAMA_TIMEOUT   local request timeout ms (default 300000)\n  NO_COLOR=1       disable colored output" },
 };
 const DOC_ORDER = ["overview", "quickstart", "engines", "cost", "multiengine", "build", "git", "safety", "context", "session", "keys", "config", "env"];
 function docList() { return DOC_ORDER.map((k) => "  " + k.padEnd(12) + gray(NEXUS_DOCS[k].title)).join("\n"); }
@@ -1350,8 +1337,8 @@ function nexusHelp() {
   console.log("    /undo          revert last file change  /diff          list files changed this session");
   console.log("    /exit          quit\n");
   console.log("  " + gray("Attach a file to a task with @path  —  e.g.  fix the bug in @src/app.js") + "\n");
-  console.log("  " + bold("ENV") + "   DARKNODE_MODEL (default model) · OLLAMA_HOST / OLLAMA_PORT (remote Ollama)");
-  console.log("        " + gray("Any model: DARKNODE_API_BASE + DARKNODE_API_KEY point Nexus at any OpenAI-compatible API (OpenRouter, Groq, DeepSeek, vLLM…), or use /api in the TUI") + "\n");
+  console.log("  " + bold("ENV") + "   SENTINEL_MODEL (default model) · OLLAMA_HOST / OLLAMA_PORT (remote Ollama)");
+  console.log("        " + gray("Any model: SENTINEL_API_BASE + SENTINEL_API_KEY point Nexus at any OpenAI-compatible API (OpenRouter, Groq, DeepSeek, vLLM…), or use /api in the TUI") + "\n");
   console.log("  " + gray("Nexus reads & writes files and runs commands in the current folder. Local models only — private.") + "\n");
 }
 
@@ -1360,13 +1347,12 @@ async function aiCoder(argv) {
   const cwd = process.cwd();
   // ---- parse flags ----
   const arr = Array.isArray(argv) ? argv.slice() : String(argv || "").split(/\s+/).filter(Boolean);
-  let autoApprove = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, resumeFlag = false, parts = [];
+  let autoApprove = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, parts = [];
   for (let i = 0; i < arr.length; i++) {
     const a = arr[i];
     if (a === "-y" || a === "--yes" || a === "--skip-permissions" || a === "--dangerously-skip-permissions") autoApprove = true;
     else if (a === "--print") { printMode = true; autoApprove = true; }
     else if (a === "--tui" || a === "--ui") tuiFlag = true;
-    else if (a === "--resume") resumeFlag = true;
     else if (a === "-m" || a === "--model") modelOverride = arr[++i] || "";
     else if (a === "-e" || a === "--engine") enginePref = arr[++i] || "";
     else if (a === "-h" || a === "--help") return nexusHelp();
@@ -1375,12 +1361,12 @@ async function aiCoder(argv) {
   let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8")); } catch (_) {}
   // Any-model support: an OpenAI-compatible endpoint (from .nexus/config.json or
   // env) turns the local engine into a driver for ANY model. Env wins over config.
-  if (cfg.apiBase && !process.env.DARKNODE_API_BASE) process.env.DARKNODE_API_BASE = cfg.apiBase;
-  if (cfg.apiKey && !process.env.DARKNODE_API_KEY) process.env.DARKNODE_API_KEY = cfg.apiKey;
+  if (cfg.apiBase && !process.env.SENTINEL_API_BASE) process.env.SENTINEL_API_BASE = cfg.apiBase;
+  if (cfg.apiKey && !process.env.SENTINEL_API_KEY) process.env.SENTINEL_API_KEY = cfg.apiKey;
   let nexusMd = ""; try { nexusMd = fs.readFileSync(path.join(cwd, ".nexus", "NEXUS.md"), "utf8"); } catch (_) {}
   const avail = {}; for (const e of ENGINE_ORDER) avail[e] = engineAvail(e);
   // "api" is an alias for the local tool loop pointed at the configured API.
-  if (enginePref === "api") { enginePref = "ollama"; if (!apiConfigured() && !cfg.apiModel) console.log("  " + yellow("note: no API configured — set DARKNODE_API_BASE (+ DARKNODE_API_KEY) or run /api <url> [model]")); }
+  if (enginePref === "api") { enginePref = "ollama"; if (!apiConfigured() && !cfg.apiModel) console.log("  " + yellow("note: no API configured — set SENTINEL_API_BASE (+ SENTINEL_API_KEY) or run /api <url> [model]")); }
   // Default to Claude headless when installed, fall back to Ollama.
   let engine = enginePref || cfg.engine || (avail.claude ? "claude" : "ollama");
   if (engine !== "ollama" && !avail[engine]) engine = avail.claude ? "claude" : "ollama";
@@ -1390,10 +1376,20 @@ async function aiCoder(argv) {
   // "..."`), --print, or a non-interactive stdout.
   if (parts[0] === "serve") return nexusServe(parts.slice(1), { engine });
   const oneShot = parts.length > 0;
-  if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag);
+  if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd);
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
   let model = null, modelList = [];
-  if (engine === "ollama") { modelList = await ollamaTags(); if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
+  if (engine === "ollama") { modelList = await ollamaTags();
+    // First run: auto-build the local "darknode" model when it's the effective default (nothing else chosen/installed) or explicitly requested, instead of erroring out.
+    if (!apiConfigured() && !darknodeAutoTried) {
+      const preModel = modelOverride || cfg.apiModel || cfg.model || process.env.SENTINEL_MODEL || pickCoderModel(modelList);
+      if (!preModel || /^darknode(:|$)/i.test(preModel)) {
+        darknodeAutoTried = true;
+        const dlog = (s) => { if (!printMode) console.log("  " + gray(s)); };
+        if (await ensureOllamaServer(dlog)) { if (await ensureDarknodeModel(dlog)) modelList = await ollamaTags(); }
+      }
+    }
+    if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.SENTINEL_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
   if (!printMode) {
     banner();
     const W = 56, bx = (s) => cyan("│ ") + s + " ".repeat(Math.max(0, W - 1 - s.length)) + cyan("│");
@@ -1406,7 +1402,7 @@ async function aiCoder(argv) {
     console.log("  " + cyan("╰" + "─".repeat(W) + "╯"));
     console.log("  " + gray("message Nexus below · /help for commands · /exit to quit") + (autoApprove ? gray(" · auto-approve ON") : "") + "\n");
   }
-  const SYS = "You are Nexus, a terminal AI coding agent working in " + cwd + " on the operator's own machine. Accomplish the task by taking ONE action per step and reading the OBSERVATION before the next. TOOLS: read_file{path}, write_file{path,content}, edit_file{path,find,replace} (replace one exact string), list_dir{path?}, run_command{command}. Reply with exactly ONE JSON object per the schema: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Write real, working code; prefer edit_file for small changes. If the user is just greeting you or asking a question you can answer directly, reply immediately with action:\"final\" — do NOT run tools for that. Otherwise keep going until the task is fully done, then action:\"final\" with a short summary." + (nexusMd ? "\n\nPROJECT INSTRUCTIONS (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 2000) : "");
+  const SYS = "You are Nexus, a terminal AI coding agent working in " + cwd + " on the operator's own machine. Accomplish the task by taking ONE action per step and reading the OBSERVATION before the next. TOOLS: read_file{path}, write_file{path,content}, edit_file{path,find,replace} (replace one exact string), list_dir{path?}, run_command{command}. Reply with exactly ONE JSON object per the schema: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Write real, working code; prefer edit_file for small changes. If the user is just greeting you or asking a question you can answer directly, reply immediately with action:\"final\" — do NOT run tools for that. Otherwise keep going until the task is fully done, then action:\"final\" with a short summary." + (nexusMd ? "\n\nPROJECT INSTRUCTIONS (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 4000) : "");
   const messages = [{ role: "system", content: SYS }];
   let delegated = false;
   const changed = [];  // session change log for /undo and /diff: {path, before|null, label}
@@ -1435,7 +1431,7 @@ async function aiCoder(argv) {
       task = t;
     }
     // @path attaches a file's contents to the prompt (e.g. "fix the bug in @src/app.js")
-    const userMsg = task.replace(/(^|\s)@(\S+)/g, (m, pre, p) => { try { const c = fs.readFileSync(path.resolve(cwd, p), "utf8"); return pre + "\n\n--- " + p + " ---\n" + c.slice(0, 6000) + "\n--- end " + p + " ---\n"; } catch (_) { return m; } });
+    const userMsg = task.replace(/(^|\s)@(\S+)/g, (m, pre, p) => { try { const c = fs.readFileSync(path.resolve(cwd, p), "utf8"); return pre + "\n\n--- " + p + " ---\n" + c.slice(0, 12000) + "\n--- end " + p + " ---\n"; } catch (_) { return m; } });
     messages.push({ role: "user", content: userMsg }); task = "";
     console.log(cyan("  ▎ ") + bold("nexus") + gray("  " + engine) + "\n");
     if (engine !== "ollama") {
@@ -1455,18 +1451,18 @@ async function aiCoder(argv) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); break; }
       let o; try { o = JSON.parse(raw); } catch (_) { messages.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
       messages.push({ role: "assistant", content: raw });
-      if (o.thought && !printMode) console.log("  " + gray("💭 " + o.thought.slice(0, 120)));
+      if (o.thought && !printMode) console.log("  " + gray("- " + o.thought));
       if (o.action === "final") {
         if (!didTool && !isChitchat(userMsg) && nudges++ < 3) { messages.push({ role: "tool", content: "You have not taken any action yet. Do the real work first." }); continue; }
         console.log("\n  " + green("done: ") + bold(o.final || "done") + "\n"); break;
       }
       const { name, a } = normalizeToolCall(o); let result;
       try {
-        if (name === "read_file") { const t = fs.readFileSync(path.resolve(cwd, a.path), "utf8"); result = { content: t.slice(0, 16000) }; if (!printMode) console.log("  " + cyan("📖 read ") + gray(a.path)); }
+        if (name === "read_file") { const t = fs.readFileSync(path.resolve(cwd, a.path), "utf8"); result = { content: t.slice(0, 16000) }; if (!printMode) console.log("  " + cyan("read ") + a.path); }
         else if (name === "list_dir") { const d = path.resolve(cwd, a.path || "."); result = { items: fs.readdirSync(d, { withFileTypes: true }).map((e) => (e.isDirectory() ? e.name + "/" : e.name)).slice(0, 200) }; if (!printMode) console.log("  " + cyan("ls ") + (a.path || ".")); }
         else if (name === "write_file") {
           if (!(await approve("write " + a.path))) { result = { error: "denied by operator" }; console.log("  " + red("denied ") + a.path); }
-          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp, "utf8"); } catch (e) { if (e.code === "ENOENT") isNew = true; } fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = { ok: true }; console.log("  " + green("✏️  write ") + a.path + gray(" · " + String(a.content || "").split("\n").length + " lines")); }
+          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp, "utf8"); } catch (e) { if (e.code === "ENOENT") isNew = true; } fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = { ok: true }; console.log("  " + green("write ") + a.path + gray(" (" + String(a.content || "").split("\n").length + " lines" + (before != null ? ", was " + before.split("\n").length : "") + ")")); }
         }
         else if (name === "edit_file") {
           const fp = path.resolve(cwd, a.path); let t;
@@ -1474,11 +1470,11 @@ async function aiCoder(argv) {
           if (t == null) { result = { error: "cannot read " + a.path }; }
           else if (!t.includes(a.find)) { result = { error: "find text not present in file" }; }
           else if (!(await approve("edit " + a.path))) { result = { error: "denied by operator" }; console.log("  " + red("denied ") + a.path); }
-          else { fs.writeFileSync(fp, t.replace(a.find, a.replace == null ? "" : a.replace)); changed.push({ path: fp, before: t, label: "edit " + a.path }); result = { ok: true }; console.log("  " + green("✏️  edit ") + gray(a.path)); }
+          else { fs.writeFileSync(fp, t.replace(a.find, a.replace == null ? "" : a.replace)); changed.push({ path: fp, before: t, label: "edit " + a.path }); result = { ok: true }; console.log("  " + green("edit ") + a.path); }
         }
         else if (name === "run_command") {
           if (!(await approve("run: " + a.command))) { result = { error: "denied by operator" }; console.log("  " + red("denied ") + a.command); }
-          else { console.log("  " + mag("⚡ $ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd); result = { code: r.code, output: r.output }; if (r.output && !printMode) console.log(r.output.split("\n").slice(0, 8).map((l) => "    " + gray(l)).join("\n") + (r.output.split("\n").length > 8 ? "\n    " + gray("... +" + (r.output.split("\n").length - 8) + " more lines") : "")); }
+          else { console.log("  " + mag("$ ") + a.command); const r = await coderShell(a.command, cwd); result = { code: r.code, output: r.output }; if (r.output && !printMode) console.log(r.output.split("\n").slice(0, 20).map((l) => "    " + gray(l)).join("\n")); }
         }
         else { result = { error: "unknown tool '" + name + "' (use read_file/write_file/edit_file/list_dir/run_command)" }; }
       } catch (e) { result = { error: e.message }; }
@@ -1644,7 +1640,7 @@ function nexusRestore(cwd, tree, paths) {
 let _untrustedRepoConfig = false;
 function trustFile() { return require("path").join(darknodeHome(), "trusted-repos.json"); }
 function isRepoTrusted(cwd) {
-  if (process.env.DARKNODE_TRUST_REPO === "1") return true;
+  if (process.env.SENTINEL_TRUST_REPO === "1") return true;
   try { const list = JSON.parse(require("fs").readFileSync(trustFile(), "utf8")); return Array.isArray(list) && list.includes(require("path").resolve(cwd)); } catch (_) { return false; }
 }
 function trustRepo(cwd) {
@@ -1889,7 +1885,7 @@ async function deviceTool(name, a, cwd) {
 // whether delegating a task to a cheaper model saves more than the delegation overhead.
 const { priceOf, isMechanical, shouldDelegate } = require("./lib/nexus/pricing"); // cost model (lib/pricing.js)
 // Darknode preflight — classify a shell command's destructive intent (inspired by Glitch's
-// Darknode guard: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
+// Darknode, improved: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
 const { oneline, extractJson } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
 async function planGoal(engine, model, goal, memory) {
   const prompt = "You are a senior engineer planning autonomous work. Break the GOAL into an ordered list of concrete, independently-verifiable tasks (about 5-15). Return ONLY a JSON array of short task strings — no prose, no markdown.\n\nGOAL: " + goal + (memory ? "\n\nPROJECT MEMORY:\n" + memory : "");
@@ -1916,15 +1912,15 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA, signal); } catch (e) { return { ok: signal && signal.aborted ? false : false, output: (signal && signal.aborted) ? log + "\n(interrupted)" : "model error: " + e.message }; }
     let o; try { o = JSON.parse(raw); } catch (_) { messages.push({ role: "tool", content: "Reply with valid schema JSON." }); continue; }
     messages.push({ role: "assistant", content: raw });
-    if (o.thought) console.log("    " + gray("💭 " + (o.thought || "").slice(0, 120)));
+    if (o.thought) console.log("    " + gray(o.thought));
     if (o.action === "final") { if (!didTool && !isChitchat(task) && step < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; } return { ok: true, output: log + "\n" + (o.final || "") }; }
     const { name, a } = normalizeToolCall(o); let result;
     try {
       if (name === "read_file") result = { content: fs.readFileSync(path.resolve(cwd, a.path), "utf8").slice(0, 14000) };
       else if (name === "list_dir") result = { items: fs.readdirSync(path.resolve(cwd, a.path || "."), { withFileTypes: true }).map((e) => e.isDirectory() ? e.name + "/" : e.name).slice(0, 200) };
-      else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = { ok: true }; log += "\nwrote " + a.path; console.log("    " + green("✏️  write ") + gray(a.path)); }
-      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); if (!t.includes(a.find)) result = { error: "find not present" }; else { fs.writeFileSync(fp, t.replace(a.find, a.replace == null ? "" : a.replace)); result = { ok: true }; log += "\nedited " + a.path; console.log("    " + green("✏️  edit ") + gray(a.path)); } }
-      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = { error: "blocked by Darknode (destructive: " + dg.why + ")" }; console.log("    " + red("🚫 blocked: ") + dg.why); } else { console.log("    " + mag("⚡ $ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd); result = { code: r.code, output: compactOutput(r.output, 4000) }; log += "\n$ " + a.command + "\n" + r.output.slice(0, 1200); } }
+      else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = { ok: true }; log += "\nwrote " + a.path; console.log("    " + green("write ") + a.path); }
+      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); if (!t.includes(a.find)) result = { error: "find not present" }; else { fs.writeFileSync(fp, t.replace(a.find, a.replace == null ? "" : a.replace)); result = { ok: true }; log += "\nedited " + a.path; console.log("    " + green("edit ") + a.path); } }
+      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = { error: "blocked by Darknode (destructive: " + dg.why + ")" }; console.log("    " + red("blocked ") + dg.why); } else { console.log("    " + mag("$ ") + a.command); const r = await coderShell(a.command, cwd); result = { code: r.code, output: compactOutput(r.output, 4000) }; log += "\n$ " + a.command + "\n" + r.output.slice(0, 1200); } }
       else { const dr = await deviceTool(name, a, cwd); result = dr !== null ? dr : { error: "unknown tool " + name }; }
     } catch (e) { result = { error: e.message }; }
     if (!(result && typeof result.error === "string" && result.error.startsWith("unknown tool"))) didTool = true;
@@ -1960,7 +1956,7 @@ async function nexusAgents(argv) {
   if (!tasks.length) { banner(); console.log("  " + bold("Nexus agents") + " — run independent tasks in parallel\n\n  " + gray("usage: ") + cyan("darknode nexus agents \"add tests\" \"write docs\" \"fix lint\"") + gray("  [-e claude|gemini|codex|opencode|aider|ollama]") + "\n"); return; }
   let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8")); } catch (_) {}
   engine = engine || cfg.engine || (hasBin("claude") ? "claude" : "ollama");
-  let model = cfg.model || process.env.DARKNODE_MODEL || "";
+  let model = cfg.model || process.env.SENTINEL_MODEL || "";
   if (engine === "ollama" && !model) { const ms = await ollamaTags(); model = pickCoderModel(ms); }
   banner(); console.log("  " + bold(tasks.length + " agents") + gray("  ·  engine " + engine + (model ? " (" + model + ")" : "")) + "\n");
   tasks.forEach((t, i) => console.log("  " + cyan("agent " + (i + 1)) + gray("  " + t)));
@@ -1993,7 +1989,7 @@ async function nexusRun(argv) {
   if (engine === "ollama" || engine === "hybrid") {
     const ms = await ollamaTags();
     if (!ms.length) { if (engine === "hybrid") { console.log("  " + gray("no local model; hybrid falling back to Claude only")); engine = "claude"; } else { console.log("  " + red("no local model; install Ollama or use --engine claude")); return; } }
-    else model = modelOverride || process.env.DARKNODE_MODEL || pickCoderModel(ms);
+    else model = modelOverride || process.env.SENTINEL_MODEL || pickCoderModel(ms);
   }
   let state;
   if (resume && fs.existsSync(stateFile)) { try { state = JSON.parse(fs.readFileSync(stateFile, "utf8")); } catch (_) { console.log("  " + red("can't resume — the saved run state is unreadable")); return; } banner(); h1("Nexus — resuming run"); }
@@ -2072,7 +2068,7 @@ const NEXUS_TIPS = [
 const { ENGINES, ENGINE_ORDER, engineCap, ENGINE_TIPS } = require("./lib/nexus/engines"); // multi-AI registry (lib/engines.js)
 const engineAvail = (e) => { const m = ENGINES[e]; if (!m) return false; return m.kind === "local" ? true : hasBin(m.bin); }; // stays here — needs hasBin
 const { geminiParse, codexParse } = require("./lib/nexus/parsers"); // structured-output parsers (lib/parsers.js)
-function nexusTui(engine, cwd, nexusMd, autoResume) {
+function nexusTui(engine, cwd, nexusMd) {
   return new Promise((resolve) => {
     const out = process.stdout, ESC = "\x1b";
     const cols = () => out.columns || 80, rows = () => out.rows || 24;
@@ -2081,14 +2077,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const sess = { model: engine, ctxWindow: CTXW[engine] || 200000, ctxUsed: 0, inTok: 0, outTok: 0, cost: 0, liveOut: 0 };
     const ident = resolveOperator({ cwd }); // operator/team for chargeback attribution + audit provenance
     const oMsgs = nexusMd ? [{ role: "system", content: "You are Nexus, a concise expert coding assistant.\n" + nexusMd }] : [{ role: "system", content: "You are Nexus, a concise expert coding assistant." }];
-    let input = "", curPos = 0, busy = false, cont = false, busyStart = 0, busyWord = "", tick = null;
+    let input = "", busy = false, cont = false, busyStart = 0, busyWord = "", tick = null;
     let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = true, hack = false; // mode: 0 normal, 1 auto-accept, 2 plan; scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
     let gitBranch = ""; // cached "branch" (+ "*" when the tree is dirty), shown in the status bar
     const refreshGit = async () => { try { const b = await sh(["rev-parse", "--abbrev-ref", "HEAD"]); if (b.err) { gitBranch = ""; return; } const st = await sh(["status", "--porcelain"]); const next = (b.stdout || "").trim() + ((st.stdout || "").trim() ? "*" : ""); if (next !== gitBranch) { gitBranch = next; try { render(); } catch (_) {} } } catch (_) { gitBranch = ""; } };
     const MODES = [{ k: "normal", c: gray }, { k: "auto-accept", c: green }, { k: "plan", c: cyan }];
     const compact = { on: false, f: 0, iv: null };
     const history = []; let hIdx = -1;
-    let ctl = null, costCap = 2, rate = null, warned50 = false, notify = false, redact = false, offline = false, guard = "enforce", lean = true, effort = "", fallback = "", style = "default";
+    let ctl = null, costCap = 0, rate = null, warned50 = false, pasteBuf = null, notify = false, redact = false, offline = false, guard = "enforce", lean = false, effort = "", fallback = "", style = "default"; // …, lean, effort, fallback model, output style
     const READONLY_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"]; // disallowed to enforce read-only (plan mode / /bench)
     const impact = { localTurns: 0, cloudTurns: 0, localTok: 0, cloudInTok: 0, cloudOutTok: 0, cloudCost: 0, ctxSavedTok: 0, coworkSaved: 0, delegated: 0, cachedHits: 0, cachedSaved: 0, squeezeTok: 0 }; // Impact Receipt tallies
     let cacheOn = true; // response cache: serve exact-repeat read-only answers for free
@@ -2103,35 +2099,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const makeCtl = () => ({ stopped: false, kids: [], kill() { this.stopped = true; for (const k of this.kids.splice(0)) { try { k(); } catch (_) {} } } });
     const aSignal = (c) => { const ac = new AbortController(); if (c && c.kids) c.kids.push(() => { try { ac.abort(); } catch (_) {} }); return ac.signal; };
     const fs = require("fs"), path = require("path");
-    // ---- Nexus intelligence modules (darknode-ai, security-rag, learning-engine) ----
-    let nexusAI = null, secRAG = null;
-    const NEXUS_LIB = path.join(__dirname, "..", "nexus", "src");
-    try {
-      const { SecurityRAG } = require(path.join(NEXUS_LIB, "security-rag"));
-      secRAG = new SecurityRAG(); secRAG.loadBuiltins(); try { secRAG.load(cwd); } catch (_) {}
-    } catch (_) {}
-    let learnMod = null;
-    try { learnMod = require(path.join(NEXUS_LIB, "learning-engine")); } catch (_) {}
-    const nexusAugment = (query, base) => {
-      let p = base;
-      if (learnMod) try { p = learnMod.augmentWithLearning(cwd, query, p); } catch (_) {}
-      if (secRAG && /secur|vuln|owasp|cve|exploit|inject|xss|csrf|auth|perm|priv|pentest|ctf|attack|threat|hack|scan|port|nmap/i.test(query)) {
-        try { const ctx = secRAG.retrieve(query, 3); if (ctx.length) p += "\n\n[Security knowledge]\n" + ctx.map((c) => c.content).join("\n---\n").slice(0, 1500); } catch (_) {}
-      }
-      return p;
-    };
-    const nexusLearn = (query, answer) => { if (learnMod) try { learnMod.learnFromInteraction(cwd, query, answer, {}); } catch (_) {} };
     // @path inlines a file's contents into the prompt sent to the engine (display keeps the @mention)
-    const inlineAts = (t) => t.replace(/(^|\s)@(\S+)/g, (m, pre, f) => { try { const c = fs.readFileSync(path.resolve(cwd, f), "utf8"); return pre + "\n\n--- " + f + " ---\n" + c.slice(0, 6000) + "\n--- end " + f + " ---\n"; } catch (_) { return m; } });
+    const inlineAts = (t) => t.replace(/(^|\s)@(\S+)/g, (m, pre, f) => { try { const c = fs.readFileSync(path.resolve(cwd, f), "utf8"); return pre + "\n\n--- " + f + " ---\n" + c.slice(0, 12000) + "\n--- end " + f + " ---\n"; } catch (_) { return m; } });
     // !cmd runs a shell command directly (Claude-Code-style passthrough); output shown inline
-    const runBang = (c) => { const dg = classifyDanger(c); if (dg.level !== "ok" && guard !== "off") transcript.push({ role: "system", text: "Darknode: this looks destructive (" + dg.why + ") — running it because you typed it directly" }); const blk = { role: "system", text: "$ " + c + "\nrunning…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); coderShell(c, cwd).then((r) => { const o = (r.output || "").replace(/[ \t\r\n]+$/, ""); blk.text = "$ " + c + "\n" + (o || "(no output)") + (r.code ? "\n[exit " + r.code + "]" : ""); busy = false; ctl = null; render(); }).catch((e) => { blk.text = "$ " + c + "\nerror: " + (e && e.message || e); busy = false; ctl = null; render(); }); };
+    const runBang = (c) => { const dg = classifyDanger(c); if (dg.level !== "ok" && guard !== "off") transcript.push({ role: "system", text: "Darknode: this looks destructive (" + dg.why + ") — running it because you typed it directly" }); const blk = { role: "system", text: "$ " + c + "\nrunning…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); coderShell(c, cwd).then((r) => { const o = (r.output || "").replace(/[ \t\r\n]+$/, ""); blk.text = "$ " + c + "\n" + (o || "(no output)") + (r.code ? "\n[exit " + r.code + "]" : ""); busy = false; ctl = null; render(); }); };
     // #note appends a durable memory to .nexus/NEXUS.md
     const addMemory = (line) => { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; c += "- " + line + "\n"; fs.writeFileSync(md, c); transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + line }); } catch (e) { transcript.push({ role: "system", text: "could not save note: " + e.message }); } };
     // ---- ansi-aware width helpers ----
     const stripA = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, "");
-    const clip = (s, n) => { if (n <= 0) return ""; let o = "", v = 0, hasColor = false; for (const part of String(s).split(/(\x1b\[[0-9;]*m)/)) { if (/^\x1b/.test(part)) { o += part; hasColor = true; continue; } for (const ch of part) { if (v >= n) return o + (hasColor ? "\x1b[0m" : ""); o += ch; v++; } } return o; };
+    const clip = (s, n) => { let o = "", v = 0; for (const part of String(s).split(/(\x1b\[[0-9;]*m)/)) { if (/^\x1b/.test(part)) { o += part; continue; } for (const ch of part) { if (v >= n) return o; o += ch; v++; } } return o; };
     const fmtK = (n) => n >= 100000 ? (n / 1000).toFixed(0) + "k" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : "" + (n | 0);
-    const fmtElapsed = (sec) => { if (sec < 60) return sec + "s"; if (sec < 3600) return Math.floor(sec / 60) + "m " + (sec % 60) + "s"; if (sec < 86400) return Math.floor(sec / 3600) + "h " + Math.floor((sec % 3600) / 60) + "m"; return Math.floor(sec / 86400) + "d " + Math.floor((sec % 86400) / 3600) + "h"; };
     const base = (pth) => String(pth || "").split("/").pop() || String(pth || "");
     // ---- NEXUS logo (gradient) + slash-command menu ----
     // Each theme = a 6-stop logo/boot gradient + an accent hue that recolors the
@@ -2202,10 +2179,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/deps", "dependency hygiene: unused + undeclared package imports"],
       ["/env", "env-var audit: used-but-undocumented vs .env.example"],
       ["/login", "sign in with Google or GitHub (Firebase)"], ["/logout", "sign out of Nexus"], ["/whoami", "show the signed-in account"], ["/setup", "install Ollama + pull a local model"],
-      ["/restart", "save session, restart Nexus with latest code, resume where you left off"],
-      ["/next", "queue a prompt to auto-run after the current turn finishes"],
-      ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
-      ["/cron", "scheduled pipeline runs — /cron add \"0 9 * * *\" <goal> · /cron list · /cron remove <id>"],
       ["/expand", "toggle tool-call detail"], ["/exit", "quit Nexus"],
     ];
     // Custom project slash commands (Claude-Code / Glitch style): each .md file in
@@ -2242,8 +2215,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const retrieve = (text, k) => { if (!index || !index.files) return []; const q = new Set((text.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g) || []).filter((w) => w.length > 3)); if (!q.size) return []; const scored = []; for (const f of Object.keys(index.files)) { if (pinned.has(f) || text.includes("@" + f)) continue; let s = 0; for (const w of index.files[f]) if (q.has(w)) s++; if (s > 1) scored.push([f, s]); } scored.sort((a, b) => b[1] - a[1]); return scored.slice(0, k || 3).map((x) => x[0]); };
     // ---- inline markdown / command coloring ----
     const paintCode = (c) => (/(^|\s)(node|npm|npx|git|python3?|pip3?|bash|sh|cd|ls|cat|make|cargo|go|docker|curl|grep|sed|rm|mkdir|chmod|sudo)\b/.test(c) || /\s--?\w/.test(c)) ? blue(c) : mag(c);
-    const colorMd = (line, inCode) => { if (inCode) return blue(line); if (/^#{1,6}\s/.test(line)) return bold(cyan(line)); let s = line.replace(/\*\*([^*]+)\*\*/g, (_, c) => "\x1b[1m" + c.replace(/`([^`]+)`/g, (__, ic) => "\x1b[0m" + paintCode(ic) + "\x1b[1m") + "\x1b[0m").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); return s.replace(/^(\s*[-*]\s)/, (_, b) => cyan(b)); };
-    const wrap = (text) => { const width = Math.max(1, cols() - 4); const res = []; let inCode = false; for (const para of String(text).replace(/\r/g, "").split("\n")) { if (/^```/.test(para.trim())) inCode = !inCode; let s = para; if (!s.length) { res.push(""); continue; } while (s.length > width) { let w = width; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); if (!inCode) { let brk = s.lastIndexOf(" ", w); if (brk < width * 0.4) brk = -1; if (brk > 0) { res.push(s.slice(0, brk)); s = s.slice(brk + 1); continue; } } res.push(s.slice(0, w)); s = s.slice(w); } res.push(s); } return res; };
+    const colorMd = (line, inCode) => { if (inCode) return blue(line); if (/^#{1,6}\s/.test(line)) return bold(cyan(line)); let s = line.replace(/`([^`]+)`/g, (_, c) => paintCode(c)).replace(/\*\*([^*]+)\*\*/g, (_, c) => bold(c)); return s.replace(/^(\s*[-*]\s)/, (_, b) => cyan(b)); };
+    const wrap = (text) => { const width = Math.max(1, cols() - 4); const res = []; for (const para of String(text).replace(/\r/g, "").split("\n")) { let s = para; if (!s.length) { res.push(""); continue; } while (s.length > width) { let w = width; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); res.push(s.slice(0, w)); s = s.slice(w); } res.push(s); } return res; };
     // ---- tool-card labels (Claude-Code style) ----
     const toolLabel = (name, a) => {
       a = a || {};
@@ -2299,35 +2272,26 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (m.role === "user") { const w = wrap(m.text); L.push(mag("› ") + (w[0] || "")); for (let i = 1; i < w.length; i++) L.push("  " + w[i]); L.push(""); continue; }
         // nexus turn: ordered items (text + tool cards)
         L.push(cyan("● ") + (useColor ? "nexus".split("").map((ch, k) => "\x1b[1;" + GRAD[k % GRAD.length] + "m" + ch).join("") + "\x1b[0m" : "nexus") + gray("  " + engine + (cowork.on ? " +" + cowork.weak.replace(/^claude-|-\d.*$/g, "") : "")));
-        { let prevType = "";
-        for (let ii = 0; ii < (m.items || []).length; ii++) { const it = m.items[ii];
+        for (const it of (m.items || [])) {
           if (it.type === "text") {
-            if (prevType === "tool") L.push("");
             const vis = it.full.slice(0, it.shown);
             let inCode = false;
             for (const ln of wrap(vis)) { if (/^```/.test(ln.trim())) { inCode = !inCode; L.push("  " + gray(ln)); continue; } L.push("  " + colorMd(ln, inCode)); }
-            prevType = "text";
           } else if (it.type === "thinking") {
             L.push("  " + dim(gray("● thinking" + (expanded ? ":" : " (ctrl+o to show)"))));
             if (expanded) for (const ln of wrap(it.full).slice(0, 24)) L.push("    " + dim(gray(ln)));
-            prevType = "thinking";
           } else if (it.type === "tool") {
-            if (prevType === "text") L.push("");
             const dot = it.status === "run" ? yellow(spin[Math.floor(Date.now() / 90) % spin.length]) : it.status === "err" ? red("●") : green("●");
-            const rawSec = it.end ? (it.end - it.start) / 1000 : (Date.now() - it.start) / 1000;
-            const secs = rawSec < 0.1 ? "<0.1s" : rawSec < 60 ? rawSec.toFixed(1) + "s" : fmtElapsed(Math.round(rawSec));
-            const isLast = !m.items.slice(ii + 1).some((x) => x.type === "tool");
-            const bar = isLast ? "╰" : "├";
-            L.push("  " + dot + " " + dim(gray(bar)) + " " + bold(it.label) + gray("  " + secs));
-            if (expanded && it.detail) for (const ln of wrap(stripA(it.detail)).slice(0, 6)) L.push("    " + dim(gray((isLast ? " " : "│") + " ⎿ " + ln)));
-            prevType = "tool";
+            const secs = it.end ? ((it.end - it.start) / 1000).toFixed(1) + "s" : ((Date.now() - it.start) / 1000).toFixed(1) + "s";
+            L.push("  " + dot + " " + bold(it.label) + gray("  " + secs));
+            if (expanded && it.detail) for (const ln of wrap(stripA(it.detail)).slice(0, 6)) L.push("    " + gray("⎿ " + ln));
           }
-        } }
+        }
         // live status line while this turn is running
         if (busy && m === cur()) {
           const el = Math.round((Date.now() - busyStart) / 1000);
           const tok = sess.liveOut ? " · " + fmtK(sess.liveOut) + " tokens" : "";
-          L.push("  " + mag(spin[Math.floor(Date.now() / 90) % spin.length] + " " + busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · ctrl+c to stop)"));
+          L.push("  " + mag(spin[Math.floor(Date.now() / 90) % spin.length] + " " + busyWord + "…") + gray("  (" + el + "s" + tok + " · ctrl+c to stop)"));
           const et = ENGINE_TIPS[engine] || [], tips = [];
           for (let k = 0; k < Math.max(NEXUS_TIPS.length, et.length); k++) { if (et[k]) tips.push(et[k]); if (NEXUS_TIPS[k]) tips.push(NEXUS_TIPS[k]); } // interleave so an engine-specific tip shows first
           if (tips.length) L.push("  " + dim(gray("tip: " + tips[Math.floor(el / 4) % tips.length])));
@@ -2348,7 +2312,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const parts = [bold(sess.model || engine)];
       if (gitBranch) parts.push(blue("⌥ " + gitBranch));
       parts.push(gray("ctx ") + pc(pct + "%") + " " + bar, gray("↑") + fmtK(sess.inTok) + gray(" ↓") + fmtK(sess.outTok) + gray(" tok"));
-      if (PAID[engine]) { const isSubscription = !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY; if (isSubscription) { parts.push(green("included in plan")); } else { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); } }
+      if (PAID[engine]) { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); }
       else parts.push(apiConfigured() ? cyan("api") : green("local · free"));
       if (runningShells) parts.push(yellow(runningShells + " shell" + (runningShells > 1 ? "s" : "")));
       if (bgJobs.running()) parts.push(cyan(bgJobs.running() + " bg"));
@@ -2371,9 +2335,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const hint = () => {
       const C = cols();
       if (compact.on) { const n = 22, f = Math.min(n, compact.f); return clip("  " + yellow("Compacting conversation… ") + gray("[") + cyan("▓".repeat(f)) + gray("░".repeat(n - f)) + gray("] ") + Math.round((f / n) * 100) + "%", C - 2); }
-      if (slashMatches().length || argMatches().length) return clip("  " + blue("↑↓") + gray("/PgUp·Dn/wheel select  ") + blue("Tab") + gray(" complete  ") + blue("↵") + gray(" run  ") + blue("Esc") + gray(" dismiss"), C - 2);
+      if (slashMatches().length) return clip("  " + blue("↑↓") + gray("/PgUp·Dn/wheel select  ") + blue("Tab") + gray(" complete  ") + blue("↵") + gray(" run  ") + blue("space") + gray(" dismiss"), C - 2);
       if (scroll > 0) return clip("  " + yellow("↑ scrolled — " + scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  ") + blue("PgUp/PgDn") + gray(" or wheel to scroll  ") + blue("End") + gray(" jump to latest"), C - 2);
-      return clip("  " + blue("↵") + gray(" send  ") + blue("shift+tab") + gray(" mode  ") + blue("ctrl+o") + gray(" " + (expanded ? "collapse" : "expand")) + gray("  ") + blue("@") + gray("file ") + blue("!") + gray("sh ") + blue("#") + gray("note  ") + blue("/") + gray("cmds  ") + blue("/copy") + gray(" clipboard  ") + (mouseOn ? blue("shift+drag") + gray(" select") : green("select ON")), C - 2);
+      return clip("  " + blue("↵") + gray(" send  ") + blue("shift+tab") + gray(" mode  ") + blue("ctrl+o") + gray(" " + (expanded ? "collapse" : "expand")) + gray("  ") + blue("@") + gray("file ") + blue("!") + gray("sh ") + blue("#") + gray("note  ") + blue("/") + gray("cmds"), C - 2);
     };
     // matching slash commands for the popup menu (active when the input is a bare /command being typed)
     // Fuzzy command matching: prefer prefix hits, then subsequence (e.g. /cmt -> /commit,
@@ -2392,56 +2356,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       return scored.sort((a, b) => a[0] - b[0]).map((s) => s[1]);
     };
     const slashMatches = () => { if (busy || input[0] !== "/" || /\s/.test(input)) return []; return fuzzyCmds(input); };
-    // ---- argument autocomplete: dropdown completions for command arguments ----
-    let argCache = []; // cached Ollama model list (refreshed on /model focus)
-    let argCacheTs = 0; // when argCache was last fetched
-    const ARG_COMPLETIONS = {
-      "/model": () => { const eng = ENGINES[engine] || {}; const cloud = (eng.models || []).map((m) => [m, eng.label]); const local = argCache.map((m) => [m, "local"]); return [...local, ...cloud]; },
-      "/engine": () => ENGINE_ORDER.map((e) => [e, ENGINES[e].label + (ENGINES[e].paid ? "" : " · free") + (engineAvail(e) ? "" : " (not installed)")]),
-      "/theme": () => Object.keys(THEMES).map((t) => [t, THEMES[t].grad.map((g) => "\x1b[" + g + "m█\x1b[0m").join("")]),
-      "/color": () => Object.keys(COLORS).map((n) => [n, "\x1b[" + COLORS[n] + "m█████\x1b[0m"]),
-      "/gradient": () => Object.keys(THEMES).map((t) => [t, THEMES[t].grad.map((g) => "\x1b[" + g + "m█\x1b[0m").join("")]),
-      "/style": () => [["default", ""], ["concise", "minimal"], ["explanatory", "detailed"], ["review", "code review"], ["tdd", "test-driven"], ["secure", "security-focused"], ["teacher", "educational"]],
-      "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"]],
-      "/guard": () => [["enforce", "block destructive commands"], ["warn", "warn but allow"], ["off", "no safety checks"]],
-      "/marketplace": () => [["list", "installed packages"], ["install", "install from path/URL"], ["remove", "uninstall a package"], ["init", "scaffold a publishable package"]],
-      "/cron": () => [["list", "show scheduled jobs"], ["add", "schedule a new job"], ["remove", "delete a job"], ["enable", "enable a job"], ["disable", "pause a job"], ["run", "run a job now"]],
-      "/mcp": () => [["catalog", "browse available servers"], ["add", "connect a server"], ["remove", "disconnect a server"], ["connect", "reconnect all"]],
-      "/hack": () => [],
-    };
-    const argMatches = () => {
-      if (busy || input[0] !== "/" || !/\s/.test(input)) return [];
-      const sp = input.indexOf(" ");
-      const cmd = input.slice(0, sp).toLowerCase();
-      const partial = input.slice(sp + 1).toLowerCase();
-      const gen = ARG_COMPLETIONS[cmd];
-      if (!gen) return [];
-      const items = gen();
-      if (!partial) return items;
-      return items.filter((it) => it[0].toLowerCase().startsWith(partial) || it[0].toLowerCase().includes(partial));
-    };
-    const refreshArgCache = () => { if (Date.now() - argCacheTs > 10000) { argCacheTs = Date.now(); ollamaTags().then((ms) => { argCache = ms || []; }).catch(() => {}); } };
-    // ---- input syntax highlighting ----
-    const cmdSet = new Set(allCmds().map((c) => c[0]));
-    const colorInput = (text) => {
-      if (!text || !useColor) return text;
-      const clean = text.replace("█", "");
-      if (clean[0] === "/" && !(/\s/.test(clean))) {
-        const cmds = allCmds();
-        const prefix = cmds.some((c) => c[0].startsWith(clean));
-        return prefix ? cyan(text) : red(text);
-      }
-      if (clean[0] === "/") {
-        const sp = clean.indexOf(" ");
-        const cmd = clean.slice(0, sp);
-        const valid = cmdSet.has(cmd) || fuzzyCmds(cmd).some((m) => m[0] === cmd);
-        const tsp = text.indexOf(" ");
-        return (valid ? cyan(text.slice(0, tsp)) : red(text.slice(0, tsp))) + text.slice(tsp);
-      }
-      if (clean[0] === "!") return yellow(text);
-      if (clean[0] === "#") return green(text);
-      return text.replace(/(^|\s)(@\S+)/g, (_, pre, at) => pre + blue(at));
-    };
     let lastLines = null; // previous frame's rows, for line-level diffing
     let clickZones = []; // rebuilt each render: [{row,c0,c1,kind,cmd}] clickable hitboxes (1-indexed screen coords)
     let navOpen = false; // is the ⋯ status menu expanded?
@@ -2454,25 +2368,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let modelPick = []; // last catalog shown by /model, so /model <number> can pick from it
     const render = () => {
       const C = cols(), R = rows(), iw = Math.max(4, C - 3);
-      if (curPos > input.length) curPos = input.length;
-      if (curPos < 0) curPos = 0;
-      const wrapped = []; const wrapOff = []; let _wi = 0;
-      for (const seg of input.split("\n")) { let s = seg; if (!s.length) { wrapped.push(""); wrapOff.push(_wi); _wi++; continue; } while (s.length > iw) { let w = iw; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); wrapped.push(s.slice(0, w)); wrapOff.push(_wi); _wi += w; s = s.slice(w); } wrapped.push(s); wrapOff.push(_wi); _wi += s.length + 1; }
-      if (!wrapped.length) { wrapped.push(""); wrapOff.push(0); }
-      let _cLine = wrapped.length - 1, _cCol = wrapped[_cLine].length;
-      for (let i = 0; i < wrapped.length; i++) { const end = wrapOff[i] + wrapped[i].length; if (curPos >= wrapOff[i] && curPos <= end) { _cLine = i; _cCol = curPos - wrapOff[i]; break; } }
+      const wrapped = []; for (const seg of input.split("\n")) { let s = seg; if (!s.length) { wrapped.push(""); continue; } while (s.length > iw) { wrapped.push(s.slice(0, iw)); s = s.slice(iw); } wrapped.push(s); } if (!wrapped.length) wrapped.push("");
       const menu = slashMatches();
-      const amenu = menu.length ? [] : argMatches();
-      const combined = menu.length ? menu : amenu;
-      if (menuSel > combined.length - 1) menuSel = Math.max(0, combined.length - 1);
+      if (menuSel > menu.length - 1) menuSel = Math.max(0, menu.length - 1);
       if (menuSel < 0) menuSel = 0;
-      const fixedChrome = 5; // status + buttons + 2 rules + hint (always present)
-      const avail = Math.max(0, R - fixedChrome);
-      const menuRows = Math.min(combined.length, Math.max(0, avail - 2));
-      const menuStart = combined.length > menuRows ? Math.max(0, Math.min(menuSel - (menuRows >> 1), combined.length - menuRows)) : 0;
-      const inRows = Math.max(1, Math.min(wrapped.length, 8, Math.max(1, avail - menuRows - 1)));
-      const chrome = fixedChrome + menuRows + inRows;
-      const bodyRows = Math.max(0, R - chrome);
+      const menuRows = Math.min(menu.length, Math.max(0, R - 8));
+      // scroll the menu window so the highlighted row stays visible when the list is long
+      const menuStart = menu.length > menuRows ? Math.max(0, Math.min(menuSel - (menuRows >> 1), menu.length - menuRows)) : 0;
+      // clamp input rows so the whole chrome always fits even on short terminals
+      const maxIn = Math.max(1, R - 5 - menuRows);
+      const inRows = Math.max(1, Math.min(wrapped.length, 8, maxIn));
+      const chrome = 1 /*status*/ + 1 /*buttons*/ + menuRows + 1 /*rule*/ + inRows + 1 /*rule*/ + 1 /*hint*/;
+      const bodyRows = Math.max(1, R - chrome);
       const lines = bodyLines();
       const maxScroll = Math.max(0, lines.length - bodyRows);
       if (scroll > maxScroll) scroll = maxScroll;
@@ -2507,11 +2414,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           frame.push(box.str);
         }
       }
-      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(nm)) : cyan(nm)) + gray("  " + (ds || "")) + pos, C - 2)); }
+      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = menu[idx]; const sel = idx === menuSel; const pos = (sel && menu.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + menu.length + ")") : ""; frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(nm)) : cyan(nm)) + gray("  " + ds) + pos, C - 2)); }
       frame.push(gray("─".repeat(C)));
-      const _showStart = Math.max(0, wrapped.length - inRows);
-      const shown = wrapped.slice(_showStart);
-      for (let i = 0; i < inRows; i++) { let raw = shown[i] || ""; const li = _showStart + i; if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol); frame.push(clip((i === 0 ? bold(mag("❯ ")) : "  ") + colorInput(raw), C)); }
+      const shown = wrapped.slice(Math.max(0, wrapped.length - inRows));
+      for (let i = 0; i < inRows; i++) { const c = (i === inRows - 1 && !busy) ? "█" : ""; frame.push((i === 0 ? bold(mag("❯ ")) : "  ") + (shown[i] || "") + c); }
       frame.push(gray("─".repeat(C)));
       frame.push(hint());
       const b = frameDiff(lastLines, frame, ESC);
@@ -2543,7 +2449,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const maybeAutoCompact = () => { if (!PAID[engine] && sess.ctxUsed > 0.8 * (sess.ctxWindow || 200000) && !compact.on) doCompact(true); }; // claude self-compacts server-side; only auto-compact the local engine
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
     let cleaned = false;
-    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.iv) { clearInterval(compact.iv); compact.iv = null; } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { out.write(ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {} };
+    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.iv) { clearInterval(compact.iv); compact.iv = null; } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); out.write(ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?25h" + ESC + "[?1049l"); };
     tuiActive = true;
     const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
@@ -2552,9 +2458,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     process.on("exit", cleanup); process.on("SIGINT", onSigint); process.on("SIGTERM", onSigterm); process.on("uncaughtException", onFatal); process.on("unhandledRejection", onRejection);
     // ---- engine turn ----
     const submit = (text) => {
-      // Only enforce budget cap on API-billed engines, not Claude Max subscription
-      const isSubEngine = engine === "claude" && !process.env.ANTHROPIC_API_KEY;
-      if (costCap && sess.cost >= costCap && !isSubEngine) { transcript.push({ role: "system", text: "budget reached ($" + sess.cost.toFixed(4) + " ≥ cap $" + costCap.toFixed(2) + ") — raise it with /budget <amount> to continue" }); render(); return; }
+      if (costCap && sess.cost >= costCap) { transcript.push({ role: "system", text: "budget reached ($" + sess.cost.toFixed(4) + " ≥ cap $" + costCap.toFixed(2) + ") — raise it with /budget <amount> to continue" }); render(); return; }
       if (hooks) { const hr = runHooks(hooks, "UserPromptSubmit", { NEXUS_ENGINE: engine, NEXUS_PROMPT: text }, cwd); if (hr.block) { transcript.push({ role: "user", text }); transcript.push({ role: "system", text: "blocked by UserPromptSubmit hook" + (hr.out ? ": " + hr.out : "") }); render(); return; } }
       history.push(text); hIdx = history.length; scroll = 0;
       transcript.push({ role: "user", text });
@@ -2567,13 +2471,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       });
       if (imgAttach.length) transcript.push({ role: "system", text: "attached " + imgAttach.length + " image" + (imgAttach.length > 1 ? "s" : "") + (engine === "ollama" ? (apiConfigured() ? " → sent to the API model (needs a vision model)" : " → sent to the local model (needs a vision model, e.g. llama3.2-vision)") : " → the " + engine + " engine reads it from the path") });
       let sendText = inlineAts(preText);
-      if (pinned.size) { let pre = ""; for (const f of pinned) { try { pre += "\n\n--- pinned: " + f + " ---\n" + fs.readFileSync(path.resolve(cwd, f), "utf8").slice(0, 4000) + "\n--- end " + f + " ---"; } catch (_) {} } if (pre) sendText = pre + "\n\n" + sendText; }
+      if (pinned.size) { let pre = ""; for (const f of pinned) { try { pre += "\n\n--- pinned: " + f + " ---\n" + fs.readFileSync(path.resolve(cwd, f), "utf8").slice(0, 8000) + "\n--- end " + f + " ---"; } catch (_) {} } if (pre) sendText = pre + "\n\n" + sendText; }
       if (index && engine === "ollama") { const rel = retrieve(text, 3); if (rel.length) { let pre = ""; for (const f of rel) { try { pre += "\n\n--- context: " + f + " ---\n" + fs.readFileSync(path.resolve(cwd, f), "utf8").slice(0, 6000) + "\n--- end " + f + " ---"; } catch (_) {} } if (pre) { sendText = pre + "\n\n" + sendText; transcript.push({ role: "system", text: "auto-context: pulled " + rel.join(", ") + " from the index" }); } } }
       if (redact && (PAID[engine] || apiConfigured())) { const masked = maskSecrets(sendText); if (masked !== sendText) { const n = (masked.match(/\[redacted:/g) || []).length; transcript.push({ role: "system", text: "redacted " + n + " secret(s) before sending to " + (apiConfigured() ? "the remote API" : engine) + " (privacy mode on)" }); sendText = masked; } }
       if (lean) sendText = "[Be concise: minimal output, no preamble/recap/explanation unless asked, short code only.] " + sendText; // cut expensive output tokens
       { const sq = squeezeContext(sendText); if (sq.saved >= 40) impact.squeezeTok += sq.saved; sendText = sq.text; } // dedupe inlined files + collapse whitespace → fewer INPUT tokens every turn
-      let promptText = mode === 2 ? "Think step by step and produce a concise PLAN of what you would do. Do NOT modify any files yet.\n\n" + sendText : sendText;
-      promptText = nexusAugment(text, promptText);
+      const promptText = mode === 2 ? "Think step by step and produce a concise PLAN of what you would do. Do NOT modify any files yet.\n\n" + sendText : sendText;
       // Response cache: an EXACT repeat of a READ-ONLY answer is served FREE. The key
       // includes the inlined context, so a changed file yields a new key and re-runs
       // (never a stale answer). /cache off to disable, /cache clear to wipe.
@@ -2602,25 +2505,21 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // Chargeback ledger: one non-sensitive metrics line per turn (no prompt text, no paths).
         try { appendUsage(cwd, { ts: new Date().toISOString(), operator: ident.operator, team: ident.team, engine, model: sess.model || engine, mode: ["normal", "auto", "plan"][mode] || "normal", inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), seconds: +dt, files: stat.files.size, commands: stat.cmds, interrupted: !!(res && res.interrupted) }); } catch (_) {}
         const bits = [];
-        const recap = [];
-        if (stat.files.size) { bits.push(stat.files.size + " file" + (stat.files.size > 1 ? "s" : "")); recap.push((res && res.interrupted ? "Touched" : "Wrote") + " " + [...stat.files].slice(0, 4).join(", ") + (stat.files.size > 4 ? " +" + (stat.files.size - 4) + " more" : "")); }
-        if (stat.cmds) { bits.push(stat.cmds + " cmd" + (stat.cmds > 1 ? "s" : "")); recap.push("Ran " + stat.cmds + " command" + (stat.cmds > 1 ? "s" : "")); }
+        if (stat.files.size) bits.push(stat.files.size + " file" + (stat.files.size > 1 ? "s" : ""));
+        if (stat.cmds) bits.push(stat.cmds + " cmd" + (stat.cmds > 1 ? "s" : ""));
         bits.push("↑" + fmtK(din) + " ↓" + fmtK(dout) + " tok");
         if (PAID[engine] && dcost > 0) bits.push("$" + dcost.toFixed(4));
         bits.push(dt + "s");
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); }
-        const clock = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
-        block.summary = (recap.length ? recap.join(". ") + "." + gray("  ") : "") + bits.join("  ·  ") + gray("  ·  done " + clock);
+        block.summary = bits.join("  ·  ");
         // Cache read-only answers (no file/command side-effects) so an exact repeat is free.
         if (ckey && !(res && res.interrupted) && stat.files.size === 0 && stat.cmds === 0) { try { const ft = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").trim(); if (ft && ft !== "(no output)") cachePut(cwd, ckey, { text: ft, inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), readonly: true, hits: 0, ts: Date.now() }); } catch (_) {} }
-        if (!(res && res.interrupted)) { try { const answerText = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").slice(0, 2000); nexusLearn(text, answerText); } catch (_) {} }
-        cont = true; busy = false; lastLines = null; if (costCap && sess.cost >= costCap) transcript.push({ role: "system", text: "budget cap reached ($" + sess.cost.toFixed(4) + ") — /budget <amount> to raise" });
+        cont = true; busy = false; if (costCap && sess.cost >= costCap) transcript.push({ role: "system", text: "budget cap reached ($" + sess.cost.toFixed(4) + ") — /budget <amount> to raise" });
         if (!warned50 && sess.ctxUsed > 0.5 * (sess.ctxWindow || 200000)) { warned50 = true; transcript.push({ role: "system", text: "context is over 50% — quality can dip on very long sessions; use /compact or /clear when it makes sense" }); }
         try { saveSession(); } catch (_) {}
         if (hooks) try { runHooks(hooks, "Stop", { NEXUS_ENGINE: engine }, cwd); } catch (_) {}
         if (notify && (Date.now() - stat.t0) > 15000) { out.write("\x07"); try { _cp.spawn("notify-send", ["Nexus", "turn finished (" + ((Date.now() - stat.t0) / 1000 | 0) + "s)"], { stdio: "ignore" }).on("error", () => {}); } catch (_) {} }
-        maybeAutoCompact(); render(); refreshGit();
-        if (nextQueue.length && !busy) { const nxt = nextQueue.shift(); setTimeout(() => { if (!busy) { if (nxt.startsWith("/")) { let cmd = nxt; if (!/\s/.test(nxt)) { const mm = fuzzyCmds(nxt); if (mm.length) cmd = mm[0][0]; } handleSlash(cmd); render(); } else if (nxt[0] === "!" && nxt.length > 1) { runBang(nxt.slice(1).trim()); render(); } else if (nxt[0] === "#" && nxt.length > 1) { addMemory(nxt.slice(1).trim()); render(); } else { submit(nxt); } } }, 300); }
+        maybeAutoCompact(); render(); refreshGit(); // a turn may have changed files -> refresh branch/dirty state
       };
       if (engine === "claude") {
         runClaudeStream(promptText, cwd, cont, {
@@ -2643,15 +2542,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           onUsage: (u) => { sess.liveOut = u.output_tokens || sess.liveOut; },
           onResult: (ev) => {
             const u = ev.usage || {};
-            const newIn = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-            const cacheIn = u.cache_read_input_tokens || 0;
-            sess.inTok += newIn;
+            sess.inTok += (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
             sess.outTok += u.output_tokens || 0;
-            sess.ctxUsed = newIn + cacheIn + (u.output_tokens || 0);
+            sess.ctxUsed = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.output_tokens || 0);
             if (typeof ev.total_cost_usd === "number") sess.cost += ev.total_cost_usd;
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
-        }, ctl, { model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: ((nexusMd ? "Project instructions (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 2000) : "") + (lean ? "\nBe concise — minimal output, no preamble or recap." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt()) || undefined, fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
+        }, ctl, { model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: ((nexusMd ? "Project instructions (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 4000) : "") + (lean ? "\nBe concise — minimal output, no preamble or recap." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt()) || undefined, fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
       } else if (ENGINES[engine] && ENGINES[engine].kind === "cli") { // gemini / codex / opencode / aider
         const eng = ENGINES[engine];
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose
@@ -2681,14 +2578,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       } else { // ollama — LOCAL agent with full device access (read/write/edit/list/run_command)
         const mcps = mcpToolList();
         const extra = (mcps.length ? " MCP tools: " + mcps.map((m) => m.full + " — " + oneline(m.desc, 40)).join("; ") + "." : "") + " spawn_agents{tasks:[\"...\",\"...\"]} runs several INDEPENDENT sub-tasks in parallel via sub-agents and returns all their results — use it to split big work.";
-        if (oMsgs.length === 1) oMsgs[0].content = "You are Nexus, a local autonomous coding agent on the operator's own machine (cwd " + cwd + "). Accomplish the TASK by taking ONE action per step and reading each OBSERVATION before the next. TOOLS: read_file{path}, write_file{path,content}, edit_file{path,find,replace}, list_dir{path?}, run_command{command} (full shell, blocks until done), run_background{command} (start a long-running command WITHOUT blocking — returns a jobId), check_background{id?} (poll a background job's output/status, or list all), stop_background{id} (kill a background job), search{pattern,path?} (grep file contents), find{glob,path?} (find files), http_fetch{url,method?} (fetch a URL), web_search{query} (search the web for current info/docs/examples), todo_write{todos:[{content,status:pending|in_progress|done}]} (maintain a live task checklist — plan multi-step work up front and check items off as you finish them), sysinfo{} (OS/CPU/memory/disk), list_processes{filter?}, make_dir{path}, move{from,to}, copy{from,to}, delete{path}, remember{text} (save a DURABLE project convention/preference to NEXUS.md — only for lasting rules, not one-off facts), discover{query} (search available tools by keyword)." + extra + " Reply with exactly ONE JSON object: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. If the user is just greeting you (\"hi\") or asking a question you can answer directly, reply immediately with action:\"final\" and a helpful answer — do NOT run tools or inspect the system for that. Only use tools when there is an actual task to do, then keep going until it's fully done." + (lean ? " Be terse: short thoughts, minimal final summary." : "") + (styleDir(style) ? " " + styleDir(style) : "") + (hack ? " " + HACK_DIR : "") + (nexusMd ? "\n\nPROJECT (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 2000) : "");
+        if (oMsgs.length === 1) oMsgs[0].content = "You are Nexus, a local autonomous coding agent on the operator's own machine (cwd " + cwd + "). Accomplish the TASK by taking ONE action per step and reading each OBSERVATION before the next. TOOLS: read_file{path}, write_file{path,content}, edit_file{path,find,replace}, list_dir{path?}, run_command{command} (full shell, blocks until done), run_background{command} (start a long-running command WITHOUT blocking — returns a jobId), check_background{id?} (poll a background job's output/status, or list all), stop_background{id} (kill a background job), search{pattern,path?} (grep file contents), find{glob,path?} (find files), http_fetch{url,method?} (fetch a URL), web_search{query} (search the web for current info/docs/examples), todo_write{todos:[{content,status:pending|in_progress|done}]} (maintain a live task checklist — plan multi-step work up front and check items off as you finish them), sysinfo{} (OS/CPU/memory/disk), list_processes{filter?}, make_dir{path}, move{from,to}, copy{from,to}, delete{path}, remember{text} (save a DURABLE project convention/preference to NEXUS.md — only for lasting rules, not one-off facts), discover{query} (search available tools by keyword)." + extra + " Reply with exactly ONE JSON object: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. If the user is just greeting you (\"hi\") or asking a question you can answer directly, reply immediately with action:\"final\" and a helpful answer — do NOT run tools or inspect the system for that. Only use tools when there is an actual task to do, then keep going until it's fully done." + (lean ? " Be terse: short thoughts, minimal final summary." : "") + (styleDir(style) ? " " + styleDir(style) : "") + (hack ? " " + HACK_DIR : "") + (nexusMd ? "\n\nPROJECT (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 4000) : "");
         if (imgAttach.length && apiConfigured()) oMsgs.push({ role: "user", content: [{ type: "text", text: promptText }].concat(imgAttach.map((im) => ({ type: "image_url", image_url: { url: "data:" + im.mime + ";base64," + im.b64 } }))) }); // OpenAI-compatible vision
         else if (imgAttach.length) oMsgs.push({ role: "user", content: promptText, images: imgAttach.map((im) => im.b64) }); // Ollama vision (llava / llama3.2-vision / …)
         else oMsgs.push({ role: "user", content: promptText });
         sess.inTok += Math.ceil(promptText.length / 4);
         const olbl = (n, a) => n === "read_file" ? "Read(" + base(a.path) + ")" : n === "write_file" ? "Write(" + base(a.path) + ")" : n === "edit_file" ? "Update(" + base(a.path) + ")" : n === "run_command" ? "Bash(" + oneline(a.command, 40) + ")" : n === "run_background" ? "Background(" + oneline(a.command, 32) + ")" : n === "check_background" ? "CheckJob(" + (a.id || "all") + ")" : n === "stop_background" ? "StopJob(" + (a.id || "?") + ")" : n === "list_dir" ? "List(" + (a.path || ".") + ")" : (n === "search" || n === "grep") ? "Search(" + oneline(a.pattern || a.query, 30) + ")" : (n === "find" || n === "find_files" || n === "glob") ? "Find(" + oneline(a.glob || a.pattern || a.name, 30) + ")" : (n === "http_fetch" || n === "web_fetch" || n === "fetch_url" || n === "http") ? "Fetch(" + oneline(a.url, 36) + ")" : (n === "web_search" || n === "search_web" || n === "google") ? "WebSearch(" + oneline(a.query || a.q, 30) + ")" : (n === "todo_write" || n === "todos" || n === "todo_list" || n === "write_todos") ? "Todo(" + ((a.todos || a.items || a.tasks || []).filter((t) => /done|complete/i.test((t && t.status) || "")).length) + "/" + ((a.todos || a.items || a.tasks || []).length) + ")" : (n === "sysinfo" || n === "system_info") ? "Sysinfo()" : (n === "list_processes" || n === "ps") ? "Processes()" : (n === "make_dir" || n === "mkdir") ? "Mkdir(" + base(a.path) + ")" : (n === "move" || n === "rename" || n === "move_file") ? "Move(" + base(a.to || a.dest) + ")" : (n === "copy" || n === "copy_file") ? "Copy(" + base(a.to || a.dest) + ")" : (n === "delete" || n === "delete_file" || n === "rm") ? "Delete(" + base(a.path) + ")" : n === "spawn_agents" ? "Task(" + ((a.tasks || []).length) + " agents)" : n === "remember" ? "Remember(" + oneline(a.text || a.note || "", 34) + ")" : n === "discover" ? "Discover(" + oneline(a.query || a.q || "", 30) + ")" : String(n).startsWith("mcp__") ? String(n).replace(/^mcp__/, "").replace("__", ":") + "()" : n + "()";
         (async () => {
-          let mdl = process.env.DARKNODE_MODEL || (sess.model && sess.model !== engine ? sess.model : "");
+          let mdl = process.env.SENTINEL_MODEL || (sess.model && sess.model !== engine ? sess.model : "");
           if (!mdl) { mdl = pickCoderModel(await ollamaTags()); }
           sess.model = mdl || engine;
           if (!mdl) { ensureText().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : "No local model found. Install Ollama and pull one, e.g. `ollama pull gpt-oss:20b`, or use /engine claude."; return finish({ output: "" }); }
@@ -2788,7 +2685,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           activeAgents = 0; busy = false; ctl = null;
           block.summary = tasks.length + " agents  ·  ↑" + fmtK(sess.inTok - in0) + " ↓" + fmtK(sess.outTok - out0) + " tok  ·  " + ((Date.now() - t0) / 1000).toFixed(1) + "s";
           try { saveSession(); } catch (_) {} render();
-        }).catch(() => { activeAgents = 0; busy = false; ctl = null; render(); });
+        });
     };
     // quick TCP connect scan (Nexus ships with the Darknode security toolkit)
     const quickScan = (host, ports) => new Promise((resolve) => {
@@ -2815,7 +2712,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         res.sort((a, b) => a.ms - b.ms);
         ensureText().full = res.map((r, i) => "### " + (i === 0 ? "fastest — " : "") + r.e + "  (" + (r.ms / 1000).toFixed(1) + "s)\n" + (r.out || "(no output)")).join("\n\n");
         busy = false; ctl = null; block.summary = race.length + " engines raced  ·  " + ((Date.now() - t0) / 1000).toFixed(1) + "s"; try { saveSession(); } catch (_) {} render();
-      }).catch(() => { busy = false; ctl = null; render(); });
+      });
     };
     // /review — have a DIFFERENT engine critique Nexus's last answer (cross-engine second opinion)
     const reviewLast = (revEngine) => {
@@ -2877,7 +2774,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           synth.status = "ok"; synth.end = Date.now();
           ensureText().full = "best-of-" + res.length + " (synthesized by " + se + "):\n\n" + (best || "(no output)").trim();
           busy = false; ctl = null; block.summary = res.length + " engines + synthesis  ·  " + ((Date.now() - t0) / 1000).toFixed(1) + "s"; try { saveSession(); } catch (_) {} render();
-        }).catch(() => { busy = false; ctl = null; render(); });
+        });
     };
     // /bench — run a prompt on each engine and report a speed / tokens / cost table (real cost for claude)
     const benchEngines = (prompt) => {
@@ -2900,7 +2797,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           for (const r of res) tbl += pad(r.e + (r.e === fastest ? " *" : ""), 10) + pad((r.ms / 1000).toFixed(1) + "s", 9) + pad((r.real ? "" : "~") + fmtK(r.inTok), 8) + pad((r.real ? "" : "~") + fmtK(r.outTok), 8) + (r.real ? (r.cost ? "$" + r.cost.toFixed(4) : "-") : "free") + "\n";
           ensureText().full = "benchmark (* = fastest; ~ = estimated; claude tokens/cost are real):\n\n" + tbl;
           busy = false; ctl = null; block.summary = res.length + " engines benchmarked  ·  " + ((Date.now() - t0) / 1000).toFixed(1) + "s"; try { saveSession(); } catch (_) {} render();
-        }).catch(() => { busy = false; ctl = null; render(); });
+        });
     };
     // /plan — generate an editable, executable task checklist
     const planGen = (goal) => {
@@ -2994,7 +2891,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       scroll = 0; busy = true; busyStart = Date.now(); busyWord = "Composing"; ctl = makeCtl();
       const card = { type: "tool", id: "pr", name: "Task", label: "Task(pull request)", status: "run", start: Date.now() }; block.items.push(card); startTick(); render();
       (async () => {
-        const prompt = "Write a GitHub pull-request title and body for this diff. Line 1 = a concise title (under 72 chars). Then a blank line, then a Markdown body: a one-line summary, a bulleted list of key changes, and a final 'Testing:' line. Output ONLY the title and body — no backticks, no preamble.\n\n" + diff.slice(0, 4000);
+        const prompt = "Write a GitHub pull-request title and body for this diff. Line 1 = a concise title (under 72 chars). Then a blank line, then a Markdown body: a one-line summary, a bulleted list of key changes, and a final 'Testing:' line. Output ONLY the title and body — no backticks, no preamble.\n\n" + diff.slice(0, 8000);
         let msg = ""; try { if (cowork.on) msg = await weakChat(prompt); else if (engine === "ollama") { const mdl = sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags()); msg = await ollamaChat(mdl, [{ role: "user", content: prompt }], undefined, aSignal(ctl)); } else { msg = (await runEngineTask(engine, prompt, cwd, false, false, null, ctl, auxModel())).output; } } catch (_) {}
         msg = (msg || "").replace(/```[a-z]*\n?|```/g, "").trim();
         const title = (msg.split("\n")[0] || "").trim() || (branch + " changes");
@@ -3028,7 +2925,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/mcp") {
         const ps = (argstr || "").trim().split(/\s+/).filter(Boolean); const sub = (ps[0] || "").toLowerCase();
         const writeMcp = (cfg) => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "mcp.json"), JSON.stringify(cfg, null, 2)); return true; } catch (_) { return false; } };
-        if (sub === "catalog" || sub === "list") transcript.push({ role: "system", text: "MCP catalog — one-command connect with /mcp add <name>  " + green("(★ = bundled, on by default)") + ":\n" + Object.keys(MCP_CATALOG).map((k) => "  " + (isBundled(k) ? green("★") : " ") + " " + cyan(k.padEnd(20)) + gray(MCP_CATALOG[k].desc) + (MCP_CATALOG[k].needsEnv ? yellow("  [needs " + MCP_CATALOG[k].needsEnv.join(", ") + "]") : "")).join("\n") + "\n  any model then uses them as mcp__<server>__<tool>.  Bundled ones auto-connect (DARKNODE_NO_DEFAULT_MCP=1 to disable)." });
+        if (sub === "catalog" || sub === "list") transcript.push({ role: "system", text: "MCP catalog — one-command connect with /mcp add <name>  " + green("(★ = bundled, on by default)") + ":\n" + Object.keys(MCP_CATALOG).map((k) => "  " + (isBundled(k) ? green("★") : " ") + " " + cyan(k.padEnd(20)) + gray(MCP_CATALOG[k].desc) + (MCP_CATALOG[k].needsEnv ? yellow("  [needs " + MCP_CATALOG[k].needsEnv.join(", ") + "]") : "")).join("\n") + "\n  any model then uses them as mcp__<server>__<tool>.  Bundled ones auto-connect (SENTINEL_NO_DEFAULT_MCP=1 to disable)." });
         else if (sub === "add") {
           const name = (ps[1] || "").toLowerCase(); const e = catalogGet(name);
           if (!e) transcript.push({ role: "system", text: name ? ("unknown catalog server '" + name + "' — /mcp catalog to browse") : "usage: /mcp add <name>   (see /mcp catalog)" });
@@ -3036,46 +2933,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
         else if (sub === "remove" || sub === "rm") { const name = (ps[1] || "").toLowerCase(); const cur = loadMcpConfig(cwd) || {}; if (!cur[name]) transcript.push({ role: "system", text: "no server '" + name + "' in .nexus/mcp.json" }); else { writeMcp(removeServerFromConfig({ mcpServers: cur }, name)); mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "removed " + name + " — reconnecting the rest…" }); } }
         else if (sub === "connect" || sub === "reconnect") { mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "reconnecting MCP servers from .nexus/mcp.json…" }); }
-        else if (!mcpServers.length && !loadMcpConfig(cwd)) transcript.push({ role: "system", text: (process.env.DARKNODE_NO_DEFAULT_MCP ? "bundled MCP servers are disabled (DARKNODE_NO_DEFAULT_MCP).\n  " : "bundled MCP servers still connecting… (first launch npx/uvx-installs them). Run /mcp again in a moment.\n  ") + cyan("/mcp add github") + gray("   · or playwright · exa · notion · postgres · …  ·  /mcp catalog to browse") + "\n  The claude engine AND any local/API model get the tools." });
+        else if (!mcpServers.length && !loadMcpConfig(cwd)) transcript.push({ role: "system", text: (process.env.SENTINEL_NO_DEFAULT_MCP ? "bundled MCP servers are disabled (SENTINEL_NO_DEFAULT_MCP).\n  " : "bundled MCP servers still connecting… (first launch npx/uvx-installs them). Run /mcp again in a moment.\n  ") + cyan("/mcp add github") + gray("   · or playwright · exa · notion · postgres · …  ·  /mcp catalog to browse") + "\n  The claude engine AND any local/API model get the tools." });
         else if (!mcpServers.length) transcript.push({ role: "system", text: "MCP servers are still connecting… run /mcp again in a moment" });
         else transcript.push({ role: "system", text: "MCP servers " + green("(★ = bundled with Nexus)") + ":\n" + mcpServers.map((s) => s.error ? ("  " + red("×") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + s.error) : ("  " + green("●") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + (s.tools || []).length + " tool(s): " + (s.tools || []).map((t) => t.name).slice(0, 8).join(", "))).join("\n") + "\n  any model calls these as mcp__<server>__<tool>  ·  /mcp add <name> · /mcp catalog · /mcp remove <name>" }); }
       else if (cmd === "/agents" || cmd === "/parallel") { const tasks = argstr.split(/\s*;;\s*/).map((s) => s.trim()).filter(Boolean); if (tasks.length < 2) transcript.push({ role: "system", text: "usage: /agents <task 1> ;; <task 2> ;; …   — runs each task in parallel on the " + engine + " engine, each in its own isolated git worktree, then merges the changes back" }); else spawnAgents(tasks); }
       else if (cmd === "/hooks") { transcript.push({ role: "system", text: hooks ? ("hooks (.nexus/hooks.json) active for events: " + Object.keys(hooks).join(", ") + "\n  PreToolUse/PostToolUse run for the local engine; UserPromptSubmit & Stop run for every engine") : "no hooks configured. Create .nexus/hooks.json:\n  { \"PreToolUse\": [ { \"matcher\": \"run_command|write_file\", \"command\": \"echo $TOOL_NAME >> .nexus/audit.log\" } ] }\n  events: UserPromptSubmit · PreToolUse · PostToolUse · Stop  (non-zero exit on PreToolUse/UserPromptSubmit blocks the action)" }); }
       else if (cmd === "/status") transcript.push({ role: "system", text: "status:\n  engine   " + engine + (sess.model && sess.model !== engine ? " (" + sess.model + ")" : "") + "\n  dir      " + cwd + "\n  mode     " + MODES[mode].k + "\n  context  " + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "% of " + fmtK(sess.ctxWindow) + "\n  tokens   ↑" + fmtK(sess.inTok) + " ↓" + fmtK(sess.outTok) + (PAID[engine] ? (sess.cost ? " · $" + sess.cost.toFixed(4) : " · billed") : " · local · free") + "\n  budget   " + (costCap ? "$" + costCap.toFixed(2) + " cap" : "none") + "\n  undo     " + checkpoints.length + " checkpoint(s)" });
       else if (cmd === "/update") { const apply = /\b(apply|now|-y|yes)\b/.test(argstr); transcript.push({ role: "system", text: (apply ? "" : "checking for updates…\n") + nexusUpdate({ apply }) }); }
-      else if (cmd === "/doctor") {
-        const blk = { role: "system", text: bold("doctor") + gray("  system health check\n") }; transcript.push(blk); render();
-        const ok = (s) => green("●") + " " + s, no = (s) => red("○") + " " + s, warn = (s) => yellow("◐") + " " + s;
-        const lines = [];
-        lines.push("\n  " + bold("Engines"));
-        for (const e of ENGINE_ORDER) { const m = ENGINES[e]; const on = engineAvail(e); lines.push("  " + (on ? ok(e.padEnd(12) + gray(m.label)) : no(e.padEnd(12) + gray(m.label + " — " + m.install)))); }
-        lines.push("\n  " + bold("Runtime"));
-        lines.push("  " + ok("node".padEnd(12) + gray(process.version)));
-        lines.push("  " + (hasBin("git") ? ok("git".padEnd(12) + gray("checkpoints & /undo active")) : no("git".padEnd(12) + gray("install git for /undo"))));
-        lines.push("  " + (hasBin("gh") ? ok("gh CLI".padEnd(12) + gray("/pr, /git issues")) : warn("gh CLI".padEnd(6) + gray("  not found — install for /pr"))));
-        const freeM = Math.round(require("os").freemem() / 1e6);
-        const totalM = Math.round(require("os").totalmem() / 1e6);
-        lines.push("  " + (freeM > 500 ? ok : warn)("memory".padEnd(12) + gray(freeM + " MB free / " + totalM + " MB total")));
-        lines.push("  " + ok("platform".padEnd(12) + gray(os.platform() + "/" + os.arch())));
-        lines.push("\n  " + bold("Project"));
-        lines.push("  " + (fs.existsSync(path.join(cwd, ".nexus", "NEXUS.md")) ? ok(".nexus/NEXUS.md") : warn(".nexus/NEXUS.md" + gray("  missing — /init to scaffold"))));
-        lines.push("  " + (fs.existsSync(path.join(cwd, ".nexus", "config.json")) ? ok(".nexus/config.json") : warn(".nexus/config.json" + gray("  missing"))));
-        lines.push("  " + (fs.existsSync(path.join(cwd, ".nexus", "policy.json")) ? ok("policy.json") : gray("  ○ policy.json  (optional — /policy init)")));
-        lines.push("  " + (index ? ok("index".padEnd(14) + gray(Object.keys(index.files || {}).length + " files indexed")) : warn("index".padEnd(14) + gray("not built — /index"))));
-        lines.push("  " + (mcpServers.length ? ok("MCP servers".padEnd(14) + gray(mcpServers.filter((s) => !s.error).length + " connected")) : warn("MCP servers".padEnd(14) + gray("none — /mcp catalog"))));
-        lines.push("\n  " + bold("Intelligence"));
-        lines.push("  " + (secRAG ? ok("Security RAG".padEnd(14) + gray(secRAG.stats().documents + " docs loaded")) : warn("Security RAG".padEnd(14) + gray("not loaded"))));
-        lines.push("  " + (learnMod ? (() => { try { const s = learnMod.learningStats(cwd); return ok("Learning".padEnd(14) + gray(s.totalDataPoints + " data points")); } catch (_) { return ok("Learning".padEnd(14) + gray("active, no data yet")); } })() : warn("Learning".padEnd(14) + gray("not loaded"))));
-        lines.push("\n  " + bold("Ollama"));
-        blk.text += lines.join("\n"); render();
-        ollamaTags().then((ms) => {
-          if (ms.length) blk.text += "\n  " + ok(ms.length + " model(s): " + ms.slice(0, 6).join(", ") + (ms.length > 6 ? " …" : ""));
-          else blk.text += "\n  " + (apiConfigured() ? ok("API: " + API_BASE()) : no("no models — `ollama pull gpt-oss:20b`"));
-          blk.text += "\n\n  " + gray("all green? you're ready to go. fix ○ items to unlock that feature.");
-          render();
-        }).catch(() => { blk.text += "\n  " + no("Ollama unreachable"); render(); });
-      }
-      else if (cmd === "/resume") { try { const s = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8")); transcript.length = 0; for (const b of s.transcript) transcript.push(b); if (s.sess) Object.assign(sess, s.sess); if (s.engine && ENGINES[s.engine]) engine = s.engine; cont = true; scroll = 0; transcript.push({ role: "system", text: "resumed the saved session from " + new Date(s.ts).toLocaleString() + " (" + engine + ")" }); } catch (_) { transcript.push({ role: "system", text: "no saved session to resume (sessions are saved to .nexus/session.json after each turn)" }); } }
+      else if (cmd === "/doctor") transcript.push({ role: "system", text: "doctor:\n  claude CLI   " + (hasBin("claude") ? "found" : "not found (needed for the claude engine)") + "\n  opencode     " + (hasBin("opencode") ? "found" : "not found") + "\n  git          " + (hasBin("git") ? "found — /undo & checkpoints active" : "not found — /undo disabled") + "\n  node         " + process.version + "\n  ollama is checked live when you switch to it" });
+      else if (cmd === "/resume") { try { const s = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8")); transcript.length = 0; for (const b of s.transcript) transcript.push(b); if (s.sess) Object.assign(sess, s.sess); cont = true; scroll = 0; transcript.push({ role: "system", text: "resumed the saved session from " + new Date(s.ts).toLocaleString() }); } catch (_) { transcript.push({ role: "system", text: "no saved session to resume (sessions are saved to .nexus/session.json after each turn)" }); } }
       else if (cmd === "/export") { try { const L = ["# Nexus conversation", "", "_" + new Date().toLocaleString() + " · " + engine + " · " + cwd + "_", ""]; for (const m of transcript) { if (m.role === "user") L.push("## You", "", m.text, ""); else if (m.role === "nexus") { L.push("## Nexus", ""); for (const it of (m.items || [])) { if (it.type === "text") L.push(it.full); else if (it.type === "tool") L.push("- `" + it.label + "`"); } L.push(""); } else if (m.role === "system") L.push("> " + String(m.text).replace(/\n/g, " "), ""); } const fp = path.join(cwd, "nexus-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, L.join("\n")); transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
       else if (cmd === "/copy") { let last = ""; for (let i = transcript.length - 1; i >= 0; i--) { const m = transcript[i]; if (m.role === "nexus") { last = (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join("\n").trim(); if (last) break; } } if (last) { out.write("\x1b]52;c;" + Buffer.from(last).toString("base64") + "\x07"); transcript.push({ role: "system", text: "copied Nexus's last reply to the clipboard" }); } else transcript.push({ role: "system", text: "nothing to copy yet" }); }
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed" : "the working tree")) : "rewind failed (git error)" }); } } }
@@ -3086,14 +2952,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/budget") { const v = parseFloat(arg); if (arg && !isNaN(v) && v > 0) { costCap = v; transcript.push({ role: "system", text: "budget cap set to $" + v.toFixed(2) + " — turns pause when session cost reaches it" }); } else if (arg === "off" || arg === "0") { costCap = 0; transcript.push({ role: "system", text: "budget cap removed" }); } else transcript.push({ role: "system", text: "usage: /budget <usd>  (e.g. /budget 5.00, or /budget off)" }); }
       else if (cmd === "/report") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet" + (since ? " since " + since : "") + " (.nexus/usage.jsonl fills up as you run turns)" }); } else { const s = summarize(recs); if (parts[0] === "json") transcript.push({ role: "system", text: JSON.stringify(s, null, 2) }); else { const rep = renderReport(s, { project: path.basename(cwd) }); if (parts[0] === "save") { try { const f = path.join(cwd, ".nexus", "usage-report.md"); fs.writeFileSync(f, "```\n" + rep + "\n```\n"); transcript.push({ role: "system", text: "saved usage report to " + f }); } catch (e) { transcript.push({ role: "system", text: "could not save report: " + (e && e.message || e) }); } } else transcript.push({ role: "system", text: rep + "\n\n  /report json · /report save · /report since 2026-08-01 · headless: darknode report" }); } } }
       else if (cmd === "/savings") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet — the savings analysis needs some Nexus turns in .nexus/usage.jsonl first" }); } else { const a = analyzeSavings(recs); transcript.push({ role: "system", text: (parts[0] === "json" ? JSON.stringify(a, null, 2) : renderSavings(a, { project: path.basename(cwd) }) + "\n\n  headless: darknode savings") }); } }
-      else if (cmd === "/compliance") { try { const key = process.env.DARKNODE_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (DARKNODE_SIGNING_KEY)" : "\n  tip: set DARKNODE_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: darknode compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
+      else if (cmd === "/compliance") { try { const key = process.env.SENTINEL_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (SENTINEL_SIGNING_KEY)" : "\n  tip: set SENTINEL_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: darknode compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
       else if (cmd === "/undo") { if (!checkpoints.length) transcript.push({ role: "system", text: "nothing to undo (no checkpoints this session, or not a git repo)" }); else { const ck = checkpoints.pop(); const nowTree = nexusCheckpoint(cwd); const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok && nowTree) redoStack.push({ tree: nowTree, label: ck.label, paths: ck.paths }); transcript.push({ role: "system", text: ok ? ("undid \"" + ck.label + "\" — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed this turn (unrelated edits untouched)" : "the working tree") + " (/redo to reapply)") : "undo failed (git error)" }); } }
       else if (cmd === "/redo") { const r = redoStack.pop(); if (!r) transcript.push({ role: "system", text: "nothing to redo" }); else { const ok = nexusRestore(cwd, r.tree, r.paths); if (ok) checkpoints.push({ tree: r.tree, label: r.label, ts: Date.now(), paths: r.paths }); transcript.push({ role: "system", text: ok ? ("redid — reapplied the changes from \"" + r.label + "\"") : "redo failed (git error)" }); } }
       else if (cmd === "/race") { if (!argstr) transcript.push({ role: "system", text: "usage: /race <prompt>  — runs it on every available engine (claude/local/opencode) at once and shows all answers" }); else raceEngines(argstr); }
       else if (cmd === "/review") { reviewLast(arg); }
       else if (cmd === "/ultrareview" || cmd === "/ur") { ultraReview(); }
       else if (cmd === "/changelog") { (async () => { const range = arg && arg.trim() ? arg.trim() : null; let rng = range; if (!rng) { const t = await sh(["describe", "--tags", "--abbrev=0"]); const tag = (t.stdout || "").trim(); rng = tag ? tag + "..HEAD" : ""; } const lg = await sh(["log", "--no-color", "--pretty=%h%x09%s"].concat(rng ? [rng] : ["-40"])); const commits = parseCommits(lg.stdout || ""); const md = renderChangelog(commits, { title: "Changelog", range: rng || "recent" }); transcript.push({ role: "system", text: commits.length ? md : "no commits found" + (rng ? " in " + rng : "") }); render(); })(); }
-      else if (cmd === "/secrets") { try { const files = _cp.execSync("git ls-files", { cwd, encoding: "utf8" }).split("\n").filter(Boolean).slice(0, 1500); const found = []; for (const f of files) { try { if (fs.statSync(path.join(cwd, f)).size > 400000) continue; const hits = scanSecrets(fs.readFileSync(path.join(cwd, f), "utf8")); if (hits.length) found.push("  " + f + " — " + hits.join(", ")); } catch (_) {} } transcript.push({ role: "system", text: found.length ? ("possible secrets found in tracked files:\n" + found.slice(0, 40).join("\n")) : "scanned tracked files — no obvious secrets found" }); } catch (_) { transcript.push({ role: "system", text: "/secrets needs a git repo (uses git ls-files)" }); } }
+      else if (cmd === "/secrets") { try { const files = _cp.execSync("git ls-files", { cwd, encoding: "utf8" }).split("\n").filter(Boolean).slice(0, 3000); const found = []; for (const f of files) { try { if (fs.statSync(path.join(cwd, f)).size > 400000) continue; const hits = scanSecrets(fs.readFileSync(path.join(cwd, f), "utf8")); if (hits.length) found.push("  " + f + " — " + hits.join(", ")); } catch (_) {} } transcript.push({ role: "system", text: found.length ? ("possible secrets found in tracked files:\n" + found.slice(0, 40).join("\n")) : "scanned tracked files — no obvious secrets found" }); } catch (_) { transcript.push({ role: "system", text: "/secrets needs a git repo (uses git ls-files)" }); } }
       else if (cmd === "/scan") { const host = arg || "127.0.0.1"; const COMMON = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 9000]; transcript.push({ role: "system", text: "scanning " + host + " (" + COMMON.length + " common TCP ports)…" }); render(); quickScan(host, COMMON).then((open) => { transcript.push({ role: "system", text: open.length ? ("open on " + host + ": " + open.join(", ")) : "no common ports open on " + host }); render(); }); }
       else if (cmd === "/notify") { notify = !notify; transcript.push({ role: "system", text: "completion notifications " + (notify ? "ON — a bell rings (and a desktop notification) when a turn over ~15s finishes, so you can step away" : "off") }); }
       else if (cmd === "/watch") { if (!argstr) transcript.push({ role: "system", text: "usage: /watch <command>  — runs it, and if it fails has " + engine + " fix the code and re-run, up to 5 times (e.g. /watch npm test)" }); else watchFix(argstr); }
@@ -3247,8 +3113,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             const improved = (out || "").trim().replace(/^["'`]+|["'`]+$/g, "").trim();
             if (!improved || /^error:/i.test(improved)) { blk.text = "couldn't improve the prompt (" + (improved || "no response") + ")"; render(); return; }
             blk.text = "sharpened prompt " + gray("(loaded into your input — edit, or press ↵ to run it)") + ":\n" + improved;
-            input = improved; curPos = input.length; render();
-          }).catch((e) => { busy = false; ctl = null; blk.text = "prompt sharpening failed: " + (e && e.message || e); render(); });
+            input = improved; render();
+          });
         }
       }
       else if (cmd === "/fallback") { if (arg === "off" || arg === "none") { fallback = ""; transcript.push({ role: "system", text: "fallback model cleared" }); } else if (arg) { fallback = arg; transcript.push({ role: "system", text: "fallback model set to " + arg + " — if the main model is rate-limited or unavailable, the claude engine automatically retries on it" + (engineCap(engine, "fallbackModel") ? "" : " · note: fallback applies to the claude engine") }); } else transcript.push({ role: "system", text: fallback ? ("fallback: " + fallback) : "no fallback set.  usage: /fallback <model>  (e.g. /fallback sonnet) — auto-switches when the main model is rate-limited" }); }
@@ -3275,7 +3141,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/cache") { const a2 = (arg || "").toLowerCase(); if (a2 === "off") { cacheOn = false; transcript.push({ role: "system", text: "response cache OFF — every turn runs fresh." }); } else if (a2 === "on") { cacheOn = true; transcript.push({ role: "system", text: "response cache ON — an exact repeat of a read-only answer is served free." }); } else if (a2 === "clear") { cacheClear(cwd); transcript.push({ role: "system", text: "response cache cleared (.nexus/cache)." }); } else { const s = cacheStats(cwd); transcript.push({ role: "system", text: "response cache " + (cacheOn ? green("ON") : red("OFF")) + "  ·  " + s.entries + " entr" + (s.entries === 1 ? "y" : "ies") + " · " + s.hits + " hit(s) · saved ~" + fmtK(s.savedTok) + " tokens" + (s.savedCost ? " ($" + s.savedCost.toFixed(4) + ")" : "") + "\n  serves an EXACT repeat of a read-only answer for free; changed context re-runs automatically.\n  /cache on · /cache off · /cache clear" }); } render(); }
       else if (cmd === "/gaps") { try { const files = _cp.execSync("git ls-files", { cwd, encoding: "utf8" }).split("\n").filter(Boolean); const found = []; for (const f of files) { try { if (fs.statSync(path.join(cwd, f)).size > 400000) continue; const lines = fs.readFileSync(path.join(cwd, f), "utf8").split("\n"); for (let i = 0; i < lines.length; i++) { const m = lines[i].match(/\b(TODO|FIXME|HACK|XXX|BUG)\b[:\s-]*(.*)/); if (m) found.push({ file: f, line: i + 1, kind: m[1], text: (m[2] || "").trim().slice(0, 80) }); } } catch (_) {} } if (arg === "plan") { if (!found.length) transcript.push({ role: "system", text: "no gaps to turn into a plan" }); else { plan = found.slice(0, 30).map((g) => ({ text: "resolve " + g.kind + " in " + g.file + ":" + g.line + (g.text ? " — " + g.text : ""), done: false })); savePlan(); transcript.push({ role: "system", text: "turned " + plan.length + " gap(s) into a plan — /plan run to work through them" }); transcript.push({ role: "plan" }); } } else transcript.push({ role: "system", text: found.length ? ("gaps (" + found.length + " TODO/FIXME/HACK/XXX/BUG):\n" + found.slice(0, 40).map((g) => "  " + g.file + ":" + g.line + "  " + g.kind + (g.text ? " " + g.text : "")).join("\n") + (found.length > 40 ? "\n  … and " + (found.length - 40) + " more" : "") + "\n/gaps plan turns these into a checklist") : "no TODO/FIXME/HACK/XXX/BUG markers in tracked files" }); } catch (_) { transcript.push({ role: "system", text: "/gaps needs a git repo (uses git ls-files)" }); } }
       else if (cmd === "/dream") { const conv = transcript.filter((m) => m.role === "user" || m.role === "nexus").slice(-16); if (!conv.length) { transcript.push({ role: "system", text: "nothing to consolidate yet — have a conversation first" }); render(); return; } transcript.push({ role: "user", text: "/dream" }); const block = { role: "nexus", items: [] }; transcript.push(block); scroll = 0; busy = true; busyStart = Date.now(); busyWord = "Dreaming"; ctl = makeCtl(); const card = { type: "tool", id: "dr", name: "Task", label: "Task(consolidate memory)", status: "run", start: Date.now() }; block.items.push(card); startTick(); render(); (async () => {
-        const digest = conv.map((m) => m.role === "user" ? "USER: " + m.text : "NEXUS: " + (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join(" ")).join("\n").slice(0, 4000);
+        const digest = conv.map((m) => m.role === "user" ? "USER: " + m.text : "NEXUS: " + (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join(" ")).join("\n").slice(0, 8000);
         const dreamPrompt = "From this coding session, extract 3-8 durable, reusable facts about THIS project (conventions, gotchas, key files, decisions). Output ONLY bullet points, one per line starting with '- '. No preamble.\n\n" + digest;
         let out = ""; try { out = cowork.on ? await weakChat(dreamPrompt) : await engineAnswer(offline ? "ollama" : engine, dreamPrompt); } catch (_) {}
         const bullets = (out || "").split("\n").map((l) => l.trim()).filter((l) => /^[-*]\s/.test(l)).map((l) => l.replace(/^[*]\s/, "- "));
@@ -3300,7 +3166,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else if (sub && snippets[sub]) { const rest = argstr.split(/\s+/).slice(1).join(" "); submit(snippets[sub].replace(/\$ARGUMENTS/g, rest).replace(/\$(\d+)/g, (_, n) => rest.split(/\s+/)[+n - 1] || "")); }
         else transcript.push({ role: "system", text: "usage:  /snippet save <name> <text…>   ·   /snippet <name> [args]   ·   /snippet del <name>   ·   /snippets to list" }); }
       else if (cmd === "/snippets") { const ks = Object.keys(snippets); transcript.push({ role: "system", text: ks.length ? ("saved snippets:\n" + ks.map((k) => "  " + k + "  " + gray(oneline(snippets[k], 50))).join("\n")) : "no snippets yet — /snippet save <name> <text>" }); }
-      else if (cmd === "/explain") { if (arg) submit("Explain, in plain English, what @" + arg + " does and how it works. Do not modify anything."); else { let d = ""; try { d = _cp.execSync("git -c color.ui=never diff HEAD", { cwd, encoding: "utf8" }); } catch (_) {} if (!d.trim()) transcript.push({ role: "system", text: "no uncommitted changes to explain — try /explain <file>" }); else submit("Explain, in plain English, what these uncommitted changes do (do not modify anything):\n\n" + d.slice(0, 4000)); } }
+      else if (cmd === "/explain") { if (arg) submit("Explain, in plain English, what @" + arg + " does and how it works. Do not modify anything."); else { let d = ""; try { d = _cp.execSync("git -c color.ui=never diff HEAD", { cwd, encoding: "utf8" }); } catch (_) {} if (!d.trim()) transcript.push({ role: "system", text: "no uncommitted changes to explain — try /explain <file>" }); else submit("Explain, in plain English, what these uncommitted changes do (do not modify anything):\n\n" + d.slice(0, 8000)); } }
       else if (cmd === "/test") { if (!arg) transcript.push({ role: "system", text: "usage: /test <file> — generate thorough unit tests for it and run them" }); else submit("Write thorough unit tests for @" + arg + ", save them in this project's conventional test location/framework, then run the tests."); }
       else if (cmd === "/refactor") { if (!argstr) transcript.push({ role: "system", text: "usage: /refactor <file or area> — restructure it for clarity WITHOUT changing behavior (runs the tests after to prove it)" }); else submit("Refactor " + argstr + " for clarity, structure, and maintainability WITHOUT changing its observable behavior or public API. If tests exist, run them afterward and make sure they still pass; otherwise verify by exercising the code. Then summarize what you changed and why."); }
       else if (cmd === "/migrate") { if (!argstr) transcript.push({ role: "system", text: "usage: /migrate <from> to <to> — e.g. /migrate CommonJS to ESM · /migrate express 4 to 5 · /migrate callbacks to async/await" }); else submit("Migrate this project: " + argstr + ". Do it incrementally and safely — update the code plus any config/build, fix every import/usage across the project, and keep it building with tests passing. Then summarize the migration and flag anything needing manual follow-up."); }
@@ -3333,7 +3199,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         setMouse(on); const st = readGlobal("state.json", {}) || {}; st.mouse = on; writeGlobal("state.json", st);
         transcript.push({ role: "system", text: on ? "mouse capture ON — wheel scrolls the transcript & slash menu. To select/copy text: /mouse off (or hold Shift while dragging)." : "mouse capture OFF — select & copy text natively now. Scroll with PgUp/PgDn · Home/End · ↑/↓ in the menu. /mouse on to re-enable wheel." });
       }
-      else if (cmd === "/offline") { offline = !offline; if (offline && (PAID[engine] || apiConfigured())) { if (apiConfigured()) delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = "ollama"; sess.ctxWindow = CTXW.ollama || 8192; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; cont = false; oMsgs.length = 1; transcript.push({ role: "system", text: "offline lock ON — switched to the local engine; cloud engines and remote APIs are blocked, nothing leaves this machine" }); } else transcript.push({ role: "system", text: offline ? "offline lock ON — cloud engines & remote APIs blocked; nothing leaves this machine" : "offline lock off — cloud engines allowed again" }); }
+      else if (cmd === "/offline") { offline = !offline; if (offline && (PAID[engine] || apiConfigured())) { if (apiConfigured()) delete process.env.SENTINEL_API_BASE; engine = "ollama"; sess.model = "ollama"; sess.ctxWindow = CTXW.ollama || 8192; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; cont = false; oMsgs.length = 1; transcript.push({ role: "system", text: "offline lock ON — switched to the local engine; cloud engines and remote APIs are blocked, nothing leaves this machine" }); } else transcript.push({ role: "system", text: offline ? "offline lock ON — cloud engines & remote APIs blocked; nothing leaves this machine" : "offline lock off — cloud engines allowed again" }); }
       else if (cmd === "/checkpoints") { transcript.push({ role: "system", text: checkpoints.length ? ("checkpoints (newest last):\n" + checkpoints.map((c, i) => "  #" + (i + 1) + "  " + c.label).join("\n") + "\n/undo restores the most recent") : "no checkpoints yet" }); }
       else if (cmd === "/init") { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"), cfg = path.join(dir, "config.json"); const made = []; if (!fs.existsSync(md)) { fs.writeFileSync(md, "# Nexus project instructions\n\nNexus loads this file every session.\n\n## Project\n- (describe your project)\n\n## Conventions\n- (style, patterns to follow)\n\n## Build / run / test\n- (commands)\n"); made.push("NEXUS.md"); } if (!fs.existsSync(cfg)) { fs.writeFileSync(cfg, JSON.stringify({ engine, model: "" }, null, 2) + "\n"); made.push("config.json"); } if (gitignoreNexus(cwd)) made.push(".gitignore"); transcript.push({ role: "system", text: made.length ? "initialized .nexus/ (" + made.join(", ") + ") — edit NEXUS.md to give Nexus project context" : ".nexus/ already exists" }); } catch (e) { transcript.push({ role: "system", text: "init failed: " + e.message }); } }
       else if (cmd === "/login") {
@@ -3341,15 +3207,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (!a0) { const a = nexusAuth(); transcript.push({ role: "system", text: (a ? "signed in as " + (a.name || a.email || a.uid) + "\n" : "") + "paste your code from the website (Settings → Nexus CLI): type  /login <code>\n(advanced: /login google or /login github)" }); }
         else {
           const isProv = ["google", "g", "github", "gh"].includes(a0.toLowerCase());
-          const blk = { role: "system", text: isProv ? "/login " + a0 + "…" : "verifying your code…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render();
+          const blk = { role: "system", text: isProv ? "/login " + a0 + "…" : "verifying your code…" }; transcript.push(blk); busy = true; scroll = 0; render();
           const log = (s) => { blk.text += "\n" + s; render(); };
           const p = isProv ? nexusLogin(a0.toLowerCase(), log) : nexusLoginCode(a0, log);
-          p.then(() => { busy = false; ctl = null; render(); }).catch((e) => { blk.text += "\n" + red(e.message); busy = false; ctl = null; render(); });
+          p.then(() => { busy = false; render(); }).catch((e) => { blk.text += "\n" + red(e.message); busy = false; render(); });
         }
       }
       else if (cmd === "/logout") transcript.push({ role: "system", text: nexusLogout() ? "signed out." : "was not signed in." });
       else if (cmd === "/whoami") { const a = nexusAuth(); transcript.push({ role: "system", text: a ? (a.name || a.email || a.uid) + "  (" + String(a.provider).replace(".com", "") + ")" : "not signed in — /login google or /login github" }); }
-      else if (cmd === "/setup") { const blk = { role: "system", text: "checking setup…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); const log = (s) => { blk.text += "\n" + s; render(); }; nexusSetup({ log, auto: true }).then(() => { busy = false; ctl = null; render(); }).catch((e) => { blk.text += "\n" + red(e.message); busy = false; ctl = null; render(); }); }
+      else if (cmd === "/setup") { const blk = { role: "system", text: "checking setup…" }; transcript.push(blk); busy = true; scroll = 0; render(); const log = (s) => { blk.text += "\n" + s; render(); }; nexusSetup({ log, auto: true }).then(() => { busy = false; render(); }).catch((e) => { blk.text += "\n" + red(e.message); busy = false; render(); }); }
       else if (cmd === "/model") {
         const eng = ENGINES[engine] || {};
         const setModel = (name) => { sess.model = name; sess.userModel = true; const known = engine === "ollama" || (eng.models || []).includes(name); const note = known ? "" : ((eng.models && eng.models.length) ? gray("  (not in " + engine + "'s known list — using it anyway)") : ""); transcript.push({ role: "system", text: "model set to " + bold(name) + note }); };
@@ -3364,125 +3230,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else if (a) setModel(a);
         else if (engine === "ollama") { transcript.push({ role: "system", text: "listing local models…" }); render(); ollamaTags().then((ms) => show(ms, "(installed)")).catch(() => show([], "(Ollama unreachable)")); }
         else show(eng.models || [], (eng.models && eng.models.length) ? "" : "(configured inside the tool)");
-      }
-      else if (cmd === "/marketplace" || cmd === "/market") {
-        const sub = (arg || "").toLowerCase();
-        const mpDir = path.join(cwd, ".nexus", "marketplace");
-        const globalMp = path.join(os.homedir(), ".darknode", "marketplace");
-        const loadPkgs = (dir) => { try { return fs.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")); } catch (_) { return null; } }).filter(Boolean); } catch (_) { return []; } };
-        if (sub === "init" || sub === "publish") {
-          const pkgPath = path.join(mpDir, "package.json");
-          if (fs.existsSync(pkgPath)) transcript.push({ role: "system", text: "marketplace package already exists at .nexus/marketplace/package.json" });
-          else {
-            try {
-              fs.mkdirSync(mpDir, { recursive: true });
-              const pkg = { name: path.basename(cwd), version: "0.1.0", type: "agent", description: "", author: "", engine: engine, entrypoint: "main.md", tags: [] };
-              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
-              fs.writeFileSync(path.join(mpDir, "main.md"), "# " + path.basename(cwd) + "\n\nDescribe what this agent/skill does.\n\n## Prompt\n\n$ARGUMENTS\n");
-              transcript.push({ role: "system", text: "marketplace package scaffolded:\n  " + green(".nexus/marketplace/package.json") + "  — edit name, description, tags\n  " + green(".nexus/marketplace/main.md") + "  — the prompt template\n  types: agent · skill · hook · pipeline\n  publish: share the .nexus/marketplace/ folder (npm, git, or copy)" });
-            } catch (e) { transcript.push({ role: "system", text: "could not scaffold: " + e.message }); }
-          }
-        }
-        else if (sub === "install" || sub === "add") {
-          const name = argstr.split(/\s+/)[1];
-          if (!name) transcript.push({ role: "system", text: "usage: /marketplace install <name|path|url>" });
-          else {
-            const src = path.resolve(cwd, name);
-            if (fs.existsSync(path.join(src, "package.json"))) {
-              try {
-                const pkg = JSON.parse(fs.readFileSync(path.join(src, "package.json"), "utf8"));
-                const dest = path.join(globalMp, pkg.name || path.basename(src));
-                fs.mkdirSync(dest, { recursive: true });
-                for (const f of fs.readdirSync(src)) { fs.copyFileSync(path.join(src, f), path.join(dest, f)); }
-                const cmdDir = path.join(cwd, ".nexus", "commands");
-                fs.mkdirSync(cmdDir, { recursive: true });
-                const ep = path.join(dest, pkg.entrypoint || "main.md");
-                if (fs.existsSync(ep)) { fs.copyFileSync(ep, path.join(cmdDir, (pkg.name || path.basename(src)) + ".md")); }
-                transcript.push({ role: "system", text: green("installed ") + bold(pkg.name || name) + gray("  " + (pkg.type || "agent") + " · v" + (pkg.version || "?")) + "\n  → ~/.darknode/marketplace/" + (pkg.name || path.basename(src)) + "\n  → .nexus/commands/" + (pkg.name || path.basename(src)) + ".md" + gray(" (use as /" + (pkg.name || path.basename(src)) + ")") });
-              } catch (e) { transcript.push({ role: "system", text: "install failed: " + e.message }); }
-            } else transcript.push({ role: "system", text: "not found: " + src + "\n  point to a directory with a package.json, or use a git URL" });
-          }
-        }
-        else if (sub === "list" || sub === "ls" || sub === "installed") {
-          const pkgs = loadPkgs(globalMp);
-          if (!pkgs.length) transcript.push({ role: "system", text: "no marketplace packages installed yet\n  /marketplace init  — create a publishable package from this project\n  /marketplace install <path>  — install from a local directory" });
-          else transcript.push({ role: "system", text: bold("installed packages") + gray("  (" + pkgs.length + ")") + "\n" + pkgs.map((p) => "  " + cyan((p.name || "?").padEnd(20)) + gray((p.type || "agent").padEnd(10)) + gray("v" + (p.version || "?")) + (p.description ? gray("  " + p.description.slice(0, 40)) : "")).join("\n") });
-        }
-        else if (sub === "remove" || sub === "rm" || sub === "uninstall") {
-          const name = argstr.split(/\s+/)[1];
-          if (!name) transcript.push({ role: "system", text: "usage: /marketplace remove <name>" });
-          else {
-            const dest = path.join(globalMp, name);
-            const cmdFile = path.join(cwd, ".nexus", "commands", name + ".md");
-            let removed = false;
-            try { if (fs.existsSync(dest)) { fs.rmSync(dest, { recursive: true }); removed = true; } } catch (_) {}
-            try { if (fs.existsSync(cmdFile)) fs.unlinkSync(cmdFile); } catch (_) {}
-            transcript.push({ role: "system", text: removed ? "removed " + name : "no package '" + name + "' installed" });
-          }
-        }
-        else {
-          transcript.push({ role: "system", text: bold("Nexus Marketplace") + gray("  — agents, skills, hooks & pipelines") + "\n\n  " + cyan("/marketplace list") + gray("          installed packages") + "\n  " + cyan("/marketplace install <path>") + gray("  install from directory/URL") + "\n  " + cyan("/marketplace remove <name>") + gray("   uninstall a package") + "\n  " + cyan("/marketplace init") + gray("          scaffold a publishable package from this project") + "\n\n  " + gray("packages live in ~/.darknode/marketplace/ and register as /commands") });
-        }
-      }
-      else if (cmd === "/cron") {
-        const cronFile = path.join(cwd, ".nexus", "cron.json");
-        const loadCron = () => { try { return JSON.parse(fs.readFileSync(cronFile, "utf8")); } catch (_) { return []; } };
-        const saveCron = (jobs) => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(cronFile, JSON.stringify(jobs, null, 2)); } catch (_) {} };
-        const sub = (arg || "").toLowerCase();
-        const cronMatch = (expr) => { try { const parts = expr.split(/\s+/); if (parts.length !== 5) return false; return parts.every((p) => /^[\d*,\/-]+$/.test(p)); } catch (_) { return false; } };
-        if (sub === "add" || sub === "new") {
-          const parts = argstr.split(/\s+/).slice(1);
-          const quoted = argstr.match(/["']([^"']+)["']/);
-          let cronExpr = "", goal = "";
-          if (quoted) { cronExpr = quoted[1]; goal = argstr.slice(argstr.indexOf(quoted[0]) + quoted[0].length).trim(); }
-          else if (parts.length >= 6) { cronExpr = parts.slice(0, 5).join(" "); goal = parts.slice(5).join(" "); }
-          if (!cronExpr || !goal) transcript.push({ role: "system", text: "usage: /cron add \"<cron-expr>\" <goal>\n  e.g. /cron add \"0 9 * * *\" run the test suite and fix any failures\n  e.g. /cron add \"*/30 * * * *\" check git status and summarize changes" });
-          else if (!cronMatch(cronExpr)) transcript.push({ role: "system", text: red("invalid cron expression: ") + cronExpr + gray("\n  format: min hour day month weekday (e.g. 0 9 * * * = daily at 9am)") });
-          else {
-            const jobs = loadCron();
-            const id = "cron-" + Date.now().toString(36);
-            jobs.push({ id, schedule: cronExpr, goal, engine, enabled: true, created: new Date().toISOString(), lastRun: null, runs: 0 });
-            saveCron(jobs);
-            transcript.push({ role: "system", text: green("scheduled ") + bold(id) + "\n  schedule  " + cyan(cronExpr) + "\n  goal      " + goal + "\n  engine    " + engine + gray("\n  saved to .nexus/cron.json — runs when Nexus is active") });
-          }
-        }
-        else if (sub === "list" || sub === "ls" || !sub) {
-          const jobs = loadCron();
-          if (!jobs.length) transcript.push({ role: "system", text: "no scheduled jobs\n  /cron add \"<cron>\" <goal>  — schedule a recurring task\n  e.g. /cron add \"0 9 * * *\" run tests and report" });
-          else transcript.push({ role: "system", text: bold("scheduled jobs") + gray("  (.nexus/cron.json)") + "\n" + jobs.map((j) => "  " + (j.enabled ? green("●") : gray("○")) + " " + cyan((j.id || "?").padEnd(16)) + gray(j.schedule.padEnd(16)) + (j.goal || "").slice(0, 40) + (j.lastRun ? gray("  last: " + new Date(j.lastRun).toLocaleString()) : gray("  never run")) + gray("  (" + (j.runs || 0) + " runs)")).join("\n") + "\n  " + gray("/cron add · /cron remove <id> · /cron enable/disable <id> · /cron run <id>") });
-        }
-        else if (sub === "remove" || sub === "rm" || sub === "delete") {
-          const id = argstr.split(/\s+/)[1];
-          if (!id) transcript.push({ role: "system", text: "usage: /cron remove <id>" });
-          else { const jobs = loadCron().filter((j) => j.id !== id); saveCron(jobs); transcript.push({ role: "system", text: "removed " + id }); }
-        }
-        else if (sub === "enable" || sub === "disable") {
-          const id = argstr.split(/\s+/)[1]; const en = sub === "enable";
-          const jobs = loadCron(); const j = jobs.find((x) => x.id === id);
-          if (!j) transcript.push({ role: "system", text: "no job '" + id + "'" });
-          else { j.enabled = en; saveCron(jobs); transcript.push({ role: "system", text: (en ? green("enabled") : yellow("disabled")) + " " + id }); }
-        }
-        else if (sub === "run") {
-          const id = argstr.split(/\s+/)[1]; const jobs = loadCron(); const j = jobs.find((x) => x.id === id);
-          if (!j) transcript.push({ role: "system", text: id ? "no job '" + id + "'" : "usage: /cron run <id>" });
-          else { j.lastRun = new Date().toISOString(); j.runs = (j.runs || 0) + 1; saveCron(jobs); transcript.push({ role: "system", text: "running " + bold(j.id) + ": " + j.goal }); submit(j.goal); return; }
-        }
-        else transcript.push({ role: "system", text: "usage: /cron add|list|remove|enable|disable|run" });
-      }
-      else if (cmd === "/restart") {
-        try { saveSession(); } catch (_) {}
-        transcript.push({ role: "system", text: "saving session and restarting…" }); render();
-        setTimeout(() => {
-          cleanup();
-          const args = [process.argv[1], "nexus", "--resume"].concat(process.argv.slice(3));
-          const cp = require("child_process");
-          try { cp.spawn(process.execPath, args, { stdio: "inherit", cwd }); } catch (_) {}
-          process.exit(0);
-        }, 200);
-      }
-      else if (cmd === "/next") {
-        if (!argstr) transcript.push({ role: "system", text: "usage: /next <prompt>  — queues a prompt to run right after the current turn finishes\n  queue: " + (nextQueue.length ? nextQueue.map((q, i) => (i + 1) + ". " + q.slice(0, 50)).join("\n  ") : "(empty)") });
-        else { nextQueue.push(argstr); transcript.push({ role: "system", text: "queued (" + nextQueue.length + "): " + argstr.slice(0, 60) + (argstr.length > 60 ? "…" : "") }); }
       }
       else if (cmd === "/expand") expanded = !expanded;
       else if (cmd === "/permissions" || cmd === "/perms") {
@@ -3513,18 +3260,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const ps = (argstr || "").trim().split(/\s+/).filter(Boolean);
         if (!ps.length) {
           transcript.push({ role: "system", text: apiConfigured()
-            ? "Any-model API is ON\n  base   " + API_BASE() + "\n  model  " + (sess.model && sess.model !== engine ? sess.model : gray("(none — /model <name>)")) + "\n  key    " + (process.env.DARKNODE_API_KEY ? green("set") : yellow("not set — /api key <k>")) + "\n  /api off to go back to local Ollama"
-            : "Drive ANY model via an OpenAI-compatible API (OpenAI · OpenRouter · Groq · DeepSeek · Together · Mistral · LM Studio · vLLM · llama.cpp).\n  /api <base-url> [model]   e.g. /api https://openrouter.ai/api/v1 anthropic/claude-3.5-sonnet\n  /api key <your-key>       set the key for this session (or export DARKNODE_API_KEY)\n  /api off                  back to local Ollama\nCurrently: " + (engine === "ollama" ? "local Ollama" : engine) });
+            ? "Any-model API is ON\n  base   " + API_BASE() + "\n  model  " + (sess.model && sess.model !== engine ? sess.model : gray("(none — /model <name>)")) + "\n  key    " + (process.env.SENTINEL_API_KEY ? green("set") : yellow("not set — /api key <k>")) + "\n  /api off to go back to local Ollama"
+            : "Drive ANY model via an OpenAI-compatible API (OpenAI · OpenRouter · Groq · DeepSeek · Together · Mistral · LM Studio · vLLM · llama.cpp).\n  /api <base-url> [model]   e.g. /api https://openrouter.ai/api/v1 anthropic/claude-3.5-sonnet\n  /api key <your-key>       set the key for this session (or export SENTINEL_API_KEY)\n  /api off                  back to local Ollama\nCurrently: " + (engine === "ollama" ? "local Ollama" : engine) });
         } else if (ps[0] === "off") {
-          delete process.env.DARKNODE_API_BASE; transcript.push({ role: "system", text: "API off — back to local Ollama." });
+          delete process.env.SENTINEL_API_BASE; transcript.push({ role: "system", text: "API off — back to local Ollama." });
         } else if (ps[0] === "key") {
-          if (ps[1]) { process.env.DARKNODE_API_KEY = ps[1]; transcript.push({ role: "system", text: "API key set for this session." }); }
+          if (ps[1]) { process.env.SENTINEL_API_KEY = ps[1]; transcript.push({ role: "system", text: "API key set for this session." }); }
           else transcript.push({ role: "system", text: "usage: /api key <your-key>" });
         } else {
           let url = ps[0]; if (!/^https?:\/\//i.test(url)) url = "https://" + url;
-          process.env.DARKNODE_API_BASE = url; engine = "ollama"; sess.ctxWindow = CTXW.ollama || 32768;
+          process.env.SENTINEL_API_BASE = url; engine = "ollama"; sess.ctxWindow = CTXW.ollama || 32768;
           sess.model = ps[1] || "ollama"; // clear any stale cloud model so the API auto-picks (or asks)
-          transcript.push({ role: "system", text: "Any-model API set → " + url + (ps[1] ? "  · model " + ps[1] : "  " + yellow("(set one with /model <name>)")) + (process.env.DARKNODE_API_KEY ? "" : "\n  " + yellow("no key yet — /api key <your-key> or export DARKNODE_API_KEY")) });
+          transcript.push({ role: "system", text: "Any-model API set → " + url + (ps[1] ? "  · model " + ps[1] : "  " + yellow("(set one with /model <name>)")) + (process.env.SENTINEL_API_KEY ? "" : "\n  " + yellow("no key yet — /api key <your-key> or export SENTINEL_API_KEY")) });
         }
         render();
       }
@@ -3537,8 +3284,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const opts = [];
         // switching AI starts a fresh conversation + resets the cost/context meters (like /engine)
         const reset = () => { sess.userModel = false; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; oMsgs.length = 1; };
-        locals.forEach((m) => opts.push({ name: m, note: "local · free", paid: false, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = CTXW.ollama || 32768; reset(); } }));
-        if (hasAnthropic()) ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"].forEach((m) => opts.push({ name: m, note: "Claude · API — BILLED to your Anthropic key", paid: true, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = 200000; reset(); } }));
+        locals.forEach((m) => opts.push({ name: m, note: "local · free", paid: false, apply: () => { delete process.env.SENTINEL_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = CTXW.ollama || 32768; reset(); } }));
+        if (hasAnthropic()) ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"].forEach((m) => opts.push({ name: m, note: "Claude · API — BILLED to your Anthropic key", paid: true, apply: () => { delete process.env.SENTINEL_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = 200000; reset(); } }));
         if (API_BASE()) opts.push({ name: (sess.model && sess.model !== engine && !/^claude/i.test(sess.model) ? sess.model : "api-model"), note: API_BASE() + " · likely billed", paid: true, apply: () => { engine = "ollama"; if (!sess.model || /^claude/i.test(sess.model) || sess.model === engine) sess.model = ""; reset(); } });
         const selArg = /^claude\s+\S/i.test(arg) ? "claude" : arg;
         if (!selArg) {
@@ -3570,7 +3317,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         transcript.push(blk); scroll = 0; render();
         try {
           const child = _cp.spawn(process.execPath, [__filename, verb].concat(argstr ? argstr.split(/\s+/).filter(Boolean) : []),
-            { cwd, env: Object.assign({}, process.env, { NO_COLOR: "1", DARKNODE_IN_NEXUS: "1" }) });
+            { cwd, env: Object.assign({}, process.env, { NO_COLOR: "1", SENTINEL_IN_NEXUS: "1" }) });
           let buf = "";
           const cap = (b) => { buf += b; if (buf.length > 2e5) buf = buf.slice(-2e5); };
           child.stdout.on("data", cap); child.stderr.on("data", cap);
@@ -3587,81 +3334,68 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     try { process.stdin.setRawMode(true); } catch (_) {}
     process.stdin.resume(); process.stdin.setEncoding("utf8");
     let loading = true;
-    // Boot animation control: any key skips it; DARKNODE_FAST / NO_MOTION goes straight to the chat.
+    // Boot animation control: any key skips it; SENTINEL_FAST / NO_MOTION goes straight to the chat.
     let bootTimer = null, bootDone = false;
-    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); if (autoResume) { try { const s = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8")); transcript.length = 0; for (const b of s.transcript) transcript.push(b); if (s.sess) Object.assign(sess, s.sess); if (s.engine && ENGINES[s.engine]) engine = s.engine; cont = true; transcript.push({ role: "system", text: "restarted with latest code — session restored" }); } catch (_) {} autoResume = false; } render(); };
-    const fastBoot = !!(process.env.DARKNODE_FAST || process.env.NO_MOTION);
+    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); render(); };
+    const fastBoot = !!(process.env.SENTINEL_FAST || process.env.NO_MOTION);
     // auto-connect MCP servers (non-blocking): the workspace's .nexus/mcp.json PLUS the
     // no-key servers that ship bundled with Nexus (fetch, memory, sequential-thinking,
     // context7, time, git) so a fresh download already has them. A bundled server is
     // skipped silently if its runtime (npx/uvx) isn't installed, or if the workspace
-    // defines its own server of the same name, or if DARKNODE_NO_DEFAULT_MCP is set.
+    // defines its own server of the same name, or if SENTINEL_NO_DEFAULT_MCP is set.
     const connectMcp = async () => {
       const seen = new Set();
       const cfg = loadMcpConfig(cwd);
       if (cfg) for (const nm of Object.keys(cfg)) { seen.add(nm); const c = await mcpConnect(nm, cfg[nm], cwd); mcpServers.push(c); if (!loading) render(); }
-      if (!process.env.DARKNODE_NO_DEFAULT_MCP && !offline) {
+      if (!process.env.SENTINEL_NO_DEFAULT_MCP && !offline) {
         const b = bundledSpecs();
         for (const nm of Object.keys(b)) { if (seen.has(nm) || !hasBin(b[nm].command)) continue; const c = await mcpConnect(nm, b[nm], cwd); c.bundled = true; mcpServers.push(c); if (!loading) render(); }
       }
     };
     connectMcp();
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
-    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("⚠ this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
+    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("⚠ this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export SENTINEL_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
-    let imgCounter = 0; // for [Image#N] display on pasted image paths
-    let nextQueue = []; // /next queue — prompts to run after current turn
     process.stdin.on("data", (d) => { try {
       if (loading) { finishBoot(); return; }   // any key skips the intro
-      let s = String(d);
-      // ---- sanitize: strip bracketed-paste markers (ESC may be stripped by intermediary) ----
-      const isPaste = /\x1b?\[200~/.test(s) || (s.length > 3 && /[\r\n]/.test(s) && !/^\x1b/.test(s));
-      s = s.replace(/\x1b?\[200~/g, "").replace(/\x1b?\[201~/g, "");
-      if (isPaste) s = s.replace(/\r\n?|\n/g, " ").replace(/\s+$/, "");
-      // ---- sanitize: convert pasted image paths to [Image#N] ----
-      s = s.replace(/'([^']+\.(png|jpe?g|gif|webp|bmp|svg))'/gi, () => { imgCounter++; return "[Image#" + imgCounter + "]"; });
-      if (!s) return;
+      const s = String(d);
       if (s === "\x03") { if (busy && ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); render(); return; } cleanup(); resolve(); return; } // ctrl+c: stop turn if running, else quit
       if (s === "\x1b[Z") { mode = (mode + 1) % MODES.length; render(); return; } // shift+tab
       if (s === "\x0f") { expanded = !expanded; render(); return; }      // ctrl+o
-      if (s === "\x01") { curPos = 0; render(); return; }                // ctrl+a -> start of input
-      if (s === "\x05") { curPos = input.length; render(); return; }     // ctrl+e -> end of input
-      if (s === "\x17") { if (curPos > 0) { const before = input.slice(0, curPos); const wm = before.match(/(?:\S+\s*|\s+)$/); const del = wm ? wm[0].length : 1; input = input.slice(0, curPos - del) + input.slice(curPos); curPos -= del; } render(); return; } // ctrl+w -> delete word back
-      if (s === "\x15") { input = input.slice(curPos); curPos = 0; render(); return; } // ctrl+u -> clear to start
-      if (s === "\x1b[3~" || s === "[3~") { if (curPos < input.length) { input = input.slice(0, curPos) + input.slice(curPos + 1); } render(); return; } // Delete key (forward)
       if (s === "\x1b" && navOpen) { navOpen = false; render(); return; } // Esc closes the ⋯ status menu
-      if (s === "\x1b" && argMatches().length) { const sp = input.indexOf(" "); if (sp > 0) { input = input.slice(0, sp) + " "; curPos = input.length; } menuSel = 0; render(); return; } // Esc dismisses arg dropdown
       // ---- scrollback (works during a turn too) ----
       const page = Math.max(1, rows() - 6);
-      // Arrow keys: handle both with and without ESC prefix (some terminals strip it)
-      const isUp = s === "\x1b[A" || s === "[A", isDown = s === "\x1b[B" || s === "[B";
-      const isRight = s === "\x1b[C" || s === "[C", isLeft = s === "\x1b[D" || s === "[D";
-      if (isUp || isDown || isLeft || isRight) {
-        if (isUp) { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.max(0, menuSel - 1); render(); return; } if (history.length) { hIdx = Math.max(0, hIdx - 1); input = history[hIdx] || ""; curPos = input.length; render(); } return; }
-        if (isDown) { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.min(cm.length - 1, menuSel + 1); render(); return; } if (history.length) { hIdx = Math.min(history.length, hIdx + 1); input = history[hIdx] || ""; curPos = input.length; render(); } return; }
-        if (isLeft) { if (curPos > 0) { curPos--; const cc = input.charCodeAt(curPos); if (cc >= 0xDC00 && cc <= 0xDFFF && curPos > 0) curPos--; render(); } return; }
-        if (isRight) { if (curPos < input.length) { const cc = input.charCodeAt(curPos); curPos += (cc >= 0xD800 && cc <= 0xDBFF) ? 2 : 1; if (curPos > input.length) curPos = input.length; render(); } return; }
+      if (s === "\x1b[5~") { const mm = slashMatches(); if (mm.length) { menuSel = Math.max(0, menuSel - page); render(); return; } scroll += page; render(); return; }         // PageUp: page the slash menu when open, else scroll transcript
+      if (s === "\x1b[6~") { const mm = slashMatches(); if (mm.length) { menuSel = Math.min(mm.length - 1, menuSel + page); render(); return; } scroll = Math.max(0, scroll - page); render(); return; } // PageDown
+      if (s === "\x1b[F" || s === "\x1b[4~" || s === "\x1bOF") { scroll = 0; render(); return; } // End -> latest
+      if (s === "\x1b[1~" || s === "\x1bOH" || s === "\x1b[H") { scroll += 100000; render(); return; } // Home -> top (clamped in render)
+      if (s.charCodeAt(0) === 27 && s[1] === "[" && s[2] === "<") { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); if (btn === 64) { if (mm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (mm.length) menuSel = Math.min(mm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; input = ""; menuSel = 0; scroll = 0; handleSlash(z.cmd); render(); } } } } return; } // SGR mouse: wheel scrolls / moves the slash menu · left-click toggles the ⋯ menu / runs an action
+      if (busy) { for (const ch of s) { if (ch === "\x7f" || ch === "\b") input = input.slice(0, -1); else if (ch >= " ") input += ch; } return; } // buffer typing mid-turn
+      // ---- bracketed paste (handles multi-line pastes, possibly split across chunks) ----
+      if (pasteBuf !== null || s.indexOf("\x1b[200~") !== -1) {
+        let chunk = s;
+        if (pasteBuf === null) { pasteBuf = ""; chunk = chunk.slice(chunk.indexOf("\x1b[200~") + 6); }
+        const end = chunk.indexOf("\x1b[201~");
+        if (end === -1) { pasteBuf += chunk; return; }                   // more paste coming in a later chunk
+        pasteBuf += chunk.slice(0, end);
+        input += pasteBuf.replace(/\r\n?|\n/g, " ").replace(/[^\x20-\x7e]+/g, "");
+        pasteBuf = null; render(); return;
       }
-      if (s === "\x1b[5~" || s === "[5~") { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.max(0, menuSel - page); render(); return; } scroll += page; render(); return; }         // PageUp
-      if (s === "\x1b[6~" || s === "[6~") { const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (cm.length) { menuSel = Math.min(cm.length - 1, menuSel + page); render(); return; } scroll = Math.max(0, scroll - page); render(); return; } // PageDown
-      if (s === "\x1b[F" || s === "\x1b[4~" || s === "\x1bOF" || s === "[F") { if (input.length) { curPos = input.length; } else { scroll = 0; } render(); return; } // End -> end of input / latest
-      if (s === "\x1b[1~" || s === "\x1bOH" || s === "\x1b[H" || s === "[H") { if (input.length) { curPos = 0; } else { scroll += 100000; } render(); return; } // Home -> start of input / top
-      if (s.charCodeAt(0) === 27 && s[1] === "[" && s[2] === "<") { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (btn === 64) { if (cm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (cm.length) menuSel = Math.min(cm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; if (!busy) { input = ""; curPos = 0; menuSel = 0; scroll = 0; handleSlash(z.cmd); } render(); } } } } return; } // SGR mouse
-      if (busy) { const clean = s.replace(/\x1b\[[0-9;]*[A-Za-z~]/g, "").replace(/\x1b[^[]/g, ""); for (const ch of clean) { if (ch === "\r" || ch === "\n") { const t = input.trim(); if (t) { nextQueue.push(t); input = ""; curPos = 0; transcript.push({ role: "system", text: "queued: " + t }); render(); } } else if (ch === "\x7f" || ch === "\b") { if (curPos > 0) { const before = input.slice(0, curPos); const im = before.match(/\[Image#\d+\]$/); const del = im ? im[0].length : 1; input = input.slice(0, curPos - del) + input.slice(curPos); curPos -= del; } render(); } else if (ch >= " ") { input = input.slice(0, curPos) + ch + input.slice(curPos); curPos += ch.length; render(); } } return; } // buffer + queue mid-turn
+      if (s === "\x1b[A") { const mm = slashMatches(); if (mm.length) { menuSel = Math.max(0, menuSel - 1); render(); return; } if (history.length) { hIdx = Math.max(0, hIdx - 1); input = history[hIdx] || ""; render(); } return; } // up: menu selection when open, else history
+      if (s === "\x1b[B") { const mm = slashMatches(); if (mm.length) { menuSel = Math.min(mm.length - 1, menuSel + 1); render(); return; } if (history.length) { hIdx = Math.min(history.length, hIdx + 1); input = history[hIdx] || ""; render(); } return; } // down: menu selection when open, else history
       if (s.charCodeAt(0) === 27) return;                                // other escapes
       for (const ch of s) {
-        if (ch === "\t") { // Tab completes the highlighted slash command, arg completion, or @file path
-          const mm = slashMatches(); if (mm.length) { input = (mm[menuSel] || mm[0])[0] + " "; curPos = input.length; menuSel = 0; refreshArgCache(); render(); return; }
-          const am = argMatches(); if (am.length) { const sp = input.indexOf(" "); const cmd = input.slice(0, sp); input = cmd + " " + (am[menuSel] || am[0])[0] + " "; curPos = input.length; menuSel = 0; render(); return; }
+        if (ch === "\t") { // Tab completes the highlighted slash command, else an @file path
+          const mm = slashMatches(); if (mm.length) { input = (mm[menuSel] || mm[0])[0] + " "; menuSel = 0; render(); return; }
           const at = input.match(/@([^\s]*)$/);
-          if (at) { try { const pt = at[1]; const dir = pt.includes("/") ? pt.slice(0, pt.lastIndexOf("/") + 1) : ""; const bpart = pt.includes("/") ? pt.slice(pt.lastIndexOf("/") + 1) : pt; const entries = fs.readdirSync(path.resolve(cwd, dir || ".")).filter((e) => e.startsWith(bpart)).sort(); if (entries.length) { const hit = entries[0]; const isDir = fs.statSync(path.resolve(cwd, dir + hit)).isDirectory(); input = input.slice(0, at.index) + "@" + dir + hit + (isDir ? "/" : " "); curPos = input.length; } } catch (_) {} render(); }
+          if (at) { try { const pt = at[1]; const dir = pt.includes("/") ? pt.slice(0, pt.lastIndexOf("/") + 1) : ""; const bpart = pt.includes("/") ? pt.slice(pt.lastIndexOf("/") + 1) : pt; const entries = fs.readdirSync(path.resolve(cwd, dir || ".")).filter((e) => e.startsWith(bpart)).sort(); if (entries.length) { const hit = entries[0]; const isDir = fs.statSync(path.resolve(cwd, dir + hit)).isDirectory(); input = input.slice(0, at.index) + "@" + dir + hit + (isDir ? "/" : " "); } } catch (_) {} render(); }
           return;
         }
         if (ch === "\r" || ch === "\n") {
-          if (input.endsWith("\\")) { input = input.slice(0, -1) + "\n"; curPos = input.length; render(); return; } // trailing backslash = newline, not submit
-          const t = input.trim(); input = ""; curPos = 0; const pick = menuSel; menuSel = 0; if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; } if (t.startsWith("/")) { let cmd = t; if (!/\s/.test(t)) { const mm = fuzzyCmds(t); if (mm.length) cmd = (mm[pick] || mm[0])[0]; } handleSlash(cmd); render(); return; } if (t[0] === "!" && t.length > 1) { runBang(t.slice(1).trim()); render(); return; } if (t[0] === "#" && t.length > 1) { addMemory(t.slice(1).trim()); render(); return; } if (t) { submit(t); return; } render(); }
-        else if (ch === "\x7f" || ch === "\b") { if (curPos > 0) { const before = input.slice(0, curPos); const im = before.match(/\[Image#\d+\]$/); let del = im ? im[0].length : 1; if (!im && curPos >= 2) { const cc = input.charCodeAt(curPos - 1); if (cc >= 0xDC00 && cc <= 0xDFFF) del = 2; } input = input.slice(0, curPos - del) + input.slice(curPos); curPos -= del; } menuSel = 0; render(); }
-        else if (ch >= " ") { input = input.slice(0, curPos) + ch + input.slice(curPos); curPos += ch.length; menuSel = 0; if (ch === "/" && input.length === 1) refreshArgCache(); render(); }
+          if (input.endsWith("\\")) { input = input.slice(0, -1) + "\n"; render(); return; } // trailing backslash = newline, not submit
+          const t = input.trim(); input = ""; const pick = menuSel; menuSel = 0; if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; } if (t.startsWith("/")) { let cmd = t; if (!/\s/.test(t)) { const mm = fuzzyCmds(t); if (mm.length) cmd = (mm[pick] || mm[0])[0]; } handleSlash(cmd); render(); return; } if (t[0] === "!" && t.length > 1) { runBang(t.slice(1).trim()); render(); return; } if (t[0] === "#" && t.length > 1) { addMemory(t.slice(1).trim()); render(); return; } if (t) { submit(t); return; } render(); }
+        else if (ch === "\x7f" || ch === "\b") { input = input.slice(0, -1); menuSel = 0; render(); }
+        else if (ch >= " ") { input += ch; menuSel = 0; render(); }
       }
     } catch (err) { busy = false; try { transcript.push({ role: "system", text: "internal error: " + (err && err.message || err) }); render(); } catch (_) {} } });
     out.on("resize", onResize);
@@ -3680,7 +3414,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         caps[1][1] = localModels > 0;
         const put = (row, str, vis) => ESC + "[" + row + ";" + Math.max(1, cx - (((vis || str.length) / 2) | 0)) + "H" + str;
         let b = ESC + "[2J";
-        for (const s of stars) { if (s.x >= C || s.y >= R) continue; const tw = (f + s.ph) % 6; const ch = tw < 2 ? "·" : tw < 4 ? "+" : "*"; b += ESC + "[" + s.y + ";" + s.x + "H" + (tw < 2 ? gray(ch) : tw < 4 ? dim(cyan(ch)) : cyan(ch)); } // twinkling starfield behind the logo
+        for (const s of stars) { const tw = (f + s.ph) % 6; const ch = tw < 2 ? "·" : tw < 4 ? "+" : "*"; b += ESC + "[" + s.y + ";" + s.x + "H" + (tw < 2 ? gray(ch) : tw < 4 ? dim(cyan(ch)) : cyan(ch)); } // twinkling starfield behind the logo
         for (let i = 0; i < ART.length; i++) b += ESC + "[" + (top + i) + ";" + Math.max(1, cx - (artW / 2 | 0)) + "H" + gart(ART[i], i, f); // shimmer wave down the logo
         b += put(top + ART.length + 1, dim(gray("the multi-engine AI coding agent")), 32);
         const nShown = Math.min(caps.length, ((f / total) * caps.length | 0) + 1);
@@ -3728,7 +3462,7 @@ function nexusInit() {
   try { if (fs.existsSync(".git")) detected.push("git repository"); } catch (_) {}
   let created = [];
   if (!fs.existsSync(mdPath)) { fs.writeFileSync(mdPath, "# Nexus project instructions\n\nNexus loads this file at the start of every session. Describe the project, conventions, and how to build/run/test it so the agent has context.\n\n## Project\n" + (detected.length ? detected.map((d) => "- " + d).join("\n") : "- (describe your project here)") + "\n\n## Conventions\n- (code style, patterns to follow, things to avoid)\n\n## Build / run / test\n- (commands to build, run, and test)\n"); created.push("NEXUS.md"); }
-  if (!fs.existsSync(cfgPath)) { fs.writeFileSync(cfgPath, JSON.stringify({ engine: hasBin("claude") ? "claude" : "ollama", model: process.env.DARKNODE_MODEL || "" }, null, 2) + "\n"); created.push("config.json"); }
+  if (!fs.existsSync(cfgPath)) { fs.writeFileSync(cfgPath, JSON.stringify({ engine: hasBin("claude") ? "claude" : "ollama", model: process.env.SENTINEL_MODEL || "" }, null, 2) + "\n"); created.push("config.json"); }
   banner(); h1("Nexus initialized");
   created.forEach((f) => console.log("  " + green("created ") + ".nexus/" + f));
   if (!created.length) console.log("  " + gray("already initialized (.nexus/ exists)"));
@@ -3773,7 +3507,7 @@ ${renderCommands(COMMAND_GROUPS, { color: cyan, cheats: Object.keys(CHEATS).join
 process.on("SIGINT", () => { if (tuiActive) return; console.log("\n  " + gray("interrupted — stay sharp.") + "\n"); process.exit(130); });
 const args = process.argv.slice(2);
 if (args[0] === "-v" || args[0] === "--version") {
-  console.log("darknode " + VERSION);
+  console.log("darknode " + VERSION); // first line stays machine-parseable
   if (!args.includes("--short")) {
     console.log(gray("  node " + process.version + " · " + process.platform + "/" + process.arch));
     const inst = ENGINE_ORDER.filter((e) => e !== "ollama" && engineAvail(e));
@@ -3782,11 +3516,6 @@ if (args[0] === "-v" || args[0] === "--version") {
   }
   process.exit(0);
 }
-else if (args.length === 0) {
-  // If launched as "nexus" (not "darknode"), go straight to TUI
-  const binName = require("path").basename(process.argv[1], ".js");
-  if (binName === "nexus") cli(["nexus", "--tui"]).then(() => process.exit(0)).catch((e) => { console.error("  " + red("error: " + e.message)); process.exit(1); });
-  else mainMenu();
-}
+else if (args.length === 0) mainMenu();
 else if (args[0] === "-h" || args[0] === "--help") usage();
 else cli(args).then(() => process.exit(0)).catch((e) => { console.error("  " + red("error: " + e.message)); process.exit(1); });

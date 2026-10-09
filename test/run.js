@@ -1,5 +1,5 @@
 "use strict";
-// Sentinel/Nexus unit suite — runs the pure lib/ subsystems. `npm test`.
+// Darknode/Nexus unit suite — runs the pure lib/ subsystems. `npm test`.
 // No framework, no deps: a tiny assert harness so it runs anywhere (CI included).
 const os = require("os"), fs = require("fs"), path = require("path");
 const { MODEL_PRICE, priceOf, isMechanical, shouldDelegate } = require("../lib/nexus/pricing");
@@ -9,6 +9,8 @@ const { ENGINES, ENGINE_ORDER, engineCap } = require("../lib/nexus/engines");
 const { scanSecrets, maskSecrets, classifyDanger, compactOutput } = require("../lib/governance/security");
 const { styleNames, styleDirective } = require("../lib/cli/styles");
 const { mergeMemory } = require("../lib/nexus/memory");
+const { scanCapabilities, fileRisk, levelFor, indexFiles } = require("../lib/nexus/capindex");
+const { evaluateAction: guardEval } = require("../lib/nexus/guardrails");
 const { STYLES, allStyles, loadStyles } = require("../lib/cli/styles");
 const { TOOL_CATALOG, discoverTools } = require("../lib/nexus/tools");
 const { createBgJobs, MAX_BUF } = require("../lib/nexus/bgjobs");
@@ -19,6 +21,7 @@ const { oneline, extractJson } = require("../lib/cli/text");
 const { frameDiff, diffTokens, wordHi } = require("../lib/cli/diff");
 const { TOP_PORTS, parsePorts, idHash, parseCve, cidrCalc, ipToInt, inCidr } = require("../lib/toolkit/scanutil");
 const { DONE_TOKEN, loopDecision, clampRounds, loopPrompt } = require("../lib/nexus/loop");
+const { semverGt, autoUpdateMode, shouldCheck } = require("../lib/nexus/update");
 const { defang, refang } = require("../lib/toolkit/ioc");
 const { shannon, assess } = require("../lib/toolkit/entropy");
 const { convert: epochConvert } = require("../lib/toolkit/epoch");
@@ -50,6 +53,57 @@ ok("isMechanical: NOT refactor", !isMechanical("refactor the auth module"));
 ok("shouldDelegate opus->haiku on big output", shouldDelegate(5000, 2000, "opus", "haiku") === true);
 ok("shouldDelegate same model = false", shouldDelegate(5000, 2000, "opus", "opus") === false);
 ok("shouldDelegate weak-not-cheaper = false", shouldDelegate(5000, 2000, "haiku", "opus") === false);
+
+group("capability index (what a module can DO)");
+{
+  const src = [
+    "// exec here is only a comment and must be ignored",
+    "const cp = require('child_process');",
+    "cp.execSync('ls');",
+    "const r = await fetch('https://x');",
+    "const k = process.env.API_TOKEN;",
+    "fs.writeFileSync('/tmp/x', data);",
+    "eval(userInput);",
+  ].join("\n");
+  const caps = scanCapabilities(src);
+  const tags = caps.map((c) => c.tag);
+  ok("detects exec/eval/secrets/net/fs-write", ["eval", "exec", "secrets", "fs-write", "net"].every((t) => tags.includes(t)));
+  ok("comment-only mention is ignored", !caps.some((c) => c.hits.some((h) => h.line === 1)));
+  const execCap = caps.find((c) => c.tag === "exec");
+  ok("hit carries a real line number", execCap && execCap.hits.some((h) => h.line === 3));
+  ok("empty/garbage input is safe", scanCapabilities(null).length === 0 && scanCapabilities(123).length === 0);
+
+  eq("fileRisk = worst capability (eval=10 -> critical)", fileRisk(caps).level, "critical");
+  eq("levelFor thresholds: 5 -> medium", levelFor(5), "medium");
+  eq("levelFor thresholds: 2 -> low", levelFor(2), "low");
+  eq("levelFor thresholds: 0 -> none", levelFor(0), "none");
+
+  const idx = indexFiles([
+    { path: "danger.js", code: "eval(x)" },
+    { path: "calm.js", code: "const n = 1 + 1;" },
+    { path: "mid.js", code: "fetch('https://y')" },
+  ]);
+  eq("index sorts highest-risk first", idx.files[0].path, "danger.js");
+  ok("rollup flags the critical module", idx.rollup.critical.includes("danger.js") && !idx.rollup.critical.includes("calm.js"));
+  eq("rollup counts tags", idx.rollup.byTag.net, 1);
+  eq("rollup maxLevel", idx.rollup.maxLevel, "critical");
+}
+
+group("guardrails (one gate: policy + danger + secrets)");
+{
+  const P = { protectedPaths: [".env", "*.key"], deniedCommands: [], allowNetwork: true };
+  eq("destructive command -> deny", guardEval({ type: "command", command: "rm -rf /" }, P).decision, "deny");
+  eq("sudo -> ask (warn)", guardEval({ type: "command", command: "sudo apt update" }, P).decision, "ask");
+  eq("benign command -> allow", guardEval({ type: "command", command: "ls -la" }, P).decision, "allow");
+  eq("write to protected path -> deny", guardEval({ type: "write", path: ".env", content: "x" }, P).decision, "deny");
+  const sec = guardEval({ type: "write", path: "notes.txt", content: "aws AKIAIOSFODNN7EXAMPLE key" }, P);
+  eq("secret in content -> ask by default", sec.decision, "ask");
+  ok("secret reason is reported", sec.reasons.some((r) => r.source === "secret"));
+  eq("secret -> deny under --strict", guardEval({ type: "write", path: "notes.txt", content: "AKIAIOSFODNN7EXAMPLE" }, P, { denyOnSecret: true }).decision, "deny");
+  const both = guardEval({ type: "command", command: "sudo rm -rf /" }, P);
+  eq("strongest escalation wins (block over warn)", both.decision, "deny");
+  ok("multiple reasons can fire", both.reasons.length >= 1);
+}
 
 group("parsers (gemini/codex structured output → real tokens)");
 {
@@ -120,6 +174,130 @@ group("security (secrets + destructive-command preflight)");
   ok("classifyDanger npm test → ok", classifyDanger("npm test").level === "ok");
   ok("compactOutput trims long text", compactOutput("x".repeat(9000), 4000).length < 9000);
   ok("compactOutput keeps short text", compactOutput("short", 4000) === "short");
+}
+
+group("NX-007: redaction is complete across every channel");
+{
+  // The redaction invariant that makes every output channel (logs, transcripts,
+  // error output, cloud prompts) safe: anything scanSecrets can detect,
+  // maskSecrets fully removes — the raw secret value never survives, and nothing
+  // detectable remains. Logs/transcripts/prompts are safe precisely because they
+  // all pass through this one chokepoint.
+  const secrets = {
+    "aws": "AKIAIOSFODNN7EXAMPLE",
+    "github": "ghp_" + "b".repeat(36),
+    "slack": "xoxb-123456789012-abcdefghijkl",
+    "openai": "sk-" + "c".repeat(32),
+    "google": "AIza" + "d".repeat(35),
+    "jwt": "eyJ" + "a".repeat(10) + "." + "b".repeat(10) + "." + "c".repeat(8),
+    "privkey": "-----BEGIN RSA PRIVATE KEY-----\nMIIabcDEFghi\n-----END RSA PRIVATE KEY-----",
+    "hardcoded": 'password: "hunter2secret"',
+  };
+  for (const [kind, raw] of Object.entries(secrets)) {
+    const wrapped = "log line before " + raw + " and after";
+    ok("scanSecrets detects " + kind, scanSecrets(raw).length > 0);
+    const masked = maskSecrets(wrapped);
+    ok("maskSecrets removes the raw " + kind + " value", masked.indexOf(raw) === -1);
+    ok("no detectable " + kind + " residue after masking", scanSecrets(masked).length === 0);
+    ok("surrounding context is preserved for " + kind, /log line before/.test(masked) && /and after/.test(masked));
+  }
+  // The completeness guarantee stated as one property over a mixed blob.
+  const blob = Object.values(secrets).join(" | ");
+  ok("a blob of every secret type masks to nothing detectable", scanSecrets(maskSecrets(blob)).length === 0);
+}
+
+group("NX-011: published command reference is generated, not hand-kept");
+{
+  const fs = require("fs");
+  const gen = require("../scripts/export-command-ref");
+  const fresh = gen.serialize();
+  let onDisk = null; try { onDisk = fs.readFileSync(gen.OUT, "utf8"); } catch (_) {}
+  ok("command-ref.json exists (run: node scripts/export-command-ref.js)", onDisk !== null);
+  ok("command-ref.json is up to date vs lib/cli/reference.js (stale => CI fails)", onDisk === fresh);
+  const built = gen.build();
+  ok("every documented command has a usage + description", built.groups.every((g) => g.commands.every((c) => c.usage && c.desc)));
+  ok("commandCount matches the rows", built.commandCount === built.groups.reduce((n, g) => n + g.commands.length, 0));
+}
+
+group("NX-002 default posture: active commands need local target or authorization");
+{
+  const DG = require("../lib/governance/default-guard");
+  for (const t of ["127.0.0.1", "localhost", "10.1.2.3", "192.168.0.5", "172.16.9.9", "172.31.0.1", "::1", "app.internal", "box.local", "target.test", "169.254.1.1", "100.64.0.1"])
+    ok("local/private allowed: " + t, DG.guardActive("scan", t, {}).allow);
+  for (const t of ["1.2.3.4", "scanme.nmap.org", "8.8.8.8", "https://example.com/x", "target.com:8443", "172.32.0.1", "2001:4860:4860::8888"])
+    ok("remote refused without auth: " + t, !DG.guardActive("scan", t, {}).allow);
+  ok("remote allowed with --authorized", DG.guardActive("nmap", "1.2.3.4", { authorized: true }).allow);
+  ok("passive dns is never guarded here", DG.guardActive("dns", "8.8.8.8", {}).allow);
+  ok("passive whois is never guarded here", DG.guardActive("whois", "example.com", {}).allow);
+  eq("hostOf strips scheme/userinfo/port/path", DG.hostOf("https://user@Example.com:8443/a/b?x"), "example.com");
+  ok("IPv6 loopback is local", DG.isLocalTarget("::1"));
+  ok("public IPv6 is remote", !DG.isLocalTarget("2001:4860:4860::8888"));
+  ok("a public DNS resolver is remote, not local", !DG.isLocalTarget("8.8.8.8"));
+}
+
+group("NX-008: eval harness scoring + task admissibility");
+{
+  const { scoreRun, aggregate } = require("../eval/score");
+  const h = require("../eval/harness");
+  const p = require("path");
+  ok("command exit 0 => pass", scoreRun({ type: "command" }, { code: 0 }).pass);
+  ok("command exit 1 => fail", !scoreRun({ type: "command" }, { code: 1 }).pass);
+  const perfect = scoreRun({ type: "finding", groundTruth: ["a:1", "b:2"] }, { findings: ["a:1", "b:2"] });
+  ok("finding perfect => pass, 0 FP, P=R=1", perfect.pass && perfect.fp === 0 && perfect.precision === 1 && perfect.recall === 1);
+  const fp = scoreRun({ type: "finding", groundTruth: ["a:1"] }, { findings: ["a:1", "c:3"] });
+  ok("a false positive drops precision and fails the task", !fp.pass && fp.fp === 1 && fp.precision === 0.5);
+  const fn = scoreRun({ type: "finding", groundTruth: ["a:1", "b:2"] }, { findings: ["a:1"] });
+  ok("a miss drops recall", !fn.pass && fn.fn === 1 && fn.recall === 0.5);
+  const agg = aggregate([
+    { score: { pass: true }, metrics: { latencyMs: 100, tokens: 10, costUsd: 0.01 } },
+    { score: { pass: false }, metrics: { latencyMs: 300, tokens: 30, costUsd: 0.03 } },
+  ]);
+  ok("pass-rate is a fraction, not rounded to works/doesn't", agg.passRate === 0.5);
+  ok("variance is reported, not only the mean", agg.latencyMs.mean === 200 && agg.latencyMs.variance > 0);
+  ok("task without provenance is excluded", !h.admissible({ id: "x", axis: "a", type: "command", prompt: "p", verify: "true", contamination: "c" }));
+  ok("task without contamination argument is excluded", !h.admissible({ id: "x", axis: "a", type: "command", prompt: "p", verify: "true", provenance: "p" }));
+  ok("a complete command task is admissible", h.admissible({ id: "x", axis: "a", type: "command", prompt: "p", verify: "true", provenance: "p", contamination: "c" }));
+  const tasks = h.loadTasks(p.join(__dirname, "..", "eval", "tasks"));
+  ok("the shipped dev tasks all parse", tasks.length >= 3);
+  ok("every shipped dev task is admissible", tasks.every(h.admissible));
+}
+
+group("NX-005 C3: findings are re-confirmed against evidence (false-positive gate)");
+{
+  const { validateFindings, parseFindingLines, normKind } = require("../lib/nexus/finding-validate");
+  // Deterministic sandbox: the file content is injected, so no real I/O.
+  const AWS = "AKIA" + "IOSFODNN7EXAMPLE"; // split so this test string is not itself a committed secret
+  const files = {
+    "config.js": "const key = '" + AWS + "';",
+    "clean.js": "const port = 8080; // nothing secret here",
+  };
+  const read = (p) => (Object.prototype.hasOwnProperty.call(files, p) ? files[p] : null);
+
+  const r1 = validateFindings([{ kind: "aws", path: "config.js" }], read);
+  ok("a finding that reproduces at its path is kept", r1.validated.length === 1 && r1.validated[0].kind === "aws-key" && r1.validated[0].reproduced === true);
+  ok("a kept finding carries its canonical kind, not the raw label", r1.validated[0].kind === "aws-key" && r1.dropped.length === 0);
+
+  const r2 = validateFindings([{ kind: "aws-key", path: "clean.js" }], read);
+  ok("a finding whose secret is NOT at the cited path is dropped as non-reproducing", r2.validated.length === 0 && r2.dropped.length === 1 && /does not reproduce/.test(r2.dropped[0].reason));
+
+  const r3 = validateFindings([{ kind: "aws-key", path: "ghost.js" }], read);
+  ok("a finding at a path that does not exist is dropped (does not reproduce)", r3.validated.length === 0 && /path not found/.test(r3.dropped[0].reason));
+
+  const r4 = validateFindings([{ kind: "aws", path: "config.js" }, { kind: "aws-key", path: "config.js" }], read);
+  ok("synonyms collapse so the same finding is not reported twice", r4.validated.length === 1 && r4.dropped.length === 1 && r4.dropped[0].reason === "duplicate");
+
+  const r5 = validateFindings([{ kind: "", path: "config.js" }, { kind: "aws", path: "" }], read);
+  ok("a finding missing a kind or a path is dropped, never silently kept", r5.validated.length === 0 && r5.dropped.length === 2 && r5.dropped.every((d) => /missing/.test(d.reason)));
+
+  ok("kind normalisation folds scanner labels and agent synonyms onto one canonical kind", normKind("AWS access key id") === "aws-key" && normKind("GitHub token") === "github-token" && normKind("gh-token") === "github-token");
+  ok("an unknown kind is passed through lower-cased, not dropped by normalisation", normKind("Custom-Rule-42") === "custom-rule-42");
+
+  const parsed = parseFindingLines("aws:config.js\n  github-token: src/app.js  \nnot a finding line\n");
+  ok("agent 'kind:path' output lines parse; prose lines are ignored", parsed.length === 2 && parsed[0].kind === "aws" && parsed[1].path === "src/app.js");
+
+  // The whole point: a mixed batch of real + bogus findings yields only the reproduced ones.
+  const mixed = validateFindings(parseFindingLines("aws:config.js\napi-key:clean.js\naws:ghost.js"), read);
+  ok("mixed batch: only the reproducing finding survives; the rest are dropped with reasons", mixed.validated.length === 1 && mixed.dropped.length === 2);
 }
 
 group("output styles (Claude-Code idea)");
@@ -371,7 +549,7 @@ group("base32 (RFC 4648 test vectors)");
   ok("'foobar' → MZXW6YTBOI======", base32encode("foobar") === "MZXW6YTBOI======");
   ok("decode reverses (padded)", base32decode("MZXW6YTBOI======") === "foobar");
   ok("decode lowercase + spaces tolerated", base32decode("mzxw6===") === "foo");
-  ok("round-trips arbitrary text", base32decode(base32encode("Sentinel/Nexus 42!")) === "Sentinel/Nexus 42!");
+  ok("round-trips arbitrary text", base32decode(base32encode("Darknode/Nexus 42!")) === "Darknode/Nexus 42!");
   ok("invalid char → null", base32decode("MZXW6!!!") === null);
 }
 
@@ -509,7 +687,7 @@ group("encoders (shared CLI + menu)");
 {
   const { ENC } = require("../lib/toolkit/encoders");
   eq("op keys present", Object.keys(ENC).sort(), ["b64d", "b64e", "base32d", "base32e", "base58d", "base58e", "hexd", "hexe", "rot13d", "rot13e", "urld", "urle"]);
-  ok("b64/hex/url/base32 all roundtrip", ["b64", "hex", "url", "base32"].every((t) => ENC[t + "d"](ENC[t + "e"]("Sentinel 42!")) === "Sentinel 42!"));
+  ok("b64/hex/url/base32 all roundtrip", ["b64", "hex", "url", "base32"].every((t) => ENC[t + "d"](ENC[t + "e"]("Darknode 42!")) === "Darknode 42!"));
   eq("url encodes a space", ENC.urle("a b"), "a%20b");
   eq("invalid base32 -> guarded message", ENC.base32d("!!!"), "(invalid base32)");
 }
@@ -734,7 +912,7 @@ group("luhn checksum");
 group("base58 (bitcoin alphabet)");
 {
   eq("known vector 'Hello World!'", b58encode("Hello World!"), "2NEpo7TZRRrLZSi2U");
-  ok("round-trips utf8", b58decode(b58encode("sentinel")).toString("utf8") === "sentinel");
+  ok("round-trips utf8", b58decode(b58encode("darknode")).toString("utf8") === "darknode");
   eq("empty -> empty", b58encode(""), "");
   ok("leading zero bytes -> leading 1s", b58encode(Buffer.from([0, 0, 1])) === "112");
   ok("invalid char (0/O/I/l) -> null", b58decode("0OIl") === null);
@@ -754,7 +932,7 @@ group("xor cipher (repeating key)");
 group("rot / caesar");
 {
   eq("rot13 basic", rot13("Hello, World!"), "Uryyb, Jbeyq!");
-  ok("rot13 is its own inverse", rot13(rot13("Sentinel")) === "Sentinel");
+  ok("rot13 is its own inverse", rot13(rot13("Darknode")) === "Darknode");
   eq("rot n=1", rot(1, "abcZ"), "bcdA");
   ok("non-letters untouched", rot(5, "a1!b") === "f1!g");
   ok("negative and >26 normalize", rot(-13, "abc") === rot(13, "abc") && rot(39, "abc") === rot(13, "abc"));
@@ -983,5 +1161,176 @@ group("compliance bundle (SOC2 export)");
   try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
 }
 
-console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
-process.exit(fail ? 1 : 0);
+{
+  const { buildRepoMap, renderRepoMap, extractSymbols, isSourceFile, scoreFile, findSymbol } = require("../lib/nexus/repo-map");
+  // symbol extraction per language
+  eq("js: function + class + arrow const", extractSymbols("a.js", "export function foo(){}\nclass Bar{}\nconst baz = () => 1\n").map((s) => s.kind + ":" + s.name), ["fn:foo", "class:Bar", "fn:baz"]);
+  eq("py: def + class with line numbers", extractSymbols("x.py", "import os\n\ndef run(x):\n    pass\nclass Widget:\n    pass\n").map((s) => s.kind + ":" + s.name + "@" + s.line), ["fn:run@3", "class:Widget@5"]);
+  eq("go: func + type struct", extractSymbols("m.go", "func main(){}\ntype Server struct{}\nfunc (s *Server) Do(){}\n").map((s) => s.kind + ":" + s.name), ["fn:main", "type:Server", "fn:Do"]);
+  eq("ts: interface + type alias beyond js", extractSymbols("t.ts", "interface Opt{}\ntype Id = string\nfunction q(){}\n").map((s) => s.kind + ":" + s.name), ["type:Opt", "type:Id", "fn:q"]);
+  eq("unknown extension yields no symbols", extractSymbols("data.bin", "func x(){}"), []);
+  ok("dedups repeated names", extractSymbols("a.js", "function foo(){}\nfunction foo(){}\n").length === 1);
+  ok("skips absurdly long (minified) lines", extractSymbols("a.js", "function keep(){}\n" + "x".repeat(500) + "function skip(){}\n").length === 1);
+  // ignore rules
+  ok("node_modules is not a source file", !isSourceFile("node_modules/x/index.js"));
+  ok("lockfile is not a source file", !isSourceFile("package-lock.json"));
+  ok("minified bundle is not a source file", !isSourceFile("dist/app.min.js"));
+  ok("binary by extension is not a source file", !isSourceFile("assets/logo.png"));
+  ok("plain source file is kept", isSourceFile("src/core/game.js"));
+  // ranking: an entry point with symbols beats a deep test file
+  ok("entry point outranks a test file", scoreFile({ path: "index.js", symbols: [{}, {}] }) > scoreFile({ path: "src/deep/nested/util.test.js", symbols: [{}, {}] }));
+  // full build + render
+  const files = [
+    { path: "./src/index.js", content: "export function main(){ return 1 }\nclass App {}\n" },
+    { path: "node_modules/lib/a.js", content: "function ignored(){}" },
+    { path: "package-lock.json", content: "{}" },
+    { path: "test/index.test.js", content: "function testThing(){}" },
+    { path: "src/util.py", content: "def helper():\n    pass\n" },
+  ];
+  const map = buildRepoMap(files);
+  eq("build ignores node_modules + lockfiles", map.fileCount, 3);
+  ok("counts symbols across languages", map.symbolCount === 4);
+  ok("languages tallied", map.languages.js === 2 && map.languages.py === 1);
+  eq("normalizes ./ prefix and ranks entry point first", map.files[0].path, "src/index.js");
+  const txt = renderRepoMap(map, { maxFiles: 10, maxSymbols: 5 });
+  ok("render has header + entry file + symbol", /Repository map: 3 source files/.test(txt) && txt.includes("src/index.js") && txt.includes("main"));
+  ok("render marks classes/types with *", txt.includes("App*"));
+  eq("empty map renders a placeholder", renderRepoMap(buildRepoMap([])), "(empty repository map)");
+  ok("deterministic output", renderRepoMap(buildRepoMap(files)) === renderRepoMap(buildRepoMap(files)));
+  // symbol navigation
+  const m2 = buildRepoMap([
+    { path: "src/a.js", content: "function handleRequest(){}\nfunction other(){}\n" },
+    { path: "src/b.js", content: "const handleRequestRetry = () => {}\n" },
+  ]);
+  eq("findSymbol exact def first", findSymbol(m2, "handleRequest")[0], { path: "src/a.js", name: "handleRequest", kind: "fn", line: 1 });
+  ok("findSymbol substring is ranked after exact", (() => { const r = findSymbol(m2, "handleRequest"); return r.length === 2 && r[1].name === "handleRequestRetry"; })());
+  eq("findSymbol is case-insensitive", findSymbol(m2, "HANDLEREQUEST")[0].name, "handleRequest");
+  eq("findSymbol miss returns empty", findSymbol(m2, "nope"), []);
+  ok("findSymbol ignores 1-2 char fuzzy noise", findSymbol(m2, "h").length === 0);
+}
+
+{
+  const { applyEdits, applyEditsFlexible, locateFlexible, parsePatch, applyHunks, applyPatch } = require("../lib/nexus/edit");
+  // atomic multi-edit
+  eq("multi-edit applies in order", applyEdits("a b c", [{ find: "a", replace: "x" }, { find: "c", replace: "z" }]).content, "x b z");
+  ok("multi-edit is atomic: one bad edit touches nothing", (() => { const r = applyEdits("a b c", [{ find: "a", replace: "x" }, { find: "ZZZ", replace: "z" }]); return !r.ok && /not present/.test(r.error); })());
+  ok("ambiguous find without replaceAll is an error", !applyEdits("a a a", [{ find: "a", replace: "x" }]).ok);
+  eq("replaceAll replaces every occurrence", applyEdits("a a a", [{ find: "a", replace: "x", replaceAll: true }]).content, "x x x");
+  ok("identical find/replace rejected", !applyEdits("abc", [{ find: "b", replace: "b" }]).ok);
+  ok("empty edits list rejected", !applyEdits("abc", []).ok);
+  // flexible (whitespace-insensitive) single-match fallback
+  const src = "function f() {\n    return   1;\n}\n";
+  const fx = applyEditsFlexible(src, [{ find: "  return 1;", replace: "    return 2;" }]);
+  ok("flexible match applies when only whitespace differs", fx.ok && fx.content.includes("return 2;") && fx.applied[0].mode === "flexible");
+  ok("exact path is preferred and marked exact", (() => { const r = applyEditsFlexible("hello world", [{ find: "world", replace: "there" }]); return r.ok && r.content === "hello there" && r.applied[0].mode === "exact"; })());
+  ok("flexible refuses when the block is ambiguous", (() => { const r = applyEditsFlexible("x=1\nx=1\n", [{ find: " x = 1 ", replace: "x=2" }]); return !r.ok; })());
+  eq("locateFlexible finds a unique indentation-variant block", locateFlexible("a\n   foo()\nb", "foo()").count, 1);
+  eq("locateFlexible reports missing", locateFlexible("a\nb\n", "zzz").count, 0);
+  // unified diff
+  const patch = ["--- a/f.js", "+++ b/f.js", "@@ -1,3 +1,3 @@", " line1", "-line2", "+LINE2", " line3"].join("\n");
+  const pf = parsePatch(patch);
+  eq("parsePatch: one file", pf.length, 1);
+  eq("parsePatch: file name", pf[0].file, "f.js");
+  eq("apply single-file patch anchors on context despite line drift", applyPatch("pre\nline1\nline2\nline3\npost\n", patch).content, "pre\nline1\nLINE2\nline3\npost\n");
+  ok("patch context-not-found is an error", !applyPatch("totally different\n", patch).ok);
+  ok("multi-file patch is parsed into two files", parsePatch(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@", "-a", "+b", "diff --git a/y b/y", "--- a/y", "+++ b/y", "@@", "-c", "+d"].join("\n")).length === 2);
+  eq("applyHunks flexible-anchors a hunk whose context indentation differs", applyHunks("  keep\n    old\n  tail\n", [{ before: ["keep", "old"], after: ["keep", "new"] }]).content, "  keep\n  new\n  tail\n");
+}
+
+{
+  const { detectProjectCommands, pickVerify, detectPackageManager } = require("../lib/nexus/verify");
+  const pj = (obj) => ({ "package.json": JSON.stringify(obj) });
+  eq("npm test from package.json scripts", detectProjectCommands(["package.json"], pj({ scripts: { test: "node t.js", build: "tsc" } })).test, "npm test");
+  eq("pnpm run build when pnpm lock present", detectProjectCommands(["package.json", "pnpm-lock.yaml"], pj({ scripts: { build: "vite build" } })).build, "pnpm run build");
+  eq("yarn test invocation", detectProjectCommands(["package.json", "yarn.lock"], pj({ scripts: { test: "jest" } })).test, "yarn test");
+  eq("tsconfig implies a typecheck command", detectProjectCommands(["package.json", "tsconfig.json"], pj({ scripts: {} })).typecheck, "npx tsc --noEmit");
+  eq("python: pytest from pyproject", detectProjectCommands(["pyproject.toml"], {}).test, "pytest -q");
+  eq("python: pytest from a tests dir", detectProjectCommands(["tests", "app.py"], {}).test, "pytest -q");
+  eq("rust: cargo test + build", (() => { const c = detectProjectCommands(["Cargo.toml"], {}); return c.test + "|" + c.build; })(), "cargo test|cargo build");
+  eq("go: test/build/vet", (() => { const c = detectProjectCommands(["go.mod"], {}); return [c.test, c.build, c.lint].join(","); })(), "go test ./...,go build ./...,go vet ./...");
+  eq("make test only when target exists", detectProjectCommands(["Makefile"], { "Makefile": "build:\n\tcc x\ntest:\n\t./t\n" }).test, "make test");
+  ok("make with no test target yields no test", !detectProjectCommands(["Makefile"], { "Makefile": "all:\n\tcc x\n" }).test);
+  eq("package.json wins over python when both present", detectProjectCommands(["package.json", "pyproject.toml"], pj({ scripts: { test: "x" } })).test, "npm test");
+  eq("pickVerify prefers test over build", pickVerify({ build: "make", test: "npm test" }), { kind: "test", cmd: "npm test" });
+  eq("pickVerify falls back to build", pickVerify({ build: "cargo build", lint: "x" }), { kind: "build", cmd: "cargo build" });
+  eq("pickVerify null when nothing detected", pickVerify({}), null);
+  eq("package manager detection", [detectPackageManager(["yarn.lock"]), detectPackageManager(["pnpm-lock.yaml"]), detectPackageManager([])].join(","), "yarn,pnpm,npm");
+  eq("empty project detects nothing", detectProjectCommands([], {}), {});
+}
+
+// ===================== native tool-calling (structured) =====================
+{
+  const NT = require("../lib/nexus/native-tools");
+  // provider tool-spec shapes
+  const a = NT.toAnthropicTools(["read_file"])[0];
+  eq("anthropic tool spec shape", [a.name, !!a.input_schema, a.input_schema.type, a.input_schema.required[0]], ["read_file", true, "object", "path"]);
+  const o = NT.toOpenAITools(["run_command"])[0];
+  eq("openai tool spec shape", [o.type, o.function.name, o.function.parameters.required[0]], ["function", "run_command", "command"]);
+  ok("ollama tools == openai tools shape", JSON.stringify(NT.toOllamaTools(["read_file"])) === JSON.stringify(NT.toOpenAITools(["read_file"])));
+  ok("buildToolList defaults to all built-ins", NT.buildToolList().length === Object.keys(NT.TOOL_SCHEMAS).length);
+  ok("MCP tool with its own schema passes through", NT.toOpenAITools([{ name: "mcp__x__y", description: "d", input_schema: { type: "object", properties: { q: {} } } }])[0].function.parameters.properties.q !== undefined);
+  // safeArgs: object / json string / garbage / array
+  eq("safeArgs object", NT.safeArgs({ path: "a" }), { path: "a" });
+  eq("safeArgs json string", NT.safeArgs('{"path":"a"}'), { path: "a" });
+  eq("safeArgs garbage -> {}", NT.safeArgs("not json"), {});
+  eq("safeArgs array -> items", NT.safeArgs([1, 2]), { items: [1, 2] });
+  // reply parsing per provider -> one shape
+  eq("parse ollama tool_call (args object)", NT.parseOllamaReply({ message: { content: "", tool_calls: [{ function: { name: "read_file", arguments: { path: "a.js" } } }] } }).toolCalls[0], { id: "call_0", name: "read_file", args: { path: "a.js" } });
+  eq("parse openai tool_call (args json string)", NT.parseOpenAIReply({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "x", function: { name: "run_command", arguments: '{"command":"ls"}' } }] } }] }).toolCalls[0], { id: "x", name: "run_command", args: { command: "ls" } });
+  eq("parse anthropic tool_use", NT.parseAnthropicReply({ stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu", name: "verify", input: {} }] }).toolCalls[0], { id: "tu", name: "verify", args: {} });
+  const fin = NT.parseAnthropicReply({ stop_reason: "end_turn", content: [{ type: "text", text: "all set" }] });
+  eq("text-only reply is done", [fin.text, fin.toolCalls.length, fin.done], ["all set", 0, true]);
+  eq("normalizeReply routes by provider", NT.normalizeReply("openai", { choices: [{ message: { content: "hi" } }] }).text, "hi");
+  // follow-up message builders
+  const at = NT.anthropicAssistantTurn("thinking", [{ id: "t1", name: "read_file", args: { path: "a" } }]);
+  eq("anthropic assistant turn has text + tool_use", [at.role, at.content[0].type, at.content[1].type, at.content[1].id], ["assistant", "text", "tool_use", "t1"]);
+  eq("anthropic tool results shape", NT.anthropicToolResults([{ id: "t1", content: "out" }]).content[0], { type: "tool_result", tool_use_id: "t1", content: "out", is_error: false });
+  const oa = NT.openaiAssistantTurn("", [{ id: "c1", name: "list_dir", args: { path: "." } }]);
+  eq("openai assistant turn tool_calls[].function.arguments is a string", typeof oa.tool_calls[0].function.arguments, "string");
+  eq("openai tool result shape", NT.openaiToolResult("c1", "out"), { role: "tool", tool_call_id: "c1", content: "out" });
+}
+
+// ===================== default local coder (qwen2.5-coder ships with Nexus) =====================
+{
+  const { chooseCoderToPull, DEFAULT_CODER, pickCoderModel } = require("../lib/nexus/ollama");
+  eq("default coder is qwen2.5-coder", DEFAULT_CODER, "qwen2.5-coder");
+  eq("no models installed -> pull the default coder", chooseCoderToPull([]), "qwen2.5-coder");
+  ok("qwen2.5-coder installed -> pull nothing", chooseCoderToPull(["qwen2.5-coder:latest"]) === null);
+  ok("gpt-oss installed -> pull nothing", chooseCoderToPull(["gpt-oss:20b"]) === null);
+  ok("darknode persona counts as capable -> pull nothing", chooseCoderToPull(["darknode-13b:latest"]) === null);
+  eq("only a general chat model -> still pull the coder", chooseCoderToPull(["llama3.1:8b", "phi3:mini"]), "qwen2.5-coder");
+  eq("pickCoderModel returns qwen2.5-coder when it's what's installed", pickCoderModel(["qwen2.5-coder:7b"]), "qwen2.5-coder:7b");
+}
+
+group("auto-update (Claude-Code-style self-update)");
+ok("semverGt: patch/minor/major", semverGt("2.46.0", "2.45.0") && semverGt("2.10.0", "2.9.0") && semverGt("3.0.0", "2.99.9"));
+ok("semverGt: not greater when equal or older", !semverGt("2.45.0", "2.45.0") && !semverGt("2.45.0", "2.46.0"));
+ok("semverGt: shorter version, numeric only", semverGt("2.45.1", "2.45") && !semverGt("2.45", "2.45.0"));
+ok("autoUpdateMode: default on; unknown -> on", autoUpdateMode(null) === "on" && autoUpdateMode({}) === "on" && autoUpdateMode({ autoUpdate: "weird" }) === "on");
+ok("autoUpdateMode: honours check/off", autoUpdateMode({ autoUpdate: "check" }) === "check" && autoUpdateMode({ autoUpdate: "off" }) === "off");
+ok("shouldCheck: off disables; offline disables", !shouldCheck({ autoUpdate: "off" }, 1e12, false) && !shouldCheck({ autoUpdate: "on" }, 1e12, true));
+ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldCheck({}, 1e12, false) && !shouldCheck({ lastUpdateCheck: 1e12 - 1000 }, 1e12, false) && shouldCheck({ lastUpdateCheck: 1e12 - 5 * 3600 * 1000 }, 1e12, false));
+
+(async () => {
+  // native tool loop orchestrator (async, dependency-injected fake model) — proves the
+  // edit->run->observe cycle: run tools, feed results back, then finalize.
+  try {
+    const NT = require("../lib/nexus/native-tools");
+    let turn = 0;
+    const chat = async (msgs) => {
+      turn++;
+      return turn === 1
+        ? { provider: "ollama", body: { message: { content: "", tool_calls: [
+            { function: { name: "read_file", arguments: { path: "a" } } },
+            { function: { name: "list_dir", arguments: {} } },
+          ] } } }
+        : { provider: "ollama", body: { message: { content: "saw " + msgs.filter((m) => m.role === "tool").length + " results" } } };
+    };
+    const r = await NT.runNativeToolLoop({ chat, dispatch: async (n, args) => n + ":" + JSON.stringify(args), tools: [], maxSteps: 5 });
+    ok("native loop: 2 tools then finalizes with results fed back", r.steps === 2 && r.calls.length === 2 && r.finalText === "saw 2 results" && r.calls[0].result === 'read_file:{"path":"a"}');
+    const stopped = await NT.runNativeToolLoop({ chat: async () => ({ provider: "ollama", body: { message: { tool_calls: [{ function: { name: "x", arguments: {} } }] } } }), dispatch: async () => "y", tools: [], maxSteps: 3 });
+    ok("native loop: respects maxSteps when model never stops", stopped.hitLimit === true && stopped.calls.length === 3);
+  } catch (e) { ok("native loop test threw: " + (e && e.message), false); }
+  console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
+  process.exit(fail ? 1 : 0);
+})();

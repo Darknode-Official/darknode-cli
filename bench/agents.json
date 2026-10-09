@@ -1,0 +1,26 @@
+[
+  {
+    "name": "nexus-local",
+    "enabled": true,
+    "note": "Nexus's OWN loop on a local Ollama model (no API key, fully offline). Set DARKNODE_MODEL to pin a model, e.g. qwen2.5-coder.",
+    "cmd": "darknode nexus --print -e ollama {PROMPT}"
+  },
+  {
+    "name": "nexus-claude",
+    "enabled": false,
+    "note": "Nexus orchestrating Claude Code. Needs Claude Code installed + authed (network). This is the apples-to-apples 'Nexus on the same model as Claude Code'.",
+    "cmd": "darknode nexus --print -e claude {PROMPT}"
+  },
+  {
+    "name": "claude-code",
+    "enabled": false,
+    "note": "Plain Claude Code, no Nexus. Needs `claude` installed + authed (network).",
+    "cmd": "claude -p {PROMPT} --dangerously-skip-permissions"
+  },
+  {
+    "name": "codex",
+    "enabled": false,
+    "note": "OpenAI Codex CLI, no Nexus. Needs `codex` installed + authed (network). Adjust the exec flags to your codex version.",
+    "cmd": "codex exec --full-auto {PROMPT}"
+  }
+]

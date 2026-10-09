@@ -1,0 +1,1 @@
+{ "id": "fix-stack", "prompt": "The Stack class in stack.js has a bug: peek() should return the top (most recently pushed) item without removing it, but it returns undefined. Fix peek() so the tests pass. Verify with: node test.js", "timeout": 240 }

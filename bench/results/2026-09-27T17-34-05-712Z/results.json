@@ -1,0 +1,17 @@
+{
+  "runId": "2026-09-27T17-34-05-712Z",
+  "agents": [
+    "nexus-local"
+  ],
+  "results": [
+    {
+      "agent": "nexus-local",
+      "task": "fix-range",
+      "pass": false,
+      "seconds": 0.1,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 1
+    }
+  ]
+}

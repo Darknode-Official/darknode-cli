@@ -1,0 +1,11 @@
+{
+  "id": "feat-health-endpoint",
+  "axis": "feature-implementation",
+  "type": "command",
+  "provenance": "authored 2026-10-04 for this harness; unpublished",
+  "contamination": "private, newly authored; post-dates all engine training cutoffs",
+  "setup": "mkdir -p app && printf 'const routes = {};\\nmodule.exports = { routes };\\n' > app/server.js",
+  "prompt": "In app/server.js, add a GET /health route to the routes object so routes['/health'] returns the string 'ok'. Keep module.exports = { routes }.",
+  "verify": "node -e \"const {routes}=require('./app/server.js'); const h=routes['/health']||routes['GET /health']; if(h==null) process.exit(1); const r=(typeof h==='function')?h():h; process.exit(String(r).includes('ok')?0:1)\"",
+  "timeoutMs": 300000
+}

@@ -1,0 +1,1 @@
+{ "id": "impl-fizzbuzz", "prompt": "Implement fizzbuzz(n) in fizzbuzz.js. It must return an array of length n where index i-1 holds the value for number i (1..n): the number itself as a string, or \"Fizz\" if divisible by 3, \"Buzz\" if divisible by 5, \"FizzBuzz\" if divisible by both. Verify with: node test.js", "timeout": 240 }

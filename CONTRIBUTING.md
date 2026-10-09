@@ -15,8 +15,8 @@ npm test
 ## Before you open a PR
 
 1. `npm test` is green (add assertions in `test/run.js` for new pure logic).
-2. `node --check sentinel.js lib/*.js test/*.js` passes.
-3. The CLI still boots: `node sentinel.js --version`.
+2. `node --check darknode-legacy.js lib/*.js test/*.js` passes.
+3. The CLI still boots: `node darknode-legacy.js --version`.
 
 CI runs all three across Node 18/20/22.
 
@@ -27,7 +27,7 @@ CI runs all three across Node 18/20/22.
 - New cost/pricing rule -> `lib/pricing.js` (keep specific regexes before broad).
 - Guardrail / audit logic -> `lib/policy.js`; secret/danger detection -> `lib/security.js`.
 - Put pure, side-effect-free logic in `lib/` with a test; UI/session-coupled code
-  stays in `sentinel.js`.
+  stays in `darknode-legacy.js`.
 
 See `ARCHITECTURE.md` for the module map and design invariants.
 
