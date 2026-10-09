@@ -1312,6 +1312,65 @@ ok("shouldCheck: off disables; offline disables", !shouldCheck({ autoUpdate: "of
 ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldCheck({}, 1e12, false) && !shouldCheck({ lastUpdateCheck: 1e12 - 1000 }, 1e12, false) && shouldCheck({ lastUpdateCheck: 1e12 - 5 * 3600 * 1000 }, 1e12, false));
 
 (async () => {
+  // batch tool — many read-only lookups in ONE call; reuses the real dispatcher (injected
+  // here as a fake), labels every result, caps op count + output, and isolates bad ops.
+  group("batch (one call, many read-only lookups)");
+  try {
+    const BA = require("../lib/nexus/batch");
+    // a fake read-only dispatcher standing in for deviceTool's read_file/search/find/list_dir
+    const fakeDispatch = async (name, args) => {
+      if (name === "read_file") return args.path === "missing" ? { error: "ENOENT" } : { content: "L1\nL2\nL3\nL4\nL5" };
+      if (name === "search") return { matches: ["a.js:1: hit", "b.js:9: hit"] };
+      if (name === "find") return { files: ["x.js", "y.js"] };
+      if (name === "list_dir") return { items: ["src/", "README.md"] };
+      return { error: "unexpected tool " + name };
+    };
+    const multi = await BA.runBatch([
+      { op: "read", path: "a.js" },
+      { op: "search", pattern: "TODO" },
+      { op: "glob", glob: "**/*.js" },
+      { op: "list", path: "src" },
+    ], fakeDispatch);
+    ok("batch runs several ops and returns one result per op", multi.ran === 4 && multi.results.length === 4);
+    ok("batch labels each result with its index + op kind", multi.results.map((r) => r.op).join(",") === "read,search,glob,list" && multi.results.every((r, i) => r.index === i));
+    ok("batch read returns file content; search/glob/list join their lists", /L1\nL2/.test(multi.results[0].output) && /a\.js:1: hit/.test(multi.results[1].output) && multi.results[2].output === "x.js\ny.js" && multi.results[3].output === "src/\nREADME.md");
+
+    // read line-range slicing
+    const ranged = await BA.runBatch([{ op: "read", path: "a.js", start: 2, end: 3 }], fakeDispatch);
+    ok("batch read honours a start/end line range", ranged.results[0].output === "L2\nL3");
+
+    // op cap enforced
+    const many = Array.from({ length: 25 }, () => ({ op: "list", path: "." }));
+    const capped = await BA.runBatch(many, fakeDispatch, { maxOps: 20 });
+    ok("batch enforces the op cap and reports dropped ops", capped.ran === 20 && capped.opsDropped === 5 && capped.ops === 25);
+
+    // output-size cap enforced (tiny budget so a single result overflows)
+    const bigDispatch = async () => ({ content: "Z".repeat(5000) });
+    const sized = await BA.runBatch([{ op: "read", path: "big1" }, { op: "read", path: "big2" }], bigDispatch, { maxOpChars: 4000, maxTotalChars: 4500 });
+    ok("batch caps per-op output length", sized.results[0].output.length === 4000 && sized.results[0].truncated === true);
+    ok("batch caps total output across ops", (sized.results[0].output.length + sized.results[1].output.length) <= 4500 && sized.truncated === true);
+
+    // an invalid op is reported without failing the whole batch
+    const mixed = await BA.runBatch([
+      { op: "read", path: "a.js" },
+      { op: "run_command", command: "rm -rf /" },
+      { op: "write", path: "x", content: "y" },
+      { op: "search", pattern: "x" },
+    ], fakeDispatch);
+    ok("batch isolates an invalid/unsafe op and still runs the valid ones", mixed.ran === 4 && mixed.results[0].output && /unknown or non-read-only/.test(mixed.results[1].error) && /unknown or non-read-only/.test(mixed.results[2].error) && mixed.results[3].output);
+    ok("batch never executes a non-read-only op (write/exec rejected pre-dispatch)", !BA.OP_ALIASES.run_command && !BA.OP_ALIASES.write && !BA.OP_ALIASES.write_file);
+
+    // a dispatcher error for one op is reported inline, not thrown
+    const errd = await BA.runBatch([{ op: "read", path: "missing" }, { op: "read", path: "a.js" }], fakeDispatch);
+    ok("batch surfaces a per-op dispatcher error without aborting the batch", errd.results[0].error === "ENOENT" && /L1/.test(errd.results[1].output));
+
+    // batchTool wiring entry validates its args
+    const bad = await BA.batchTool({}, ".", fakeDispatch);
+    ok("batchTool rejects a missing/empty ops array", bad && /non-empty 'ops'/.test(bad.error));
+    const viaTool = await BA.batchTool({ ops: [{ op: "list", path: "." }] }, ".", fakeDispatch);
+    ok("batchTool runs ops through the injected dispatcher", viaTool.ran === 1 && viaTool.results[0].output === "src/\nREADME.md");
+  } catch (e) { ok("batch test threw: " + (e && e.message), false); }
+
   // agentic browser (CDP WebSocket client) — frame codec, target selection, dispatch shape.
   try {
     const B = require("../lib/nexus/browser");
