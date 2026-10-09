@@ -1371,6 +1371,85 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("batchTool runs ops through the injected dispatcher", viaTool.ran === 1 && viaTool.results[0].output === "src/\nREADME.md");
   } catch (e) { ok("batch test threw: " + (e && e.message), false); }
 
+  // loop guard — detects the agent getting stuck (same action repeated/failing, or A,B,A,B
+  // oscillation), nudges first, then breaks the turn. Pure + deterministic.
+  group("loop guard (stuck-loop detection)");
+  try {
+    const LG = require("../lib/nexus/loopguard");
+    // signature is stable for the same action and distinguishes different args / tools.
+    const s1 = LG.signature("run_command", { command: "npm test" });
+    const s2 = LG.signature("run_command", { command: "npm test" });
+    const s3 = LG.signature("run_command", { command: "npm run build" });
+    const s4 = LG.signature("read_file", { path: "a.js" });
+    ok("signature is identical for the same tool+args", s1 === s2);
+    ok("signature differs when the command differs", s1 !== s3);
+    ok("signature differs across tools", s1 !== s4);
+    ok("signature hashes long content so near-identical bodies differ", LG.signature("write_file", { path: "x", content: "A".repeat(200) }) !== LG.signature("write_file", { path: "x", content: "B".repeat(200) }));
+
+    // repeat-FAILURE: same action failing twice -> nudge; a third failure -> break.
+    const g1 = LG.makeLoopGuard();
+    const sg = g1.signature("run_command", { command: "pytest" });
+    ok("first failure is not flagged", g1.note(sg, false) === null);
+    const n1 = g1.note(sg, false);
+    ok("second identical failure triggers a nudge", n1 && n1.action === "nudge" && n1.kind === "repeat-failure");
+    const b1 = g1.note(sg, false);
+    ok("a further identical failure after the nudge breaks the turn", b1 && b1.action === "break" && b1.kind === "repeat-failure");
+
+    // repeat of a (successful) action 3x -> nudge, then break.
+    const g2 = LG.makeLoopGuard();
+    const sr = g2.signature("read_file", { path: "same.js" });
+    ok("1st repeat not flagged", g2.note(sr, true) === null);
+    ok("2nd repeat not flagged", g2.note(sr, true) === null);
+    const r3 = g2.note(sr, true);
+    ok("3rd identical action nudges as a repeat", r3 && r3.action === "nudge" && r3.kind === "repeat");
+    const r4 = g2.note(sr, true);
+    ok("4th identical action breaks the turn", r4 && r4.action === "break" && r4.kind === "repeat");
+
+    // oscillation A,B,A,B -> nudge.
+    const g3 = LG.makeLoopGuard();
+    const A = "toolA|path=a", B = "toolB|path=b";
+    g3.note(A, true); g3.note(B, true); g3.note(A, true);
+    const osc = g3.note(B, true);
+    ok("A,B,A,B oscillation is detected and nudged", osc && osc.kind === "oscillation" && osc.action === "nudge");
+
+    // distinct productive actions never trip the guard.
+    const g4 = LG.makeLoopGuard();
+    const verdicts = ["read_file|path=a", "edit_file|path=a", "run_command|command=npm test", "read_file|path=b"].map((s) => g4.note(s, true));
+    ok("a sequence of distinct actions is never flagged", verdicts.every((v) => v === null));
+
+    // reset clears history + nudge memory.
+    const g5 = LG.makeLoopGuard();
+    g5.note("x", false); g5.note("x", false); g5.reset();
+    ok("reset clears state so the counter starts over", g5.note("x", false) === null);
+  } catch (e) { ok("loop guard test threw: " + (e && e.message), false); }
+
+  // stale-write guard — a full overwrite is refused if the file changed on disk since the
+  // agent last read it, so a concurrent edit isn't silently clobbered.
+  group("stale-write guard (filestate)");
+  try {
+    const FS2 = require("../lib/nexus/filestate");
+    const fg = FS2.makeFileState();
+    // never read -> never stale (nothing to clobber)
+    ok("a file the agent never read is never stale", fg.checkOverwrite("/x/a.js", "anything").stale === false);
+    // read, then overwrite with unchanged disk -> fine
+    fg.recordRead("/x/a.js", "line1\nline2");
+    ok("overwrite is allowed when disk still matches what was read", fg.checkOverwrite("/x/a.js", "line1\nline2").stale === false);
+    // disk changed since the read -> stale, with a helpful reason
+    const st = fg.checkOverwrite("/x/a.js", "line1\nCHANGED-EXTERNALLY");
+    ok("overwrite is blocked when disk drifted since the read", st.stale === true && /changed on disk/.test(st.reason));
+    // after we record our own write, our knowledge is current again -> not stale
+    fg.recordWrite("/x/a.js", "line1\nCHANGED-EXTERNALLY");
+    ok("recording a write refreshes knowledge so the next overwrite isn't flagged", fg.checkOverwrite("/x/a.js", "line1\nCHANGED-EXTERNALLY").stale === false);
+    // a file that vanished from disk -> allow (recreate)
+    ok("a file that no longer exists on disk can be recreated", fg.checkOverwrite("/x/a.js", null).stale === false);
+    // hash distinguishes same-length different content and same-prefix content
+    ok("hash distinguishes equal-length but different content", FS2.hashStr("AAAA") !== FS2.hashStr("AAAB"));
+    ok("hash includes length so a prefix isn't equal to its extension", FS2.hashStr("AB") !== FS2.hashStr("ABAB"));
+    // forget drops tracking for a path
+    fg.recordRead("/x/b.js", "z"); fg.forget("/x/b.js");
+    ok("forget() stops guarding a path", fg.checkOverwrite("/x/b.js", "different").stale === false);
+  } catch (e) { ok("stale-write guard test threw: " + (e && e.message), false); }
+
   // agentic browser (CDP WebSocket client) — frame codec, target selection, dispatch shape.
   try {
     const B = require("../lib/nexus/browser");
