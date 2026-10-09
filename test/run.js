@@ -1780,6 +1780,86 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("explainBreakTool refuses with no timeline to attribute against", noCps && /no checkpoint timeline/.test(noCps.error));
   } catch (e) { ok("explain-break test threw: " + (e && e.message), false); }
 
+  // shrink — delta-debug (ddmin) the agent's own edits to the minimal breaking subset of files.
+  // The pure ddmin engine is tested with a synthetic oracle; orchestration with a fake git world.
+  group("shrink (delta-debug the agent's edits to the minimal breaking set)");
+  try {
+    const SH = require("../lib/nexus/shrink");
+
+    // --- splitChunks partitions evenly and loses nothing ---
+    const chunks = SH.splitChunks(["a", "b", "c", "d", "e"], 2);
+    ok("splitChunks splits into n chunks covering every element once", chunks.length === 2 && chunks.flat().join("") === "abcde");
+
+    // --- pure ddmin: failure requires a specific subset of units to be present ---
+    const needs = (required) => async (subset) => required.every((r) => subset.includes(r)) ? "fail" : "pass";
+    const r1 = await SH.ddmin(["a", "b", "c", "d", "e", "f", "g", "h"], needs(["c", "f"]));
+    ok("ddmin isolates the exact minimal failing subset", JSON.stringify(r1.minimal.slice().sort()) === JSON.stringify(["c", "f"]));
+    ok("ddmin result is 1-minimal (every unit is load-bearing)", r1.minimal.length === 2);
+    ok("ddmin memoises so it never explodes past O(n^2) tests", r1.tests <= (8 * 8 + 3 * 8));
+
+    // single required unit
+    const r2 = await SH.ddmin(["a", "b", "c", "d"], needs(["b"]));
+    ok("ddmin finds a single-file culprit", JSON.stringify(r2.minimal) === JSON.stringify(["b"]));
+
+    // when ALL units are required, ddmin returns the whole set
+    const r3 = await SH.ddmin(["a", "b", "c"], needs(["a", "b", "c"]));
+    ok("ddmin returns the full set when every change is needed", r3.minimal.length === 3);
+
+    // ddmin is deterministic: identical oracle -> identical minimal result
+    const d1 = await SH.ddmin(["a", "b", "c", "d", "e", "f"], needs(["b", "e"]));
+    const d2 = await SH.ddmin(["a", "b", "c", "d", "e", "f"], needs(["b", "e"]));
+    ok("ddmin is deterministic", JSON.stringify(d1.minimal) === JSON.stringify(d2.minimal));
+
+    // "unresolved" (a different failure from an invalid subset) must NOT count as reproducing
+    const picky = async (subset) => { if (!subset.includes("x")) return "pass"; if (subset.length > 2) return "unresolved"; return "fail"; };
+    const r4 = await SH.ddmin(["x", "y", "z", "w"], picky);
+    ok("ddmin ignores unresolved (different-failure) subsets and still minimises", r4.minimal.includes("x") && r4.minimal.length <= 2);
+
+    // --- sameFailure signature matching ---
+    ok("sameFailure matches same category + overlapping file", SH.sameFailure({ category: "test-failure", line: "at src/a.js:4" }, { category: "test-failure", line: "src/a.js fails" }) === true);
+    ok("sameFailure rejects a different category", SH.sameFailure({ category: "syntax-error", line: "a.js" }, { category: "test-failure", line: "a.js" }) === false);
+
+    // --- orchestration with a fake git world: the break needs files B and D at their new version ---
+    const cps = [
+      { tree: "base", label: "baseline", ts: 1, paths: ["A.js"] },
+      { tree: "t1", label: "turn1", ts: 2, paths: ["B.js", "C.js"] },
+      { tree: "t2", label: "turn2", ts: 3, paths: ["D.js", "E.js"] },
+    ];
+    const breakingSet = new Set(["B.js", "D.js"]);
+    let current = new Set();          // files currently at their NEW (current) version
+    const fakeDeps = {
+      loadCheckpoints: () => cps,
+      detectTest: () => "npm test",
+      snapshot: () => "SNAP",
+      restore: (tree, paths) => { if (tree === "base") { for (const p of paths) current.delete(p); } else { for (const p of paths) current.add(p); } return true; },
+      runTest: async () => { const reproduces = [...breakingSet].every((f) => current.has(f)); return reproduces ? { code: 1, output: "AssertionError in test (feature regressed)" } : { code: 0, output: "ok" }; },
+      diagnose: () => ({ category: "test-failure", line: "" }),
+    };
+    const res = await SH.shrinkTool({}, "/repo", fakeDeps);
+    ok("shrinkTool isolates the minimal breaking file set", res.status === "found" && JSON.stringify(res.minimal.slice().sort()) === JSON.stringify(["B.js", "D.js"]));
+    ok("shrinkTool reports the innocent (droppable) changed files", res.innocent.slice().sort().join(",") === "A.js,C.js,E.js");
+    ok("shrinkTool restores the working tree to the current snapshot at the end", current.has("B.js") && current.has("D.js") && res.restored === true);
+    ok("shrinkTool summarises the minimal set and the test command", /Minimal breaking change set/.test(res.summary) && res.testCommand === "npm test");
+
+    // passing current state -> nothing to shrink
+    const breakingNone = new Set(["ZZ"]); // never reproduces
+    let cur2 = new Set();
+    const passDeps = Object.assign({}, fakeDeps, { restore: (tree, paths) => { if (tree === "base") { for (const p of paths) cur2.delete(p); } else { for (const p of paths) cur2.add(p); } return true; }, runTest: async () => ([...breakingNone].every((f) => cur2.has(f)) ? { code: 1, output: "x" } : { code: 0, output: "ok" }) });
+    const resPass = await SH.shrinkTool({}, "/repo", passDeps);
+    ok("shrinkTool reports nothing to shrink when the current state passes", resPass.status === "passing");
+
+    // pre-existing break (baseline already fails) -> bail
+    let cur3 = new Set();
+    const preDeps = Object.assign({}, fakeDeps, { restore: (tree, paths) => { if (tree === "base") { for (const p of paths) cur3.delete(p); } else { for (const p of paths) cur3.add(p); } return true; }, runTest: async () => ({ code: 1, output: "AssertionError in test" }) });
+    const resPre = await SH.shrinkTool({}, "/repo", preDeps);
+    ok("shrinkTool detects a pre-existing break and bails", resPre.status === "pre-existing");
+
+    const resNoCp = await SH.shrinkTool({}, "/repo", { loadCheckpoints: () => [], restore: () => true, runTest: async () => ({ code: 1 }) });
+    ok("shrinkTool refuses with no checkpoint timeline", resNoCp && /no checkpoint timeline/.test(resNoCp.error));
+    const resCap = await SH.shrinkTool({ max: 1 }, "/repo", { loadCheckpoints: () => cps, restore: () => true, runTest: async () => ({ code: 1 }), detectTest: () => "npm test" });
+    ok("shrinkTool refuses when there are more changed files than the cap", resCap && /too many changed files/.test(resCap.error));
+  } catch (e) { ok("shrink test threw: " + (e && e.message), false); }
+
   // agentic browser (CDP WebSocket client) — frame codec, target selection, dispatch shape.
   try {
     const B = require("../lib/nexus/browser");
