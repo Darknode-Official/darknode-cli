@@ -2483,7 +2483,7 @@ function nexusTui(engine, cwd, nexusMd) {
       const ckey = cacheOn ? cacheKey(engine, sess.model || engine, promptText) : null;
       if (ckey) { const hit = cacheGet(cwd, ckey, CACHE_TTL); if (hit && hit.readonly && hit.text) {
         const blk = { role: "nexus", items: [{ type: "text", full: hit.text, shown: hit.text.length }] };
-        blk.summary = green("⚡ cache hit — free") + gray("  ·  saved " + ((PAID[engine] && hit.cost) ? "$" + hit.cost.toFixed(4) + " · " : "") + "↑" + fmtK(hit.inTok || 0) + " ↓" + fmtK(hit.outTok || 0) + " tok  ·  /cache off to disable");
+        blk.summary = green("cache hit — free") + gray("  ·  saved " + ((PAID[engine] && hit.cost) ? "$" + hit.cost.toFixed(4) + " · " : "") + "↑" + fmtK(hit.inTok || 0) + " ↓" + fmtK(hit.outTok || 0) + " tok  ·  /cache off to disable");
         transcript.push(blk); impact.cachedHits++; impact.cachedSaved += (hit.cost || 0); hit.hits = (hit.hits || 0) + 1; try { cachePut(cwd, ckey, hit); } catch (_) {}
         cont = true; render(); try { saveSession(); } catch (_) {} return;
       } }
@@ -3295,7 +3295,7 @@ function nexusTui(engine, cwd, nexusMd) {
           let sel = /^\d+$/.test(selArg) ? opts[+selArg - 1] : opts.find((o) => o.name.toLowerCase().includes(selArg.toLowerCase()));
           if (!sel && selArg.toLowerCase() === "claude") sel = opts.find((o) => /^claude/.test(o.name));
           if (!sel) transcript.push({ role: "system", text: "no match for '" + selArg + "' — run " + cyan("/connect") + " to see what's available" });
-          else { sel.apply(); transcript.push({ role: "system", text: "connected → " + green(sel.name) + gray("   (" + sel.note + ")") + (sel.paid ? "\n  " + yellow("⚠ PAID — billed to your API key, not the free local engine") : "") + (sel.name === "api-model" ? "\n  " + gray("set the model with /model <name>") : "") }); }
+          else { sel.apply(); transcript.push({ role: "system", text: "connected → " + green(sel.name) + gray("   (" + sel.note + ")") + (sel.paid ? "\n  " + yellow("warning: PAID — billed to your API key, not the free local engine") : "") + (sel.name === "api-model" ? "\n  " + gray("set the model with /model <name>") : "") }); }
         }
         render();
         });
@@ -3354,7 +3354,7 @@ function nexusTui(engine, cwd, nexusMd) {
     };
     connectMcp();
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
-    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("⚠ this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export SENTINEL_TRUST_REPO=1)") });
+    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("warning: this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export SENTINEL_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
     process.stdin.on("data", (d) => { try {
       if (loading) { finishBoot(); return; }   // any key skips the intro

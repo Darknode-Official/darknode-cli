@@ -1593,18 +1593,18 @@ async function aiCoder(argv) {
       if (o.args) compact.args = o.args;
       if (o.final) compact.final = o.final;
       messages.push({ role: "assistant", content: JSON.stringify(compact) });
-      if (o.thought && !printMode) console.log("  " + gray("💭 " + o.thought.slice(0, 120)));
+      if (o.thought && !printMode) console.log("  " + gray("think: " + o.thought.slice(0, 120)));
       if (o.action === "final") {
         if (!didTool && !isChitchat(userMsg) && nudges++ < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; }
         console.log("\n  " + green("done: ") + bold(o.final || "done") + "\n"); break;
       }
       const { name, a } = normalizeToolCall(o); let result;
       try {
-        if (name === "read_file") { const t = fs.readFileSync(path.resolve(cwd, a.path), "utf8"); result = t.slice(0, lean ? 8000 : 16000); if (!printMode) console.log("  " + cyan("📖 read ") + gray(a.path)); }
+        if (name === "read_file") { const t = fs.readFileSync(path.resolve(cwd, a.path), "utf8"); result = t.slice(0, lean ? 8000 : 16000); if (!printMode) console.log("  " + cyan("read ") + gray(a.path)); }
         else if (name === "list_dir") { const d = path.resolve(cwd, a.path || "."); result = fs.readdirSync(d, { withFileTypes: true }).map((e) => (e.isDirectory() ? e.name + "/" : e.name)).slice(0, lean ? 80 : 200).join("\n"); if (!printMode) console.log("  " + cyan("ls ") + (a.path || ".")); }
         else if (name === "write_file") {
           if (!(await approve("write " + a.path))) { result = "denied"; console.log("  " + red("denied ") + a.path); }
-          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp, "utf8"); } catch (e) { if (e.code === "ENOENT") isNew = true; } fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = "ok"; console.log("  " + green("✏️  write ") + a.path + gray(" · " + String(a.content || "").split("\n").length + " lines")); }
+          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp, "utf8"); } catch (e) { if (e.code === "ENOENT") isNew = true; } fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = "ok"; console.log("  " + green("write ") + a.path + gray(" · " + String(a.content || "").split("\n").length + " lines")); }
         }
         else if (name === "edit_file") {
           const fp = path.resolve(cwd, a.path); let t;
@@ -1612,11 +1612,11 @@ async function aiCoder(argv) {
           if (t == null) { result = "error: cannot read " + a.path; }
           else if (!t.includes(a.find)) { result = "error: find text not in file"; }
           else { const occurrences = t.split(a.find).length - 1; if (occurrences > 1 && !a.replace_all) { result = "error: matches " + occurrences + " locations — add more context"; } else if (!(await approve("edit " + a.path))) { result = "denied"; console.log("  " + red("denied ") + a.path); }
-          else { fs.writeFileSync(fp, a.replace_all ? t.split(a.find).join(a.replace == null ? "" : a.replace) : t.replace(a.find, a.replace == null ? "" : a.replace)); changed.push({ path: fp, before: t, label: "edit " + a.path }); result = "ok"; console.log("  " + green("✏️  edit ") + gray(a.path)); } }
+          else { fs.writeFileSync(fp, a.replace_all ? t.split(a.find).join(a.replace == null ? "" : a.replace) : t.replace(a.find, a.replace == null ? "" : a.replace)); changed.push({ path: fp, before: t, label: "edit " + a.path }); result = "ok"; console.log("  " + green("edit ") + gray(a.path)); } }
         }
         else if (name === "run_command") {
           if (!(await approve("run: " + a.command))) { result = "denied"; console.log("  " + red("denied ") + a.command); }
-          else { console.log("  " + mag("⚡ $ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd); result = (r.code ? "exit " + r.code + "\n" : "") + (r.output || "(no output)"); if (r.output && !printMode) console.log(r.output.split("\n").slice(0, 8).map((l) => "    " + gray(l)).join("\n") + (r.output.split("\n").length > 8 ? "\n    " + gray("... +" + (r.output.split("\n").length - 8) + " more lines") : "")); }
+          else { console.log("  " + mag("$ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd); result = (r.code ? "exit " + r.code + "\n" : "") + (r.output || "(no output)"); if (r.output && !printMode) console.log(r.output.split("\n").slice(0, 8).map((l) => "    " + gray(l)).join("\n") + (r.output.split("\n").length > 8 ? "\n    " + gray("... +" + (r.output.split("\n").length - 8) + " more lines") : "")); }
         }
         else { result = "error: unknown tool " + name; }
       } catch (e) { result = "error: " + e.message; }
@@ -2079,15 +2079,15 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     let o; try { o = JSON.parse(raw); } catch (_) { messages.push({ role: "tool", content: "Reply with valid schema JSON." }); continue; }
     const compact = { action: o.action }; if (o.tool) compact.tool = o.tool; if (o.args) compact.args = o.args; if (o.final) compact.final = o.final;
     messages.push({ role: "assistant", content: JSON.stringify(compact) });
-    if (o.thought) console.log("    " + gray("💭 " + (o.thought || "").slice(0, 120)));
+    if (o.thought) console.log("    " + gray("think: " + (o.thought || "").slice(0, 120)));
     if (o.action === "final") { if (!didTool && !isChitchat(task) && step < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; } return { ok: true, output: log + "\n" + (o.final || "") }; }
     const { name, a } = normalizeToolCall(o); let result;
     try {
       if (name === "read_file") result = fs.readFileSync(path.resolve(cwd, a.path), "utf8").slice(0, 14000);
       else if (name === "list_dir") result = fs.readdirSync(path.resolve(cwd, a.path || "."), { withFileTypes: true }).map((e) => e.isDirectory() ? e.name + "/" : e.name).slice(0, 200).join("\n");
-      else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = "ok"; log += "\nwrote " + a.path; console.log("    " + green("✏️  write ") + gray(a.path)); }
-      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); if (!t.includes(a.find)) result = "error: find text not in file"; else { const occ = t.split(a.find).length - 1; if (occ > 1 && !a.replace_all) result = "error: matches " + occ + " locations — add more context"; else { fs.writeFileSync(fp, a.replace_all ? t.split(a.find).join(a.replace == null ? "" : a.replace) : t.replace(a.find, a.replace == null ? "" : a.replace)); result = "ok"; log += "\nedited " + a.path; console.log("    " + green("✏️  edit ") + gray(a.path)); } } }
-      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = "blocked: " + dg.why; console.log("    " + red("🚫 blocked: ") + dg.why); } else { console.log("    " + mag("⚡ $ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd); const _rout = compactOutput(r.output, lean ? 2000 : 4000); const _rd = diagnose(_rout, r.code, a.command); result = (r.code ? "exit " + r.code + "\n" : "") + _rout + diagAnnotate(_rd); log += "\n$ " + a.command + "\n" + r.output.slice(0, lean ? 600 : 1200); } }
+      else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = "ok"; log += "\nwrote " + a.path; console.log("    " + green("write ") + gray(a.path)); }
+      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); if (!t.includes(a.find)) result = "error: find text not in file"; else { const occ = t.split(a.find).length - 1; if (occ > 1 && !a.replace_all) result = "error: matches " + occ + " locations — add more context"; else { fs.writeFileSync(fp, a.replace_all ? t.split(a.find).join(a.replace == null ? "" : a.replace) : t.replace(a.find, a.replace == null ? "" : a.replace)); result = "ok"; log += "\nedited " + a.path; console.log("    " + green("edit ") + gray(a.path)); } } }
+      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = "blocked: " + dg.why; console.log("    " + red("blocked: ") + dg.why); } else { console.log("    " + mag("$ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd); const _rout = compactOutput(r.output, lean ? 2000 : 4000); const _rd = diagnose(_rout, r.code, a.command); result = (r.code ? "exit " + r.code + "\n" : "") + _rout + diagAnnotate(_rd); log += "\n$ " + a.command + "\n" + r.output.slice(0, lean ? 600 : 1200); } }
       else { const dr = await deviceTool(name, a, cwd); result = dr !== null ? (typeof dr === "object" ? JSON.stringify(dr) : String(dr)) : "error: unknown tool " + name; }
     } catch (e) { result = "error: " + e.message; }
     if (!(typeof result === "string" && result.startsWith("error: unknown tool"))) didTool = true;
@@ -2842,7 +2842,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const ckey = cacheOn ? cacheKey(engine, sess.model || engine, promptText) : null;
       if (ckey) { const hit = cacheGet(cwd, ckey, CACHE_TTL); if (hit && hit.readonly && hit.text) {
         const blk = { role: "nexus", items: [{ type: "text", full: hit.text, shown: hit.text.length }] };
-        blk.summary = green("⚡ cache hit — free") + gray("  ·  saved " + ((PAID[engine] && hit.cost) ? "$" + hit.cost.toFixed(4) + " · " : "") + "↑" + fmtK(hit.inTok || 0) + " ↓" + fmtK(hit.outTok || 0) + " tok  ·  /cache off to disable");
+        blk.summary = green("cache hit — free") + gray("  ·  saved " + ((PAID[engine] && hit.cost) ? "$" + hit.cost.toFixed(4) + " · " : "") + "↑" + fmtK(hit.inTok || 0) + " ↓" + fmtK(hit.outTok || 0) + " tok  ·  /cache off to disable");
         transcript.push(blk); impact.cachedHits++; impact.cachedSaved += (hit.cost || 0); hit.hits = (hit.hits || 0) + 1; try { cachePut(cwd, ckey, hit); } catch (_) {}
         cont = true; render(); try { saveSession(); } catch (_) {} return;
       } }
@@ -3952,7 +3952,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           let sel = /^\d+$/.test(selArg) ? opts[+selArg - 1] : opts.find((o) => o.name.toLowerCase().includes(selArg.toLowerCase()));
           if (!sel && selArg.toLowerCase() === "claude") sel = opts.find((o) => /^claude/.test(o.name));
           if (!sel) transcript.push({ role: "system", text: "no match for '" + selArg + "' — run " + cyan("/connect") + " to see what's available" });
-          else { sel.apply(); transcript.push({ role: "system", text: "connected → " + green(sel.name) + gray("   (" + sel.note + ")") + (sel.paid ? "\n  " + yellow("⚠ PAID — billed to your API key, not the free local engine") : "") + (sel.name === "api-model" ? "\n  " + gray("set the model with /model <name>") : "") }); }
+          else { sel.apply(); transcript.push({ role: "system", text: "connected → " + green(sel.name) + gray("   (" + sel.note + ")") + (sel.paid ? "\n  " + yellow("warning: PAID — billed to your API key, not the free local engine") : "") + (sel.name === "api-model" ? "\n  " + gray("set the model with /model <name>") : "") }); }
         }
         render();
         });
@@ -4031,7 +4031,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       } catch (_) {}
     })();
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
-    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("⚠ this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
+    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("warning: this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
     let imgCounter = 0; // for [Image#N] display on pasted image paths
     let nextQueue = []; // /next queue — prompts to run after current turn
