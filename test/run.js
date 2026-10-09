@@ -1450,6 +1450,28 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("forget() stops guarding a path", fg.checkOverwrite("/x/b.js", "different").stale === false);
   } catch (e) { ok("stale-write guard test threw: " + (e && e.message), false); }
 
+  // failure diagnosis — classify command/test output into an actionable category + hint.
+  group("failure diagnosis");
+  try {
+    const DG = require("../lib/nexus/diagnose");
+    const cat = (out, code, cmd) => { const d = DG.diagnose(out, code, cmd); return d && d.category; };
+    ok("clean success with no error text -> no diagnosis", DG.diagnose("all good\n", 0) === null);
+    ok("command-not-found is detected", cat("bash: foobar: command not found", 127, "foobar") === "missing-command");
+    ok("missing module is detected", cat("Error: Cannot find module 'express'", 1, "node app.js") === "missing-dependency");
+    ok("python ModuleNotFoundError is detected", cat("ModuleNotFoundError: No module named 'requests'", 1) === "missing-dependency");
+    ok("syntax error is detected with a location", cat("app.js:12:5: SyntaxError: Unexpected token", 1) === "syntax-error");
+    ok("ENOENT is a no-such-path", cat("ENOENT: no such file or directory, open '/tmp/x'", 1) === "no-such-path");
+    ok("permission denied is detected", cat("EACCES: permission denied, open '/etc/hosts'", 1) === "permission");
+    ok("port-in-use is detected", cat("Error: listen EADDRINUSE: address already in use :::3000", 1) === "port-in-use");
+    const net = DG.diagnose("request to https://x failed, reason: ECONNREFUSED", 1);
+    ok("network failures are detected and flagged transient", net.category === "network" && net.transient === true);
+    ok("failing tests are detected", cat("Tests: 3 failed, 10 passed\nAssertionError: expected 1 to equal 2", 1) === "test-failure");
+    ok("an unrecognized non-zero exit still yields nonzero-exit", cat("weird output with no pattern", 2) === "nonzero-exit");
+    const d = DG.diagnose("bash: gcc: command not found", 127, "gcc x.c");
+    ok("diagnosis carries a key line and a hint", /gcc/.test(d.line) && d.hint.length > 10);
+    ok("annotate renders a compact [diagnosis] suffix", /^\n\n\[diagnosis\] /.test(DG.annotate(d)) && DG.annotate(null) === "");
+  } catch (e) { ok("failure diagnosis test threw: " + (e && e.message), false); }
+
   // agentic browser (CDP WebSocket client) — frame codec, target selection, dispatch shape.
   try {
     const B = require("../lib/nexus/browser");
