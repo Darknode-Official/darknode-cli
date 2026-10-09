@@ -1574,6 +1574,66 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("invariantsTool runs the engine over the live diff and returns violations + a summary", !wired.ok && wired.violations.some((v) => v.rule === "noDebug") && /invariant violation/.test(wired.summary));
   } catch (e) { ok("invariants test threw: " + (e && e.message), false); }
 
+  // attest — capability attestation: summarize the hash-chained audit log into a manifest and
+  // prove declared claims against it ("zero network", "only wrote src/**", "never deleted").
+  group("attest (capability attestation from the audit log)");
+  try {
+    const AT = require("../lib/nexus/attest");
+    const recs = [
+      { seq: 0, ts: "2026-10-08T10:00:00Z", engine: "ollama", tool: "read_file", path: "src/a.js", status: "ok" },
+      { seq: 1, ts: "2026-10-08T10:00:01Z", engine: "ollama", tool: "write_file", path: "src/a.js", status: "ok" },
+      { seq: 2, ts: "2026-10-08T10:00:02Z", engine: "ollama", tool: "edit_file", path: "src/b.js", status: "ok" },
+      { seq: 3, ts: "2026-10-08T10:00:03Z", engine: "ollama", tool: "run_command", cmd: "npm test", status: "ok" },
+      { seq: 4, ts: "2026-10-08T10:00:04Z", engine: "ollama", tool: "delete", path: "tmp/x", status: "blocked", reason: "protected path" },
+      { seq: 5, ts: "2026-10-08T10:00:05Z", engine: "ollama", tool: "run_command", cmd: "git status", status: "ok" },
+    ];
+    const m = AT.buildManifest(recs);
+    ok("manifest counts written files (edit + write), de-duped and sorted", JSON.stringify(m.writes) === JSON.stringify(["src/a.js", "src/b.js"]));
+    ok("manifest lists the commands that ran", m.commands.length === 2 && m.commands[0].cmd === "npm test");
+    ok("manifest reports NO network when no network tool ran", m.touchedNetwork === false && m.network.length === 0);
+    ok("a blocked action is NOT counted as an effective action (it never happened)", m.deletes.length === 0 && m.blocked.length === 1 && m.blocked[0].tool === "delete");
+    ok("manifest records engines and a seq range", JSON.stringify(m.engines) === JSON.stringify(["ollama"]) && m.seqRange.to === 5);
+
+    // network is surfaced when a network tool did run
+    const mNet = AT.buildManifest(recs.concat([{ seq: 6, tool: "http_fetch", status: "ok" }]));
+    ok("manifest flags that the network was touched when a fetch ran", mNet.touchedNetwork === true && mNet.network[0].tool === "http_fetch");
+
+    // --- claim checking ---
+    const pass = AT.checkClaims(m, { noNetwork: true, noDelete: true, onlyPaths: ["src/**"], maxWrites: 5 });
+    ok("claims PASS: no network, no delete, only src/**, under the write cap", pass.ok === true && pass.claims.every((c) => c.pass) && pass.checked === 4);
+
+    const failPath = AT.checkClaims(AT.buildManifest(recs.concat([{ seq: 7, tool: "write_file", path: "secrets/key.txt", status: "ok" }])), { onlyPaths: ["src/**"] });
+    ok("claim FAILS when a write lands outside the allowed paths, with evidence", failPath.ok === false && /secrets\/key\.txt/.test(failPath.claims[0].detail));
+
+    const failNet = AT.checkClaims(mNet, { noNetwork: true });
+    ok("claim FAILS when the network was touched", failNet.ok === false && /network invocation/.test(failNet.claims[0].detail));
+
+    const cmdClaim = AT.checkClaims(m, { noCommands: ["rm -rf", "curl"] });
+    ok("noCommands PASSES when no command matched the forbidden patterns", cmdClaim.ok === true);
+    const cmdFail = AT.checkClaims(AT.buildManifest(recs.concat([{ seq: 8, tool: "run_command", cmd: "curl http://evil", status: "ok" }])), { noCommands: ["curl"] });
+    ok("noCommands FAILS and names the offending command", cmdFail.ok === false && /curl http:\/\/evil/.test(cmdFail.claims[0].detail));
+
+    const unknown = AT.checkClaims(m, { noTelepathy: true });
+    ok("an unknown claim is reported as a failure (a typo can't masquerade as a pass)", unknown.ok === false && /unknown claim/.test(unknown.claims[0].detail));
+
+    // chainVerified reads the wiring-attached chain status
+    const chainOk = AT.checkClaims(Object.assign(AT.buildManifest(recs), { _chain: { ok: true, count: 6 } }), { chainVerified: true });
+    ok("chainVerified passes when the attached chain is intact", chainOk.ok === true && /verified/.test(chainOk.claims[0].detail));
+    const chainBad = AT.checkClaims(Object.assign(AT.buildManifest(recs), { _chain: { ok: false, reason: "tampered" } }), { chainVerified: true });
+    ok("chainVerified fails when the chain is broken", chainBad.ok === false && /BROKEN/.test(chainBad.claims[0].detail));
+
+    // --- wiring entry with injected fs + auditVerify (no real repo needed) ---
+    const jsonl = recs.map((r) => JSON.stringify(r)).join("\n") + "\n";
+    const fakeFs = { readFileSync() { return jsonl; } };
+    const wired = AT.attestTool({ claims: { noNetwork: true, onlyPaths: ["src/**"] } }, "/repo", { fs: fakeFs, path: require("path"), auditVerify: () => ({ ok: true, count: 6 }) });
+    ok("attestTool builds a manifest, verifies the chain and checks claims", wired.manifest.records === 6 && wired.manifest.chain.verified === true && wired.claims.ok === true && /audited action/.test(wired.summary));
+    const noLog = AT.attestTool({}, "/repo", { fs: { readFileSync() { throw new Error("ENOENT"); } }, path: require("path"), auditVerify: () => ({ ok: true, count: 0, empty: true }) });
+    ok("attestTool explains when there is no audit trail yet", noLog && /no audit trail/.test(noLog.error));
+    // `since` scopes the manifest to this run's records
+    const scoped = AT.attestTool({ since: 5 }, "/repo", { fs: fakeFs, path: require("path"), auditVerify: () => ({ ok: true, count: 6 }) });
+    ok("attestTool 'since' scopes the manifest to recent records", scoped.manifest.records === 1 && scoped.manifest.commands[0].cmd === "git status");
+  } catch (e) { ok("attest test threw: " + (e && e.message), false); }
+
   // agentic browser (CDP WebSocket client) — frame codec, target selection, dispatch shape.
   try {
     const B = require("../lib/nexus/browser");
