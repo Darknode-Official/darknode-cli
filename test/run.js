@@ -1634,6 +1634,96 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("attestTool 'since' scopes the manifest to recent records", scoped.manifest.records === 1 && scoped.manifest.commands[0].cmd === "git status");
   } catch (e) { ok("attest test threw: " + (e && e.message), false); }
 
+  // bisect — regression bisect over the agent's per-turn checkpoints. The pure driver finds the
+  // good->bad boundary with ~log2(n) probes; attribution maps it to the culprit turn.
+  group("bisect (regression bisect over per-turn checkpoints)");
+  try {
+    const BS = require("../lib/nexus/bisect");
+
+    // --- pure driver: monotonic good...good,bad...bad, boundary at a known index ---
+    const runWithOracle = async (n, firstBadIdx) => {
+      const probe = async (i) => (i >= firstBadIdx ? "bad" : "good");
+      return await BS.bisectRun(n, probe);
+    };
+    const r7 = await runWithOracle(16, 7);
+    ok("bisectRun finds the exact first-bad index", r7.status === "found" && r7.firstBad === 7);
+    ok("bisectRun converges in logarithmic probes (not linear)", r7.steps <= 7 && r7.steps >= 3);
+    // every probe below the boundary is good, at/above is bad (sanity on the oracle + driver)
+    ok("bisectRun's probe log is consistent with the boundary", r7.log.every((e) => (e.index >= 7) === (e.verdict === "bad")));
+
+    // boundary at the very end (only the current state is bad) and just after the start
+    const rEnd = await runWithOracle(10, 9);
+    ok("bisectRun handles a regression only in the latest state", rEnd.status === "found" && rEnd.firstBad === 9);
+    const rNear = await runWithOracle(10, 1);
+    ok("bisectRun handles a regression introduced by the very first turn", rNear.status === "found" && rNear.firstBad === 1);
+
+    // degenerate cases
+    const good = await BS.bisectRun(10, async () => "good");
+    ok("bisectRun reports no-regression when the current state passes", good.status === "no-regression" && good.steps === 2);
+    const badStart = await BS.bisectRun(10, async () => "bad");
+    ok("bisectRun reports bad-from-start when even the earliest state fails", badStart.status === "bad-from-start" && badStart.firstBad === 0);
+    const tiny = await BS.bisectRun(1, async () => "bad");
+    ok("bisectRun refuses with <2 states", tiny.status === "insufficient");
+
+    // the boundary search is deterministic: same oracle -> identical probe sequence
+    const a1 = await runWithOracle(32, 20), a2 = await runWithOracle(32, 20);
+    ok("bisect is deterministic (identical probe sequence for the same timeline)", JSON.stringify(a1.log) === JSON.stringify(a2.log));
+
+    // --- attribution: boundary -> culprit turn ---
+    const cps = [
+      { tree: "t0", label: "set up module", ts: 1, paths: ["a.js"] },
+      { tree: "t1", label: "add feature X", ts: 2, paths: ["a.js", "b.js"] },
+      { tree: "t2", label: "refactor helper", ts: 3, paths: ["b.js"] },
+    ]; // states: 0..2 checkpoints, 3 = current
+    const cul = BS.attributeCulprit({ status: "found", firstBad: 2, steps: 4, log: [] }, cps);
+    ok("attributeCulprit blames the turn between the last-good and first-bad checkpoint", cul.found && cul.culpritCheckpoint === 1 && cul.turn === "add feature X");
+    ok("attributeCulprit reports the culprit's changed paths", cul.paths.join(",") === "a.js,b.js" && /add feature X/.test(cul.reason));
+    const culLast = BS.attributeCulprit({ status: "found", firstBad: 3 }, cps);
+    ok("attributeCulprit blames the most recent turn when only the current state is bad", culLast.found && culLast.turn === "refactor helper");
+    const culPre = BS.attributeCulprit({ status: "bad-from-start", firstBad: 0 }, cps);
+    ok("attributeCulprit flags a pre-existing break (predates the timeline)", culPre.found === false && culPre.preExisting === true);
+    const culNone = BS.attributeCulprit({ status: "no-regression" }, cps);
+    ok("attributeCulprit reports nothing to blame when there's no regression", culNone.found === false && /no regression/.test(culNone.reason));
+
+    // --- orchestration with injected fakes: restore+test, culprit found, working tree restored ---
+    // Fake world: the "add feature X" turn introduced the break. A checkpoint tree is the state
+    // BEFORE its labelled turn, so the break first shows in t2 (the snapshot taken before the
+    // NEXT turn) and in the current state; t0/t1 are still good. Blame therefore falls on the
+    // turn recorded at checkpoint index 1 ("add feature X").
+    const badTrees = new Set(["t2", "SNAP"]); // SNAP = current state is bad
+    let restores = [], tested = [];
+    const fakeDeps = {
+      loadCheckpoints: () => cps,
+      detectTest: () => "npm test",
+      snapshot: () => "SNAP",
+      restore: (tree) => { restores.push(tree); return true; },
+      runTest: async () => { const cur = restores[restores.length - 1]; tested.push(cur); return { code: badTrees.has(cur) ? 1 : 0 }; },
+    };
+    const res = await BS.bisectTool({}, "/repo", fakeDeps);
+    ok("bisectTool isolates the culprit turn via restore+test", res.status === "found" && res.culprit.found && res.culprit.turn === "add feature X");
+    ok("bisectTool restores the working tree to the starting snapshot at the end", restores[restores.length - 1] === "SNAP" && res.restored === true);
+    ok("bisectTool reports the test command and a human summary", res.testCommand === "npm test" && /Regression isolated/.test(res.summary));
+
+    const resNoCp = await BS.bisectTool({}, "/repo", { loadCheckpoints: () => [], detectTest: () => "npm test" });
+    ok("bisectTool refuses when there is no checkpoint timeline", resNoCp && /no checkpoint timeline/.test(resNoCp.error));
+    const resNoTest = await BS.bisectTool({}, "/repo", { loadCheckpoints: () => cps, detectTest: () => null, restore: () => true, runTest: async () => ({ code: 0 }) });
+    ok("bisectTool refuses when no test command is available", resNoTest && /no test command/.test(resNoTest.error));
+
+    // --- persistence round-trip (injected in-memory fs) ---
+    let store = {};
+    const memfs = {
+      mkdirSync() {},
+      appendFileSync(p, s) { store[p] = (store[p] || "") + s; },
+      readFileSync(p) { if (store[p] == null) throw new Error("ENOENT"); return store[p]; },
+      writeFileSync(p, s) { store[p] = s; },
+    };
+    const memdeps = { fs: memfs, path: require("path") };
+    ok("persistCheckpoint stores a path-scoped checkpoint", BS.persistCheckpoint("/repo", { tree: "tX", label: "do a thing", ts: 5, paths: ["x.js"] }, memdeps) === true);
+    ok("persistCheckpoint skips a checkpoint with no changed paths (not bisectable)", BS.persistCheckpoint("/repo", { tree: "tY", label: "noop", ts: 6, paths: [] }, memdeps) === false);
+    const loaded = BS.loadCheckpoints("/repo", memdeps);
+    ok("loadCheckpoints reads back exactly the persisted, bisectable checkpoints", loaded.length === 1 && loaded[0].tree === "tX" && loaded[0].label === "do a thing");
+  } catch (e) { ok("bisect test threw: " + (e && e.message), false); }
+
   // agentic browser (CDP WebSocket client) — frame codec, target selection, dispatch shape.
   try {
     const B = require("../lib/nexus/browser");
