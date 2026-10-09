@@ -1472,6 +1472,108 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("annotate renders a compact [diagnosis] suffix", /^\n\n\[diagnosis\] /.test(DG.annotate(d)) && DG.annotate(null) === "");
   } catch (e) { ok("failure diagnosis test threw: " + (e && e.message), false); }
 
+  // invariants — deterministic diff-lint: the agent runs its OWN diff through per-repo rules
+  // (.nexus/invariants.json) before a turn is accepted. Pure engine over a parsed diff.
+  group("invariants (agent diff-lint / invariants-as-code)");
+  try {
+    const IV = require("../lib/nexus/invariants");
+
+    // --- parseDiff: unified git diff -> structured per-file added/removed with NEW line numbers ---
+    const sampleDiff = [
+      "diff --git a/src/app.js b/src/app.js",
+      "index 111..222 100644",
+      "--- a/src/app.js",
+      "+++ b/src/app.js",
+      "@@ -10,2 +10,4 @@ function go() {",
+      " keep();",
+      "+  console.log('debug here');",
+      "+  // TODO: finish this",
+      " more();",
+      "-  oldline();",
+      "diff --git a/new.js b/new.js",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/new.js",
+      "@@ -0,0 +1,2 @@",
+      "+export const x = 1;",
+      "+export const y = 2;",
+      "diff --git a/gone.js b/gone.js",
+      "deleted file mode 100644",
+      "--- a/gone.js",
+      "+++ /dev/null",
+      "@@ -1,1 +0,0 @@",
+      "-was here",
+    ].join("\n");
+    const files = IV.parseDiff(sampleDiff);
+    ok("parseDiff splits every changed file", files.length === 3 && files.map((f) => f.path).join(",") === "src/app.js,new.js,gone.js");
+    ok("parseDiff marks a new file A, a deleted file D, a modified file M", files[0].status === "M" && files[1].status === "A" && files[2].status === "D");
+    ok("parseDiff collects added lines with correct NEW-file line numbers", files[0].added.length === 2 && files[0].added[0].n === 11 && files[0].added[1].n === 12);
+    ok("parseDiff collects removed lines", files[0].removed.length === 1 && files[0].removed[0] === "  oldline();");
+
+    // --- noDebug: only ADDED debug lines are flagged ---
+    const dbg = IV.checkInvariants(files, { noDebug: true });
+    ok("noDebug flags an added console.log", !dbg.ok && dbg.violations.some((v) => v.rule === "noDebug" && v.path === "src/app.js" && v.line === 11));
+
+    // --- noNewMarkers: only ADDED TODO/FIXME etc are flagged (pre-existing debt untouched) ---
+    const mk = IV.checkInvariants(files, { noNewMarkers: true });
+    ok("noNewMarkers flags an added TODO at its line", !mk.ok && mk.violations.some((v) => v.rule === "noNewMarkers" && v.line === 12));
+    const noMk = IV.checkInvariants([{ path: "x.js", status: "M", added: [{ n: 1, text: "fine();" }], removed: ["// TODO old"] }], { noNewMarkers: true });
+    ok("noNewMarkers ignores a marker that was only REMOVED/pre-existing", noMk.ok === true);
+
+    // --- allowPaths / forbidPaths with globs ---
+    const allow = IV.checkInvariants(files, { allowPaths: ["src/**"] });
+    ok("allowPaths flags files outside the allowed globs", !allow.ok && allow.violations.some((v) => v.rule === "allowPaths" && v.path === "new.js"));
+    const forbid = IV.checkInvariants(files, { forbidPaths: ["**/gone.js"] });
+    ok("forbidPaths flags a touched protected path", !forbid.ok && forbid.violations.some((v) => v.rule === "forbidPaths" && v.path === "gone.js"));
+
+    // --- noDelete: deleting a guarded path is a violation; deleting anything else is fine ---
+    const del = IV.checkInvariants(files, { noDelete: ["**/*.js"] });
+    ok("noDelete flags a deleted guarded file", !del.ok && del.violations.some((v) => v.rule === "noDelete" && v.path === "gone.js"));
+
+    // --- maxFiles ceiling ---
+    const mx = IV.checkInvariants(files, { maxFiles: 2 });
+    ok("maxFiles flags too many changed files", !mx.ok && mx.violations.some((v) => v.rule === "maxFiles"));
+    ok("maxFiles passes when under the ceiling", IV.checkInvariants(files, { maxFiles: 5 }).ok === true);
+
+    // --- noNewDeps: an added line in a dependency manifest is flagged; structure/comments are not ---
+    const depDiff = IV.parseDiff([
+      "diff --git a/package.json b/package.json",
+      "--- a/package.json",
+      "+++ b/package.json",
+      "@@ -2,1 +2,3 @@",
+      '+    "left-pad": "^1.0.0",',
+      "+  }",
+    ].join("\n"));
+    const dep = IV.checkInvariants(depDiff, { noNewDeps: true });
+    ok("noNewDeps flags an added dependency entry but not the closing brace", !dep.ok && dep.violations.filter((v) => v.rule === "noNewDeps").length === 1);
+
+    // --- forbidAdded: custom regex over added lines ---
+    const fa = IV.checkInvariants(files, { forbidAdded: ["export const"] });
+    ok("forbidAdded flags added lines matching a custom pattern", !fa.ok && fa.violations.filter((v) => v.rule === "forbidAdded").length === 2);
+
+    // --- requireTestWithSrc ratchet ---
+    const ratchet = IV.checkInvariants([{ path: "src/a.js", status: "M", added: [], removed: [] }], { requireTestWithSrc: true });
+    ok("requireTestWithSrc flags source change with no test change", !ratchet.ok && ratchet.violations.some((v) => v.rule === "requireTestWithSrc"));
+    const ratchetOk = IV.checkInvariants([{ path: "src/a.js", status: "M", added: [], removed: [] }, { path: "test/a.test.js", status: "M", added: [], removed: [] }], { requireTestWithSrc: true });
+    ok("requireTestWithSrc passes when a test file also changed", ratchetOk.ok === true);
+
+    // --- a clean diff against the same rules passes and reports which rules ran ---
+    const clean = IV.checkInvariants([{ path: "src/ok.js", status: "M", added: [{ n: 1, text: "const z = 1;" }], removed: [] }], { noDebug: true, noNewMarkers: true, allowPaths: ["src/**"] });
+    ok("a clean diff passes and lists the rules checked", clean.ok === true && clean.checked.length === 3 && clean.violations.length === 0);
+
+    // --- fileFromNewContent models an untracked file as all-added ---
+    const unt = IV.fileFromNewContent("brand.js", "console.log('x')\nok()");
+    ok("fileFromNewContent marks an untracked file A with every line added", unt.status === "A" && unt.added.length === 2 && unt.added[0].n === 1);
+
+    // --- wiring entry: refuses when no rules are configured (injected deps, no real git) ---
+    const noRules = IV.invariantsTool({}, "/nonexistent-" + Date.now(), { fs: { readFileSync() { throw new Error("none"); } } });
+    ok("invariantsTool refuses with guidance when no invariants are configured", noRules && /no invariants configured/.test(noRules.error));
+    // wiring entry: with inline rules + an injected fake git/fs, it lints a synthetic diff
+    const fakeCp = { execSync(cmd) { if (/git diff HEAD/.test(cmd)) return sampleDiff; if (/ls-files/.test(cmd)) return ""; return ""; } };
+    const wired = IV.invariantsTool({ rules: { noDebug: true } }, "/repo", { cp: fakeCp, fs: { readFileSync() { throw new Error("n/a"); }, statSync() { return { size: 0 }; } }, path: require("path") });
+    ok("invariantsTool runs the engine over the live diff and returns violations + a summary", !wired.ok && wired.violations.some((v) => v.rule === "noDebug") && /invariant violation/.test(wired.summary));
+  } catch (e) { ok("invariants test threw: " + (e && e.message), false); }
+
   // agentic browser (CDP WebSocket client) — frame codec, target selection, dispatch shape.
   try {
     const B = require("../lib/nexus/browser");
