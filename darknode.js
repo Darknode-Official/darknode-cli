@@ -1125,6 +1125,14 @@ async function cliRun(args, gate) {
     else if (sub === "run" || sub === "supervise" || sub === "loop") await nexusRun(rest.slice(1));
     else if (sub === "overnight") await nexusRun(["--overnight"].concat(rest.slice(1)));
     else if (sub === "agents" || sub === "parallel") await nexusAgents(rest.slice(1));
+    // Operator-facing headless equivalents of the in-TUI self-check slash commands: they run the
+    // exact same tool engines the agent calls (via deviceTool), print the result, and exit non-zero
+    // when the check fails so they double as CI gates.
+    else if (sub === "invariants" || sub === "difflint") { const r = await deviceTool("invariants", {}, process.cwd()); formatToolLines("invariants", r).forEach((l) => console.log(l)); if (r && (r.error || r.ok === false)) process.exitCode = 1; }
+    else if (sub === "attest" || sub === "attestation") { const r = await deviceTool("attest", {}, process.cwd()); formatToolLines("attest", r).forEach((l) => console.log(l)); if (r && (r.error || r.ok === false)) process.exitCode = 1; }
+    else if (sub === "bisect") { const r = await deviceTool("bisect", { test: rest.slice(1).join(" ") || undefined }, process.cwd()); formatToolLines("bisect", r).forEach((l) => console.log(l)); if (r && r.error) process.exitCode = 1; }
+    else if (sub === "whatbroke" || sub === "explain-break" || sub === "explainbreak") { const r = await deviceTool("explain_break", { test: rest.slice(1).join(" ") || undefined }, process.cwd()); formatToolLines("whatbroke", r).forEach((l) => console.log(l)); if (r && r.error) process.exitCode = 1; }
+    else if (sub === "shrink") { const r = await deviceTool("shrink", { test: rest.slice(1).join(" ") || undefined }, process.cwd()); formatToolLines("shrink", r).forEach((l) => console.log(l)); if (r && r.error) process.exitCode = 1; }
     else {
       // First launch on a real terminal: offer the one-time Ollama/Claude setup before the TUI.
       if (process.stdout.isTTY && !rest.includes("--print") && firstRunPending()) { try { await nexusSetup({ ask, auto: rest.includes("-y") || rest.includes("--yes") }); } catch (_) {} }
@@ -2084,6 +2092,36 @@ async function deviceTool(name, a, cwd) {
   if (String(name).startsWith("browser_")) { const r = await require("./lib/nexus/browser").browserTool(name, a, cwd); if (r !== null) return r; }
   return null;
 }
+// Render one of the agentic self-check tools' result objects (invariants/attest/bisect/
+// whatbroke/shrink) into plain ASCII lines, shared by the TUI slash commands and the
+// headless `nexus <verb>` dispatch so both present identical output. Pure: no I/O, no color.
+function formatToolLines(name, res) {
+  const lines = [];
+  if (!res) { lines.push(name + ": no result"); return lines; }
+  if (res.error) { lines.push(res.error); return lines; }
+  if (res.summary) lines.push(res.summary);
+  if (name === "invariants") {
+    if (Array.isArray(res.violations) && res.violations.length) {
+      for (const v of res.violations.slice(0, 40)) lines.push("  " + v.rule + (v.path ? "  " + v.path + (v.line ? ":" + v.line : "") : "") + "  " + v.message);
+      if (res.violations.length > 40) lines.push("  ... +" + (res.violations.length - 40) + " more");
+    }
+  } else if (name === "attest") {
+    const m = res.manifest;
+    if (m) {
+      if (Array.isArray(m.writes) && m.writes.length) lines.push("  wrote: " + m.writes.slice(0, 12).join(", ") + (m.writes.length > 12 ? " +" + (m.writes.length - 12) + " more" : ""));
+      if (Array.isArray(m.deletes) && m.deletes.length) lines.push("  deleted: " + m.deletes.join(", "));
+      if (Array.isArray(m.commands) && m.commands.length) lines.push("  commands: " + m.commands.slice(0, 8).map((c) => c.cmd).join(" ; ") + (m.commands.length > 8 ? " ..." : ""));
+    }
+    if (res.claims && Array.isArray(res.claims.claims)) for (const c of res.claims.claims) lines.push("  [" + (c.pass ? "PASS" : "FAIL") + "] " + c.claim + (c.detail ? " - " + c.detail : ""));
+  } else if (name === "whatbroke") {
+    if (Array.isArray(res.suspects) && res.suspects.length) for (const s of res.suspects.slice(0, 3)) lines.push("  " + s.turn + "  (score " + s.score + ")" + (s.reasons && s.reasons[0] ? " - " + s.reasons[0] : ""));
+  } else if (name === "shrink") {
+    if (Array.isArray(res.minimal) && res.minimal.length) lines.push("  minimal breaking set: " + res.minimal.join(", "));
+    if (Array.isArray(res.innocent) && res.innocent.length) lines.push("  not needed to reproduce: " + res.innocent.join(", "));
+  }
+  if (!lines.length) lines.push(name + ": done");
+  return lines;
+}
 // Compact large tool output (keep head+tail, drop the middle) to save context tokens.
 // ---------- cost-aware model tiering for /cowork ----------
 // Rough Claude price table ($ per 1M tokens: input, output). Used only to ESTIMATE
@@ -2400,6 +2438,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/report", "cost & usage report for chargeback (/report json|save|since <date>)"],
       ["/compliance", "write a signed audit+usage compliance bundle (SOC2/review)"],
       ["/undo", "revert the last turn's file changes"], ["/rewind", "restore a specific checkpoint (/rewind N)"], ["/checkpoints", "list undo checkpoints"],
+      ["/invariants", "diff-lint the pending diff against .nexus/invariants.json"], ["/attest", "capability manifest from the hash-chained audit log"], ["/bisect", "find the turn that broke the test (/bisect [test cmd])"], ["/whatbroke", "instant blame: which turn most likely broke a failing test"], ["/shrink", "delta-debug the edits to the minimal breaking file set (/shrink [test cmd])"],
       ["/resume", "reload the last saved session"], ["/branch", "fork & switch conversation branches (/branch new <name>)"], ["/export", "save the conversation to a markdown file"], ["/copy", "copy the last reply to the clipboard"],
       ["/status", "session engine, model, tokens & cost"], ["/doctor", "check engines & tools are available"], ["/init", "scaffold .nexus/ in this project"],
       ["/model", "pick the model — lists the engine catalog; /model <name|number>"], ["/engine", "switch AI: claude · gemini · codex · opencode · aider · ollama"], ["/commands", "list custom project commands"],
@@ -3383,7 +3422,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const argstr = sp === -1 ? "" : t.slice(sp + 1).trim();
       const arg = argstr.split(/\s+/)[0];
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
-      if (cmd === "/help") transcript.push({ role: "system", text: "core:  /help /clear /compact /context /cost /budget /undo /redo /rewind /checkpoints /resume /export /copy /status /doctor /update /autoupdate /init /model /engine /commands /expand /exit\nsave-cost:  /cheap (preset) · /cowork (strong+weak) · /lean · /effort low · /estimate · /index · /budget · /report (chargeback) · /compliance (SOC2 bundle) · /impact\nunique:  /race · /ensemble · /bench · /review · /ultrareview · /changelog · /watch · /plan · /guard · /gaps · /dream · /commit · /models · /recent · /keys · /diff · /git · /blame · /explain · /test · /index · /todo · /stats · /deps · /env · /snippet · /pin · /secrets · /scan · /agents a ;; b · /tree · /theme · /offline · /redact\nextend:  /feature create <name> <what it does> · /feature remove <name> · /feature list  ·  /dashboard (localhost web UI: live pipelines, jobs & cowork)\ninput:  @file (Tab-completes paths) · !cmd shell · #note memory · end a line with \\ for a newline · MCP & /hooks from .nexus/\nkeys:  shift+tab mode · ctrl+o expand · ctrl+c stop · ↑/↓ history · wheel/PgUp/PgDn/Home/End scroll · / menu" });
+      if (cmd === "/help") transcript.push({ role: "system", text: "core:  /help /clear /compact /context /cost /budget /undo /redo /rewind /checkpoints /resume /export /copy /status /doctor /update /autoupdate /init /model /engine /commands /expand /exit\nsave-cost:  /cheap (preset) · /cowork (strong+weak) · /lean · /effort low · /estimate · /index · /budget · /report (chargeback) · /compliance (SOC2 bundle) · /impact\nunique:  /race · /ensemble · /bench · /review · /ultrareview · /changelog · /watch · /plan · /guard · /gaps · /dream · /commit · /models · /recent · /keys · /diff · /git · /blame · /explain · /test · /index · /todo · /stats · /deps · /env · /snippet · /pin · /secrets · /scan · /agents a ;; b · /tree · /theme · /offline · /redact\nself-check:  /invariants (diff-lint the pending diff) · /attest (audit-log capability manifest) · /bisect [test] (find the turn that broke it) · /whatbroke [test] (instant blame) · /shrink [test] (minimal breaking file set)\nextend:  /feature create <name> <what it does> · /feature remove <name> · /feature list  ·  /dashboard (localhost web UI: live pipelines, jobs & cowork)\ninput:  @file (Tab-completes paths) · !cmd shell · #note memory · end a line with \\ for a newline · MCP & /hooks from .nexus/\nkeys:  shift+tab mode · ctrl+o expand · ctrl+c stop · ↑/↓ history · wheel/PgUp/PgDn/Home/End scroll · / menu" });
       else if (cmd === "/commands") { const ks = Object.keys(customCmds); transcript.push({ role: "system", text: ks.length ? ("custom commands (from .nexus/commands or .claude/commands):\n" + ks.map((k) => "  " + k + "  " + customCmds[k].desc.replace(/ \(custom\)$/, "")).join("\n")) : "no custom commands yet — add a file like .nexus/commands/review.md, then use /review" }); }
       else if (cmd === "/feature" || cmd === "/features") {
         // Let the user grow Nexus themselves: /feature create <name> <what it does> writes an
@@ -3779,6 +3818,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
       else if (cmd === "/offline") { offline = !offline; if (offline && (PAID[engine] || apiConfigured())) { if (apiConfigured()) delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = "ollama"; sess.ctxWindow = CTXW.ollama || 8192; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; cont = false; oMsgs.length = 1; transcript.push({ role: "system", text: "offline lock ON — switched to the local engine; cloud engines and remote APIs are blocked, nothing leaves this machine" }); } else transcript.push({ role: "system", text: offline ? "offline lock ON — cloud engines & remote APIs blocked; nothing leaves this machine" : "offline lock off — cloud engines allowed again" }); }
       else if (cmd === "/checkpoints") { transcript.push({ role: "system", text: checkpoints.length ? ("checkpoints (newest last):\n" + checkpoints.map((c, i) => "  #" + (i + 1) + "  " + c.label).join("\n") + "\n/undo restores the most recent") : "no checkpoints yet" }); }
+      // ---- operator entry points for the agentic self-check tools (same engines the agent calls) ----
+      // invariants: diff-lint the pending diff against .nexus/invariants.json (stray debug lines,
+      // new TODOs/deps, forbidden-path edits, test ratchet). Instant & deterministic.
+      else if (cmd === "/invariants") { deviceTool("invariants", {}, cwd).then((r) => { transcript.push({ role: "system", text: formatToolLines("invariants", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "invariants failed: " + (e && e.message || e) }); render(); }); }
+      // attest: capability manifest from the hash-chained audit log (what this run touched + chain verdict).
+      else if (cmd === "/attest") { deviceTool("attest", {}, cwd).then((r) => { transcript.push({ role: "system", text: formatToolLines("attest", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "attest failed: " + (e && e.message || e) }); render(); }); }
+      // bisect: binary-search the per-turn checkpoint timeline to the exact turn that broke the test.
+      else if (cmd === "/bisect") { transcript.push({ role: "system", text: "bisecting the checkpoint timeline" + (argstr ? " with '" + argstr + "'" : " (auto-detecting the test command)") + "... (this re-runs the test at each probe; usage: /bisect [test command])" }); render(); deviceTool("bisect", { test: argstr || undefined }, cwd).then((r) => { transcript.push({ role: "system", text: formatToolLines("bisect", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "bisect failed: " + (e && e.message || e) }); render(); }); }
+      // whatbroke: instant static "git blame for the agent's turns" (no re-run); explain-break tool.
+      else if (cmd === "/whatbroke") { transcript.push({ role: "system", text: "correlating the failing test to the turns that changed the implicated files" + (argstr ? " (running '" + argstr + "' to capture the failure)" : "") + "... (usage: /whatbroke [test command])" }); render(); deviceTool("explain_break", { test: argstr || undefined }, cwd).then((r) => { transcript.push({ role: "system", text: formatToolLines("whatbroke", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "whatbroke failed: " + (e && e.message || e) }); render(); }); }
+      // shrink: delta-debug (ddmin) the agent's edits to the minimal subset of files that still breaks it.
+      else if (cmd === "/shrink") { transcript.push({ role: "system", text: "delta-debugging the changed files to the minimal breaking set" + (argstr ? " with '" + argstr + "'" : " (auto-detecting the test command)") + "... (usage: /shrink [test command])" }); render(); deviceTool("shrink", { test: argstr || undefined }, cwd).then((r) => { transcript.push({ role: "system", text: formatToolLines("shrink", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "shrink failed: " + (e && e.message || e) }); render(); }); }
       else if (cmd === "/init") { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"), cfg = path.join(dir, "config.json"); const made = []; if (!fs.existsSync(md)) { fs.writeFileSync(md, "# Nexus project instructions\n\nNexus loads this file every session.\n\n## Project\n- (describe your project)\n\n## Conventions\n- (style, patterns to follow)\n\n## Build / run / test\n- (commands)\n"); made.push("NEXUS.md"); } if (!fs.existsSync(cfg)) { fs.writeFileSync(cfg, JSON.stringify({ engine, model: "" }, null, 2) + "\n"); made.push("config.json"); } secureNexus(cwd); if (gitignoreNexus(cwd)) made.push(".gitignore"); transcript.push({ role: "system", text: made.length ? "initialized .nexus/ (" + made.join(", ") + ") — edit NEXUS.md to give Nexus project context" : ".nexus/ already exists" }); } catch (e) { transcript.push({ role: "system", text: "init failed: " + e.message }); } }
       else if (cmd === "/login") {
         const a0 = (arg || "").trim();
