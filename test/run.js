@@ -1288,6 +1288,42 @@ group("compliance bundle (SOC2 export)");
   const oa = NT.openaiAssistantTurn("", [{ id: "c1", name: "list_dir", args: { path: "." } }]);
   eq("openai assistant turn tool_calls[].function.arguments is a string", typeof oa.tool_calls[0].function.arguments, "string");
   eq("openai tool result shape", NT.openaiToolResult("c1", "out"), { role: "tool", tool_call_id: "c1", content: "out" });
+  // view_image is registered as a built-in tool and exposes its path schema
+  ok("view_image is a registered built-in tool", !!NT.TOOL_SCHEMAS.view_image && NT.TOOL_SCHEMAS.view_image.required[0] === "path");
+  ok("view_image is listed by buildToolList (all built-ins)", NT.buildToolList().some((t) => t.name === "view_image"));
+}
+
+// ===================== view_image (local image -> vision content block) =====================
+group("view_image (base64 a local image for a multimodal model)");
+{
+  const VI = require("../lib/nexus/view-image");
+  // MIME inference from the extension (pure)
+  eq("mimeForExt png/jpg/jpeg/gif/webp/bmp/svg",
+    ["a.png", "b.JPG", "c.jpeg", "d.gif", "e.webp", "f.bmp", "g.svg"].map((p) => VI.mimeForExt(p)),
+    ["image/png", "image/jpeg", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/svg+xml"]);
+  eq("mimeForExt rejects a non-image extension", VI.mimeForExt("notes.txt"), "");
+  // provider content-block shapes
+  const bl = VI.imageBlocks("image/png", "QUJD");
+  eq("anthropic image block shape", bl.anthropic, { type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD" } });
+  eq("openai image_url block shape", bl.openai, { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } });
+  // path-escape guard is REUSED (injected rp()): a throwing resolver is surfaced as an error, not a crash
+  const escaped = VI.viewImageTool({ path: "../secrets.png" }, "/repo", (p) => { throw new Error("path escapes the project directory: " + p); });
+  ok("view_image rejects a path that escapes the project directory", escaped && /escapes the project directory/.test(escaped.error));
+  ok("view_image rejects a missing path", VI.viewImageTool({}, "/repo", (p) => p).error && /needs a 'path'/.test(VI.viewImageTool({}, "/repo", (p) => p).error));
+  ok("view_image rejects an unsupported type", /unsupported image type/.test(VI.viewImageTool({ path: "a.txt" }, "/repo", (p) => p).error));
+  // a real tiny PNG fixture: infers MIME, base64-encodes, builds the vision payload
+  const png64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  const vdir = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-img-"));
+  const vfile = path.join(vdir, "shot.png");
+  fs.writeFileSync(vfile, Buffer.from(png64, "base64"));
+  const r = VI.viewImageTool({ path: vfile }, vdir, (p) => p); // identity resolver: fixture path is already absolute
+  ok("view_image loads the fixture ok", r.ok === true && r.media_type === "image/png" && r.bytes > 0 && r.encoding === "base64");
+  ok("view_image base64-encodes the bytes under __vision", r.__vision && r.__vision.b64 === png64);
+  ok("view_image builds both provider vision blocks", r.__vision.anthropic.source.media_type === "image/png" && /^data:image\/png;base64,/.test(r.__vision.openai.image_url.url));
+  // size cap: injectable maxBytes refuses an oversized image with a clear message (no 10MB fixture needed)
+  const big = VI.viewImageTool({ path: vfile }, vdir, (p) => p, { maxBytes: 1 });
+  ok("view_image refuses an image over the size limit", big.error && /too large/.test(big.error));
+  fs.rmSync(vdir, { recursive: true, force: true });
 }
 
 // ===================== default local coder (qwen2.5-coder ships with Nexus) =====================
