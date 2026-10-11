@@ -21,7 +21,7 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Syntax-check every source file
         run: |
-          for f in $(find sentinel.js lib test -name '*.js' | sort); do
+          for f in $(find darknode.js lib test -name '*.js' | sort); do
             echo "checking $f"
             node --check "$f"
           done
@@ -29,6 +29,6 @@ jobs:
         run: npm test
       - name: CLI smoke (boots + core commands)
         run: |
-          node sentinel.js --version
-          node sentinel.js uuid
-          node sentinel.js hash test
+          node darknode.js --version
+          node darknode.js uuid
+          node darknode.js hash test
