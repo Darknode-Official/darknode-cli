@@ -2858,6 +2858,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           for (const k of keep) transcript.push(k);
           // actually shrink the local engine's context: keep the system message + the last few exchanges, and drop the token estimate
           if (oMsgs.length > (lean ? 5 : 7)) { const sys = oMsgs[0]; const tail = oMsgs.slice(lean ? -4 : -6); oMsgs.length = 0; oMsgs.push(sys, ...tail); }
+          sess.readCache = {}; // reads older than the kept tail are now gone from context — reset the dedup cache so it never references pruned content
           // Claude keeps its context server-side, so pruning the local arrays
           // above does nothing to it. Drop --continue and hand the next turn a
           // text summary of the kept tail instead — that is what makes a
@@ -3054,17 +3055,37 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             const t = ensureText(); t.full += (t.full ? "\n\n" : "") + ((reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it.");
             sess.outTok += Math.ceil((reply || "").length / 4); return finish({ output: "" });
           }
-          let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = {};
+          // Session-scoped read de-dup: an unchanged file isn't re-embedded on a
+          // later turn either, not just within one turn. Safe because doCompact
+          // clears it whenever it trims oMsgs — so we never tell the model a file
+          // is "already in context" after that content was pruned away.
+          let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = sess.readCache || (sess.readCache = {});
           const loopGuard = makeLoopGuard(); // break the agent out of repeat/oscillation stalls
           const stepLimit = lean ? 12 : 20;
           const turnStartTok = sess.outTok;
+          // Within a long turn, old tool observations (up to 14KB each) otherwise
+          // ride along in every subsequent step's request — O(n^2) resend. Keep the
+          // most recent few intact and stub older ones once a byte budget is hit.
+          const elideToolHistory = (msgs, budget, keepLast) => {
+            const idxs = []; for (let i = 0; i < msgs.length; i++) if (msgs[i].role === "tool" && typeof msgs[i].content === "string") idxs.push(i);
+            if (idxs.length <= keepLast) return;
+            let total = 0; for (const i of idxs) total += msgs[i].content.length;
+            const STUB = "[earlier tool result elided to save tokens — re-run the tool if you need it again]";
+            for (let k = 0; k < idxs.length - keepLast && total > budget; k++) {
+              const i = idxs[k], c = msgs[i].content;
+              if (c.length > 240 && c !== STUB && !c.startsWith("[loop guard]")) { total += STUB.length - c.length; msgs[i].content = STUB; }
+            }
+          };
           for (let step = 1; step <= stepLimit; step++) {
             if (ctl && ctl.stopped) { ensureText().full += (ensureText().full.trim() ? "\n" : "") + "(interrupted)"; break; }
             if (lean && (sess.outTok - turnStartTok) > 8000) { ensureText().full += "\n(token budget for this turn reached — wrap up with /continue if needed)"; break; }
             let raw; try { raw = await ollamaChat(mdl, oMsgs, CODER_SCHEMA, aSignal(ctl)); } catch (e) { if (ctl && ctl.stopped) break; ensureText().full += "\nmodel error: " + e.message; break; }
             sess.outTok += Math.ceil(raw.length / 4); sess.liveOut += Math.ceil(raw.length / 4);
             let o; try { o = JSON.parse(raw); } catch (_) { oMsgs.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
-            oMsgs.push({ role: "assistant", content: raw });
+            // Strip `thought` from history (it's shown to the user below, not needed
+            // as context) so past chain-of-thought isn't resent on every step.
+            const _ctx = { action: o.action }; if (o.tool) _ctx.tool = o.tool; if (o.args) _ctx.args = o.args; if (o.final) _ctx.final = o.final;
+            oMsgs.push({ role: "assistant", content: JSON.stringify(_ctx) });
             if (o.thought) { const t = ensureText(); t.full += (t.full ? "\n" : "") + o.thought; render(); }
             if (o.action === "final") { if (!didTool && !isChitchat(promptText) && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = ensureText(); t.full += (t.full ? "\n\n" : "") + o.final; } break; }
             const { name, a } = normalizeToolCall(o);
@@ -3098,7 +3119,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             }
             if (!blocked && hooks) { const hr = runHooks(hooks, "PreToolUse", { TOOL_NAME: name, TOOL_ARGS: JSON.stringify(a) }, cwd); if (hr.block) { result = { error: "blocked by PreToolUse hook" + (hr.out ? ": " + hr.out : "") }; blocked = true; } }
             if (!blocked) try {
-              if (name === "read_file") { const fp = path.resolve(cwd, a.path); const mt = fs.statSync(fp).mtimeMs; if (readCache[fp] === mt) result = { content: "(unchanged since you read " + a.path + " earlier this turn — not re-sending to save tokens)" }; else { readCache[fp] = mt; const _c = fs.readFileSync(fp, "utf8"); fileGuard.recordRead(fp, _c); result = { content: _c.slice(0, 14000) }; } }
+              if (name === "read_file") { const fp = path.resolve(cwd, a.path); const mt = fs.statSync(fp).mtimeMs; if (readCache[fp] === mt) result = { content: "(unchanged since you last read " + a.path + " — still in context, not re-sending to save tokens)" }; else { readCache[fp] = mt; const _c = fs.readFileSync(fp, "utf8"); fileGuard.recordRead(fp, _c); result = { content: _c.slice(0, 14000) }; } }
               else if (name === "list_dir") result = { items: fs.readdirSync(path.resolve(cwd, a.path || "."), { withFileTypes: true }).map((e) => e.isDirectory() ? e.name + "/" : e.name).slice(0, 200) };
               else if (name === "write_file") { const fp = path.resolve(cwd, a.path); let _disk = null; try { _disk = fs.readFileSync(fp, "utf8"); } catch (_) {} const _st = fileGuard.checkOverwrite(fp, _disk); if (_st.stale && !(a.force || a.overwrite)) { result = { error: _st.reason }; transcript.push({ role: "system", text: "stale-write blocked: " + a.path + " changed on disk since Nexus last read it" }); } else { const sec = scanSecrets(a.content); if (policy.blockSecrets && sec.length) { result = { error: "BLOCKED by policy: file contains " + sec.join(", ") + " — secret writes are disabled (policy.blockSecrets)" }; transcript.push({ role: "system", text: "policy blocked write to " + a.path + " — contains " + sec.join(", ") }); if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.path, status: "blocked", reason: "secret:" + sec.join("/") }); } else { fs.mkdirSync(path.dirname(fp), { recursive: true }); const _w = a.content == null ? "" : a.content; fs.writeFileSync(fp, _w); delete readCache[fp]; fileGuard.recordWrite(fp, _w); invalidateRepoMap(); result = sec.length ? { ok: true, warning: "Nexus flagged possible secret(s) in this file: " + sec.join(", ") + " — review before committing" } : { ok: true }; if (sec.length) transcript.push({ role: "system", text: "security warning: " + a.path + " may contain " + sec.join(", ") + " — Nexus wrote it but flagged it" }); } } }
               else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]); if (!r.ok) result = { error: r.error }; else { fs.writeFileSync(fp, r.content); delete readCache[fp]; fileGuard.recordWrite(fp, r.content); invalidateRepoMap(); result = r.applied[0] && r.applied[0].mode === "flexible" ? { ok: true, note: "matched ignoring whitespace/indentation — the change was re-indented to fit; verify it reads right" } : { ok: true }; } }
@@ -3129,6 +3150,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (a.__act && !blocked) { if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.__act.path, cmd: a.__act.command, status: result && result.error ? "error" : "ok" }); if ((a.__act.type === "write" || a.__act.type === "edit") && result && !result.error) filesThisTurn++; }
             const obs = JSON.stringify(result).slice(0, 14000);
             oMsgs.push({ role: "tool", content: obs }); sess.inTok += Math.ceil(obs.length / 4);
+            elideToolHistory(oMsgs, lean ? 16000 : 40000, lean ? 3 : 6); // cap cumulative tool bytes carried within the turn
             // loop guard: if the agent is stuck repeating or oscillating, warn it; if it keeps
             // going anyway, end the turn cleanly instead of burning the whole step budget.
             const _lg = loopGuard.note(loopGuard.signature(name, a), !(result && result.error));
