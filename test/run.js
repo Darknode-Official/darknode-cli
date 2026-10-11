@@ -1936,6 +1936,97 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const stopped = await NT.runNativeToolLoop({ chat: async () => ({ provider: "ollama", body: { message: { tool_calls: [{ function: { name: "x", arguments: {} } }] } } }), dispatch: async () => "y", tools: [], maxSteps: 3 });
     ok("native loop: respects maxSteps when model never stops", stopped.hitLimit === true && stopped.calls.length === 3);
   } catch (e) { ok("native loop test threw: " + (e && e.message), false); }
+  // ===================== git_tool / lint_format / notebook_edit (Oct 2026 batch) =====================
+  group("git_tool (read-only structured git)");
+  {
+    const GT = require("../lib/nexus/git-tool");
+    ok("build status cmd", GT.buildGitCommand("status", {}).cmd === "git status --porcelain=v1 --branch");
+    ok("build log cmd clamps count + adds path", /-n 5/.test(GT.buildGitCommand("log", { count: 5, path: "a.js" }).cmd) && /-- 'a.js'/.test(GT.buildGitCommand("log", { count: 5, path: "a.js" }).cmd));
+    ok("log count is clamped to <=200", /-n 200/.test(GT.buildGitCommand("log", { count: 99999 }).cmd));
+    ok("diff --staged", /--staged/.test(GT.buildGitCommand("diff", { staged: true }).cmd));
+    ok("blame needs a path", /needs a 'path'/.test(GT.buildGitCommand("blame", {}).error));
+    ok("write op 'commit' is refused", /read-only/.test(GT.buildGitCommand("commit", {}).error));
+    ok("write op 'push' is refused", /read-only/.test(GT.buildGitCommand("push", {}).error));
+    ok("unknown op reports allowed ops", /unknown git op/.test(GT.buildGitCommand("frobnicate", {}).error));
+    ok("newline in ref is rejected", /invalid git argument/.test(GT.buildGitCommand("show", { ref: "a\nb" }).error));
+    ok("shq escapes single quotes", GT.shq("a'b") === "'a'\\''b'");
+    const st = GT.parseStatus("## main...origin/main [ahead 2, behind 1]\n M a.js\n?? new.txt\n");
+    ok("parseStatus branch+ahead+behind", st.branch === "main" && st.upstream === "origin/main" && st.ahead === 2 && st.behind === 1);
+    ok("parseStatus files + not clean", st.files.length === 2 && st.files[0].path === "a.js" && st.clean === false);
+    ok("parseStatus clean tree", GT.parseStatus("## main\n").clean === true);
+    const lg = GT.parseLog("abc123\x1fAlice\x1f2 days ago\x1fInitial commit\n");
+    ok("parseLog one commit", lg.length === 1 && lg[0].author === "Alice" && lg[0].subject === "Initial commit" && lg[0].short === "abc123");
+    const bl = GT.parseBlame("abc1234 (Alice 2024-01-02 10:00:00 +0000  12) const x = 1\n");
+    ok("parseBlame row", bl[0].commit === "abc1234" && bl[0].author === "Alice" && bl[0].line === 12 && /const x = 1/.test(bl[0].text));
+    const br = GT.parseBranches("* main\n  dev\n  remotes/origin/main\n");
+    ok("parseBranches current+local+remote", br.current === "main" && br.local.includes("dev") && br.remote.includes("origin/main"));
+    const gst = await GT.gitTool({ op: "status" }, "/repo", { run: async () => ({ code: 0, output: "## main\n M a.js\n" }) });
+    ok("gitTool status dispatch parses porcelain", gst.op === "status" && gst.status.branch === "main" && gst.status.files.length === 1);
+    const gnr = await GT.gitTool({ op: "status" }, "/repo", { run: async () => ({ code: 128, output: "fatal: not a git repository (or any of the parent directories): .git\n" }) });
+    ok("gitTool surfaces not-a-repo", /not a git repository/.test(gnr.error));
+    const gwrite = await GT.gitTool({ op: "commit" }, "/repo", { run: async () => ({ code: 0, output: "" }) });
+    ok("gitTool refuses a write op before running", /read-only/.test(gwrite.error));
+  }
+
+  group("lint_format (auto-fix formatters)");
+  {
+    const LF = require("../lib/nexus/lint-format");
+    eq("detectLangs js+python", LF.detectLangs(["package.json", "pyproject.toml", "README"]).map((l) => l.lang), ["js", "python"]);
+    eq("detectLangs none", LF.detectLangs(["README", "LICENSE"]), []);
+    const plan = LF.buildPlan(LF.detectLangs(["package.json"]), { fix: true, target: "." });
+    ok("buildPlan fix uses --write (first tool only)", plan.length === 1 && /prettier --write/.test(plan[0].cmd));
+    const planAll = LF.buildPlan(LF.detectLangs(["package.json"]), { fix: false, target: "'src'", all: true });
+    ok("buildPlan check+all includes eslint and scopes target", planAll.length === 2 && planAll.some((p) => /eslint 'src'/.test(p.cmd)) && planAll.every((p) => !/--write/.test(p.cmd)));
+    const skipped = await LF.lintFormatTool({}, "/repo", { readdir: () => ["package.json"], run: async () => ({ code: 127, output: "sh: prettier: command not found" }) });
+    ok("lintFormatTool skips an uninstalled formatter", skipped.results[0].skipped === "not installed" && /no formatter was installed/.test(skipped.note || ""));
+    const ran = await LF.lintFormatTool({}, "/repo", { readdir: () => ["package.json"], run: async () => ({ code: 0, output: "All matched files use Prettier code style!" }) });
+    ok("lintFormatTool reports a successful fix run", ran.mode === "fix" && ran.results[0].ok === true && /Ran 1 formatter/.test(ran.summary || ""));
+    const none = await LF.lintFormatTool({}, "/repo", { readdir: () => ["README"], run: async () => ({ code: 0, output: "" }) });
+    ok("lintFormatTool notes no manifest", none.ran === false && /no recognized project manifest/.test(none.note));
+  }
+
+  group("notebook_edit (.ipynb cell ops)");
+  {
+    const NB = require("../lib/nexus/notebook-edit");
+    eq("toSourceLines string->array keeps newlines", NB.toSourceLines("a\nb"), ["a\n", "b"]);
+    eq("toSourceLines passes through an array", NB.toSourceLines(["x", "y"]), ["x", "y"]);
+    const cell = NB.newCell("code", "print(1)");
+    ok("newCell code has outputs + null exec_count", cell.cell_type === "code" && Array.isArray(cell.outputs) && cell.execution_count === null);
+    ok("newCell markdown has no outputs", NB.newCell("md", "x").cell_type === "markdown" && NB.newCell("md", "x").outputs === undefined);
+    const mk = () => ({ nbformat: 4, cells: [{ cell_type: "code", source: ["x=1"], outputs: [{}], execution_count: 3 }, { cell_type: "markdown", source: ["# title"] }] });
+    ok("read summarizes all cells", NB.applyNotebookOp(mk(), { op: "read" }).result.cells.length === 2);
+    ok("read one cell by index", NB.applyNotebookOp(mk(), { op: "read", index: 1 }).result.cell.cell_type === "markdown");
+    ok("read index out of range errors", /out of range/.test(NB.applyNotebookOp(mk(), { op: "read", index: 9 }).error));
+    const edited = NB.applyNotebookOp(mk(), { op: "edit", index: 0, source: "x=2" });
+    ok("edit replaces source + clears code outputs", edited.nb.cells[0].source[0] === "x=2" && edited.nb.cells[0].outputs.length === 0 && edited.nb.cells[0].execution_count === null);
+    const inserted = NB.applyNotebookOp(mk(), { op: "insert", index: 1, cell_type: "markdown", source: "new" });
+    ok("insert adds a cell at index", inserted.nb.cells.length === 3 && inserted.nb.cells[1].cell_type === "markdown");
+    const appended = NB.applyNotebookOp(mk(), { op: "append", source: "tail" });
+    ok("append adds at the end", appended.nb.cells.length === 3 && appended.result.index === 2);
+    const deleted = NB.applyNotebookOp(mk(), { op: "delete", index: 0 });
+    ok("delete removes a cell", deleted.nb.cells.length === 1 && deleted.result.removed.index === 0);
+    ok("not a notebook errors", /not a valid notebook/.test(NB.applyNotebookOp({}, { op: "read" }).error));
+    ok("unknown op errors", /unknown op/.test(NB.applyNotebookOp(mk(), { op: "frob" }).error));
+    const ndir = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-nb-"));
+    const nfile = path.join(ndir, "nb.ipynb");
+    fs.writeFileSync(nfile, JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [{ cell_type: "code", metadata: {}, execution_count: null, outputs: [], source: ["a=1"] }] }));
+    const rd = NB.notebookEditTool({ path: nfile, op: "read" }, ndir, (p) => p);
+    ok("notebookEditTool reads cells from disk", rd.cellCount === 1 && rd.cells[0].source === "a=1");
+    const wr = NB.notebookEditTool({ path: nfile, op: "insert", cell_type: "code", source: "b=2" }, ndir, (p) => p);
+    ok("notebookEditTool insert persists to disk", wr.ok === true && JSON.parse(fs.readFileSync(nfile, "utf8")).cells.length === 2);
+    ok("notebookEditTool rejects a non-ipynb path", /only edits .ipynb/.test(NB.notebookEditTool({ path: "a.txt", op: "read" }, ndir, (p) => p).error));
+    ok("notebookEditTool rejects a path escape", /escapes/.test(NB.notebookEditTool({ path: "../x.ipynb", op: "read" }, ndir, () => { throw new Error("path escapes the project directory"); }).error));
+    fs.rmSync(ndir, { recursive: true, force: true });
+  }
+
+  {
+    const NT2 = require("../lib/nexus/native-tools");
+    ok("git_tool/lint_format/notebook_edit are registered schemas", !!NT2.TOOL_SCHEMAS.git_tool && !!NT2.TOOL_SCHEMAS.lint_format && !!NT2.TOOL_SCHEMAS.notebook_edit);
+    ok("git_tool requires op", NT2.TOOL_SCHEMAS.git_tool.required[0] === "op");
+    ok("notebook_edit requires path", NT2.TOOL_SCHEMAS.notebook_edit.required[0] === "path");
+    ok("all three listed by buildToolList", ["git_tool", "lint_format", "notebook_edit"].every((n) => NT2.buildToolList().some((t) => t.name === n)));
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();

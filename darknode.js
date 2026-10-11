@@ -2094,6 +2094,16 @@ async function deviceTool(name, a, cwd) {
   // can SEE it (screenshots/diagrams/mockups). rp() is handed in as the path-escape guard — the
   // agent loop lifts result.__vision out to forward the image, then drops it (lib/nexus/view-image.js).
   if (name === "view_image" || name === "view_img" || name === "show_image") return require("./lib/nexus/view-image").viewImageTool(a, cwd, rp);
+  // git_tool: READ-ONLY structured git (status/log/diff/show/blame/branch). coderShell is injected
+  // as the shell runner (already scoped to cwd); mutating verbs are refused inside the module
+  // (lib/nexus/git-tool.js).
+  if (name === "git_tool" || name === "git") return await require("./lib/nexus/git-tool").gitTool(a, cwd, { run: (cmd) => coderShell(cmd, cwd) });
+  // lint_format: auto-detect the project formatter/linter and FIX in place (complements `verify`,
+  // which only reports). A formatter that isn't installed is skipped gracefully (lib/nexus/lint-format.js).
+  if (name === "lint_format" || name === "lint" || name === "format" || name === "fmt") return await require("./lib/nexus/lint-format").lintFormatTool(a, cwd, { run: (cmd) => coderShell(cmd, cwd) });
+  // notebook_edit: read/edit/insert/delete Jupyter .ipynb cells structurally. rp() is handed in as
+  // the path-escape guard, exactly like view_image (lib/nexus/notebook-edit.js).
+  if (name === "notebook_edit" || name === "notebook" || name === "ipynb") return require("./lib/nexus/notebook-edit").notebookEditTool(a, cwd, rp);
   return null;
 }
 // Render one of the agentic self-check tools' result objects (invariants/attest/bisect/
