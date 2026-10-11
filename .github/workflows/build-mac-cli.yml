@@ -1,6 +1,6 @@
 name: Build macOS CLI (signed)
 
-# Builds the standalone Nexus / Sentinel CLI binaries for macOS on a native Apple
+# Builds the standalone Darknode / Nexus CLI binaries for macOS on a native Apple
 # Silicon runner (which also cross-builds the Intel target) and CODE-SIGNS them —
 # so the download runs on macOS without the "killed by kernel" gatekeeper block that
 # an unsigned, Linux-built pkg binary hits.
@@ -16,7 +16,7 @@ name: Build macOS CLI (signed)
 #   APPLE_ID                   Apple ID email (for notarization)
 #   APPLE_APP_SPECIFIC_PASSWORD  app-specific password for that Apple ID
 #   APPLE_TEAM_ID              your Apple Developer Team ID
-#   RELEASE_TOKEN              PAT with repo access to Darknode-Official/sentinel-web (to publish)
+#   RELEASE_TOKEN              PAT with repo access to Darknode-Official/darknode-web (to publish)
 on:
   workflow_dispatch:
   push:
@@ -41,12 +41,12 @@ jobs:
           npx pkg . --targets node18-macos-x64,node18-macos-arm64 --out-path dist
           echo "pkg produced:"; ls -la dist/
           # pkg omits the OS from the filename when every target shares one OS, so the
-          # names can be sentinel-cli-x64 / -arm64 OR -macos-x64 — rename by arch, not name.
-          for f in dist/sentinel-cli-*; do
-            case "$f" in *arm64*) mv -f "$f" dist/Sentinel-cli-macos-arm64;; *) mv -f "$f" dist/Sentinel-cli-macos-x64;; esac
+          # names can be darknode-cli-x64 / -arm64 OR -macos-x64 — rename by arch, not name.
+          for f in dist/darknode-cli-*; do
+            case "$f" in *arm64*) mv -f "$f" dist/Darknode-cli-macos-arm64;; *) mv -f "$f" dist/Darknode-cli-macos-x64;; esac
           done
-          echo "renamed to:"; ls -la dist/Sentinel-cli-macos-*
-          test -f dist/Sentinel-cli-macos-x64 && test -f dist/Sentinel-cli-macos-arm64
+          echo "renamed to:"; ls -la dist/Darknode-cli-macos-*
+          test -f dist/Darknode-cli-macos-x64 && test -f dist/Darknode-cli-macos-arm64
 
       - name: Code-sign (Developer ID if a cert is configured, else ad-hoc)
         env:
@@ -54,7 +54,7 @@ jobs:
           MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
         run: |
           set -e
-          BINS="dist/Sentinel-cli-macos-x64 dist/Sentinel-cli-macos-arm64"
+          BINS="dist/Darknode-cli-macos-x64 dist/Darknode-cli-macos-arm64"
           if [ -n "$MAC_CSC_LINK" ]; then
             echo "Developer ID cert present → signing with hardened runtime."
             echo "$MAC_CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
@@ -86,7 +86,7 @@ jobs:
           if [ -z "$MAC_CSC_LINK" ] || [ -z "$APPLE_ID" ]; then
             echo "Skipping notarization (needs both a Developer ID cert and APPLE_ID secrets)."; exit 0
           fi
-          for b in Sentinel-cli-macos-x64 Sentinel-cli-macos-arm64; do
+          for b in Darknode-cli-macos-x64 Darknode-cli-macos-arm64; do
             ditto -c -k --keepParent "dist/$b" "$RUNNER_TEMP/$b.zip"
             xcrun notarytool submit "$RUNNER_TEMP/$b.zip" \
               --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
@@ -96,11 +96,11 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: sentinel-cli-macos
-          path: dist/Sentinel-cli-macos-*
+          name: darknode-cli-macos
+          path: dist/Darknode-cli-macos-*
           if-no-files-found: error
 
-      - name: Publish to the downloads release (sentinel-web)
+      - name: Publish to the downloads release (darknode-web)
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
@@ -108,6 +108,6 @@ jobs:
             echo "::warning::No RELEASE_TOKEN secret — signed binaries are on this run's artifacts only, not published."
             exit 0
           fi
-          gh release upload sentinel dist/Sentinel-cli-macos-x64 dist/Sentinel-cli-macos-arm64 \
-            --repo Darknode-Official/sentinel-web --clobber
-          echo "Published signed macOS CLI binaries to the sentinel-web 'sentinel' release."
+          gh release upload darknode dist/Darknode-cli-macos-x64 dist/Darknode-cli-macos-arm64 \
+            --repo Darknode-Official/darknode-web --clobber
+          echo "Published signed macOS CLI binaries to the darknode-web 'darknode' release."
