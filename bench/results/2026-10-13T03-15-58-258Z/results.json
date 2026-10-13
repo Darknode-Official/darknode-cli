@@ -1,0 +1,310 @@
+{
+  "runId": "2026-10-13T03-15-58-258Z",
+  "agents": [
+    "nexus-claude",
+    "claude-code",
+    "codex"
+  ],
+  "results": [
+    {
+      "agent": "nexus-claude",
+      "task": "concurrency-limit",
+      "pass": true,
+      "seconds": 43.6,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "nexus-claude",
+      "task": "csv-rfc4180",
+      "pass": true,
+      "seconds": 69.4,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "nexus-claude",
+      "task": "fix-csv",
+      "pass": true,
+      "seconds": 38.6,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "nexus-claude",
+      "task": "fix-range",
+      "pass": true,
+      "seconds": 36.7,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "nexus-claude",
+      "task": "fix-stack",
+      "pass": true,
+      "seconds": 39.9,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "nexus-claude",
+      "task": "impl-fizzbuzz",
+      "pass": true,
+      "seconds": 38.1,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "nexus-claude",
+      "task": "multi-file",
+      "pass": true,
+      "seconds": 38.5,
+      "filesChanged": 2,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "nexus-claude",
+      "task": "perf-pairs",
+      "pass": true,
+      "seconds": 56.5,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "nexus-claude",
+      "task": "semver-range",
+      "pass": true,
+      "seconds": 104.4,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "nexus-claude",
+      "task": "trace-pagination",
+      "pass": true,
+      "seconds": 40.2,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "concurrency-limit",
+      "pass": true,
+      "seconds": 56,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "csv-rfc4180",
+      "pass": true,
+      "seconds": 58.9,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "fix-csv",
+      "pass": true,
+      "seconds": 45.6,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "fix-range",
+      "pass": true,
+      "seconds": 42.6,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "fix-stack",
+      "pass": true,
+      "seconds": 43.9,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "impl-fizzbuzz",
+      "pass": true,
+      "seconds": 41.9,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "multi-file",
+      "pass": true,
+      "seconds": 42.6,
+      "filesChanged": 2,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "perf-pairs",
+      "pass": true,
+      "seconds": 50.2,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "semver-range",
+      "pass": true,
+      "seconds": 78.7,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "claude-code",
+      "task": "trace-pagination",
+      "pass": true,
+      "seconds": 44.9,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "concurrency-limit",
+      "pass": false,
+      "seconds": 0.1,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "csv-rfc4180",
+      "pass": false,
+      "seconds": 0,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "fix-csv",
+      "pass": false,
+      "seconds": 0,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "fix-range",
+      "pass": false,
+      "seconds": 0,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "fix-stack",
+      "pass": false,
+      "seconds": 0,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "impl-fizzbuzz",
+      "pass": false,
+      "seconds": 0,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "multi-file",
+      "pass": false,
+      "seconds": 0,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "perf-pairs",
+      "pass": false,
+      "seconds": 0,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "semver-range",
+      "pass": false,
+      "seconds": 0,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "trace-pagination",
+      "pass": false,
+      "seconds": 0,
+      "filesChanged": 0,
+      "killed": false,
+      "exit": 2,
+      "tamperedTest": false
+    }
+  ]
+}

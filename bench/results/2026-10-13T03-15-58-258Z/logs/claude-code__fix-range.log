@@ -1,0 +1,12 @@
+# agent stdout/stderr
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+The off-by-one bug in `range.js` is fixed, and `node test.js` now prints `OK`.
+
+The loop stopped one step early because it used `i < end`. I changed it to `i <= end` in `range.js:4`, so `end` is now included. I also removed the `// BUG` comment, since it no longer applies.
+
+All four test cases pass, including the ones where start and end are equal and the one with negative numbers.
+
+
+# verify (node test.js)
+exit pass=true
+OK

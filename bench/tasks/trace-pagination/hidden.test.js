@@ -1,0 +1,11 @@
+const assert = require("assert");
+const { pages, pageCount } = require("./paginate.js");
+const fs = require("fs");
+assert.strictEqual(pageCount(0, 3), 0);
+assert.strictEqual(pageCount(3, 3), 1);
+assert.strictEqual(pageCount(9, 3), 3);
+assert.strictEqual(pageCount(10, 3), 4);
+assert.deepStrictEqual(pages([1, 2, 3, 4], 2), [[1, 2], [3, 4]]);
+assert.deepStrictEqual(pages([], 2), []);
+assert.ok(!/% *3|=== *6|length *=== *\d/.test(fs.readFileSync("./report.js", "utf8")), "report.js must not special-case");
+console.log("HIDDEN OK");

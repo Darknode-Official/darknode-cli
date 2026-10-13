@@ -1,0 +1,10 @@
+# agent stdout/stderr
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+I implemented `fizzbuzz(n)` in `fizzbuzz.js`, and `node test.js` prints `OK`.
+
+It goes through the numbers 1 to n. Numbers divisible by 15 (so by both 3 and 5) give "FizzBuzz", numbers divisible only by 3 give "Fizz", and numbers divisible only by 5 give "Buzz". Every other number is stored as a string. The value for number i ends up at index i-1.
+
+
+# verify (node test.js)
+exit pass=true
+OK

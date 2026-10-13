@@ -1,0 +1,43 @@
+# agent stdout/stderr
+error: unexpected argument '--full-auto' found
+
+  tip: to pass '--full-auto' as a value, use '-- --full-auto'
+
+Usage: codex exec [OPTIONS] [PROMPT]
+       codex exec [OPTIONS] <COMMAND> [ARGS]
+
+For more information, try '--help'.
+
+
+# verify (node test.js)
+exit pass=false
+node:assert:90
+  throw new AssertionError(obj);
+  ^
+
+AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
++ actual - expected
+
+  [
+    'INV-1',
+    'INV-2',
+    'INV-3',
+-   'INV-4',
+-   'INV-5',
+-   'INV-6'
+  ]
+    at Object.<anonymous> (/tmp/bench-trace-pagination-CF8BoJ/test.js:6:8)
+    at Module._compile (node:internal/modules/cjs/loader:1521:14)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1623:10)
+    at Module.load (node:internal/modules/cjs/loader:1266:32)
+    at Module._load (node:internal/modules/cjs/loader:1091:12)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:164:12)
+    at node:internal/main/run_main_module:28:49 {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: [ 'INV-1', 'INV-2', 'INV-3' ],
+  expected: [ 'INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5', 'INV-6' ],
+  operator: 'deepStrictEqual'
+}
+
+Node.js v20.20.2

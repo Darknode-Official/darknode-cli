@@ -61,7 +61,7 @@ function runAgent(cmd, cwd, prompt, timeoutSec) {
     const started = Date.now();
     // detached:true puts the child in its own process group so we can kill the WHOLE tree on
     // timeout (the agent spawns node -> ollama etc.; killing just `sh` leaves them running).
-    const child = spawn("sh", ["-c", cmd.replaceAll("{PROMPT}", shq(prompt))], { cwd, env: { ...process.env, NO_COLOR: "1", BENCH_PROMPT: prompt }, detached: true });
+    const child = spawn("sh", ["-c", cmd.replaceAll("{PROMPT}", shq(prompt))], { cwd, env: { ...process.env, NO_COLOR: "1", BENCH_PROMPT: prompt }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     let out = ""; const cap = (b) => { if (out.length < 200000) out += b.toString(); };
     child.stdout.on("data", cap); child.stderr.on("data", cap);
     let killed = false;
@@ -71,9 +71,23 @@ function runAgent(cmd, cwd, prompt, timeoutSec) {
     child.on("error", (e) => { clearTimeout(timer); resolve({ code: -1, out: out + "\nspawn error: " + e.message, killed, seconds: (Date.now() - started) / 1000 }); });
   });
 }
-function verify(cwd) {
-  const r = spawnSync("node", ["test.js"], { cwd, encoding: "utf8", timeout: 30000 });
-  return { pass: r.status === 0, output: (r.stdout || "") + (r.stderr || "") };
+// Score against the ORIGINAL test, never the agent's copy (an agent could otherwise weaken it),
+// plus the task's hidden test when it has one: the agent never sees it, so it catches fixes that
+// only fit the visible cases.
+function verify(cwd, task) {
+  const tampered = readFileSync(join(cwd, "test.js"), "utf8") !== readFileSync(join(task.seed, "test.js"), "utf8");
+  cpSync(join(task.seed, "test.js"), join(cwd, "test.js"));
+  const run = (f) => spawnSync("node", [f], { cwd, encoding: "utf8", timeout: 30000 });
+  const r = run("test.js");
+  let pass = r.status === 0, output = (r.stdout || "") + (r.stderr || "");
+  const hidden = join(task.dir, "hidden.test.js");
+  if (pass && existsSync(hidden)) {
+    cpSync(hidden, join(cwd, "hidden.test.js"));
+    const h = run("hidden.test.js");
+    pass = h.status === 0;
+    output += "\n# hidden test\n" + (h.stdout || "") + (h.stderr || "");
+  }
+  return { pass, output, tampered };
 }
 
 (async () => {
@@ -95,8 +109,8 @@ function verify(cwd) {
       process.stdout.write(`  ${agent.name} :: ${task.id} ... `);
       const run = await runAgent(agent.cmd, work, task.prompt, cap);
       const after = fingerprint(work);
-      const v = verify(work);
-      const rec = { agent: agent.name, task: task.id, pass: v.pass, seconds: +run.seconds.toFixed(1), filesChanged: countChanged(before, after), killed: run.killed, exit: run.code };
+      const v = verify(work, task);
+      const rec = { agent: agent.name, task: task.id, pass: v.pass, seconds: +run.seconds.toFixed(1), filesChanged: countChanged(before, after), killed: run.killed, exit: run.code, tamperedTest: v.tampered };
       results.push(rec);
       writeFileSync(join(outDir, "logs", `${agent.name}__${task.id}.log`), `# agent stdout/stderr\n${run.out}\n\n# verify (node test.js)\nexit pass=${v.pass}\n${v.output}`);
       console.log(`${v.pass ? "PASS" : "FAIL"}  (${rec.seconds}s, ${rec.filesChanged} file(s)${run.killed ? ", TIMED OUT" : ""})`);

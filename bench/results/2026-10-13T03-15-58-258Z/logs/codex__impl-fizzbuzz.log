@@ -1,0 +1,28 @@
+# agent stdout/stderr
+error: unexpected argument '--full-auto' found
+
+  tip: to pass '--full-auto' as a value, use '-- --full-auto'
+
+Usage: codex exec [OPTIONS] [PROMPT]
+       codex exec [OPTIONS] <COMMAND> [ARGS]
+
+For more information, try '--help'.
+
+
+# verify (node test.js)
+exit pass=false
+/tmp/bench-impl-fizzbuzz-tTKtIP/fizzbuzz.js:2
+  throw new Error("not implemented");
+  ^
+
+Error: not implemented
+    at fizzbuzz (/tmp/bench-impl-fizzbuzz-tTKtIP/fizzbuzz.js:2:9)
+    at Object.<anonymous> (/tmp/bench-impl-fizzbuzz-tTKtIP/test.js:3:11)
+    at Module._compile (node:internal/modules/cjs/loader:1521:14)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1623:10)
+    at Module.load (node:internal/modules/cjs/loader:1266:32)
+    at Module._load (node:internal/modules/cjs/loader:1091:12)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:164:12)
+    at node:internal/main/run_main_module:28:49
+
+Node.js v20.20.2

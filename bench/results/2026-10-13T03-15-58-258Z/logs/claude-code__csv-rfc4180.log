@@ -1,0 +1,22 @@
+# agent stdout/stderr
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+I rewrote `parseCSV` in `csv.js` to read the text one character at a time instead of splitting on newlines and commas, and `node test.js` prints `OK`.
+
+It handles everything you listed: quoted fields can contain commas, doubled quotes and line breaks, rows end with LF or CRLF, and a trailing line break doesn't add an empty row.
+
+I also ran a few extra cases by hand, and they all gave the expected result:
+- **Empty input:** returns no rows.
+- **A lone `""`:** returns one row with one empty field.
+- **A blank line in the middle:** becomes a row with one empty field.
+- **A lone `,`:** returns one row with two empty fields.
+- **A CRLF inside quotes:** kept as part of the field.
+
+For malformed input it doesn't raise an error. A quote that is never closed takes in the rest of the text, and a quote in the middle of an unquoted field just starts quoting from that point.
+
+
+# verify (node test.js)
+exit pass=true
+OK
+
+# hidden test
+HIDDEN OK
