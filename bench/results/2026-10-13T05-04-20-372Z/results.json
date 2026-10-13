@@ -1,0 +1,108 @@
+{
+  "runId": "2026-10-13T05-04-20-372Z",
+  "agents": [
+    "codex"
+  ],
+  "results": [
+    {
+      "agent": "codex",
+      "task": "concurrency-limit",
+      "pass": true,
+      "seconds": 68.2,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "csv-rfc4180",
+      "pass": true,
+      "seconds": 81.6,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "fix-csv",
+      "pass": true,
+      "seconds": 80.2,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "fix-range",
+      "pass": true,
+      "seconds": 55.8,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "fix-stack",
+      "pass": true,
+      "seconds": 60,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "impl-fizzbuzz",
+      "pass": true,
+      "seconds": 52.5,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "multi-file",
+      "pass": true,
+      "seconds": 100.5,
+      "filesChanged": 2,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "perf-pairs",
+      "pass": true,
+      "seconds": 63.2,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "semver-range",
+      "pass": true,
+      "seconds": 154.7,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    },
+    {
+      "agent": "codex",
+      "task": "trace-pagination",
+      "pass": true,
+      "seconds": 73.7,
+      "filesChanged": 1,
+      "killed": false,
+      "exit": 0,
+      "tamperedTest": false
+    }
+  ]
+}

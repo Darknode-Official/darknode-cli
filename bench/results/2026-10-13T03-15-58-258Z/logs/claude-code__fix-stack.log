@@ -1,0 +1,12 @@
+# agent stdout/stderr
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+I fixed `peek()` and the tests pass: `node test.js` prints `OK`.
+
+The bug was an off-by-one error in `stack.js:5`. `peek()` read `this.items[this.items.length]`, which is one position past the end of the array, so it always returned `undefined`. It now reads `this.items[this.items.length - 1]`, which is the item pushed most recently, and it doesn't remove anything. I also deleted the `// BUG` comment on that line.
+
+On an empty stack, `peek()` returns `undefined`, while `pop()` throws `"empty"`. The tests don't check this case. If you want the two to behave the same way, I can make `peek()` throw too.
+
+
+# verify (node test.js)
+exit pass=true
+OK

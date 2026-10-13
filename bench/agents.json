@@ -20,7 +20,7 @@
   {
     "name": "codex",
     "enabled": false,
-    "note": "OpenAI Codex CLI, no Nexus. Needs `codex` installed + authed (network). Adjust the exec flags to your codex version.",
-    "cmd": "codex exec --full-auto {PROMPT}"
+    "note": "OpenAI Codex CLI, no Nexus. Needs `codex` installed + authed (network). Sandbox is bypassed because each task already runs in an isolated temp copy, and Codex's bubblewrap sandbox fails on hosts that restrict user namespaces.",
+    "cmd": "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check {PROMPT}"
   }
 ]

@@ -1,0 +1,20 @@
+# agent stdout/stderr
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+I fixed `limit.js` and `node test.js` now prints `OK`.
+
+**What was wrong:**
+1. **It could go over the limit.** It checked `active <= n` before starting a task, so one extra task could start. Also, `next()` never checked the limit itself.
+2. **A failed task blocked the queue.** When a task rejected, the code passed the error to the caller but never lowered `active` or started the next task. Each failure took up a slot for good, and with a limit of 1 the whole queue stopped.
+3. **Errors thrown before a task returned its promise weren't caught.** If a task threw right away, the error escaped instead of rejecting that task's promise.
+
+**The fix:** `next()` now starts tasks in a loop while `active < n` and the queue isn't empty. Each task runs through `Promise.resolve().then(fn)`, so an immediate throw becomes a rejection too. A `.finally` lowers `active` and calls `next()` whether the task succeeded or failed.
+
+I also ran a quick extra check with a limit of 1 and three tasks: one that throws immediately, one that rejects later, and one that succeeds. Each promise got its own result (rejected with "sync", rejected with "async", resolved with 3), the third task still ran, and no more than one task ran at a time.
+
+
+# verify (node test.js)
+exit pass=true
+OK
+
+# hidden test
+HIDDEN OK

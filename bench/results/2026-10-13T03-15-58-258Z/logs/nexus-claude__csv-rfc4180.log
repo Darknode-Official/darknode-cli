@@ -1,0 +1,27 @@
+# agent stdout/stderr
+  ▎ nexus  claude
+
+    I rewrote `parseCSV` in `csv.js`, and `node test.js` now prints `OK`.
+    
+    It reads the text one character at a time, tracking whether it's inside a quoted field:
+    - **Quoted fields:** a field that starts with `"` is quoted. Inside it, `""` becomes a literal `"`, and commas and line breaks are kept as part of the value.
+    - **Rows:** a row ends at an unquoted LF or CRLF. A line break at the very end of the input doesn't add an empty row, and empty input returns `[]`.
+    
+    Beyond the four tests, I also tried a few edge cases and they came out right:
+    - a quoted field containing a line break: `"a\nb",c\r\n` → `[["a\nb","c"]]`
+    - empty fields: `a,\n,b` → `[["a",""],["","b"]]`
+    - a blank line in the middle: `x\r\n\r\ny` → `[["x"],[""],["y"]]`
+    - an empty quoted field as the last row with no line break after it: `a\n""` → `[["a"],[""]]`
+    
+    Two lenient behaviours, since RFC 4180 doesn't define what to do with malformed input:
+    - **Stray quotes:** a `"` in the middle of an unquoted field is kept as a normal character.
+    - **Unclosed quotes:** if a quoted field never closes, everything up to the end of the input goes into that field. No error is raised.
+    
+
+
+# verify (node test.js)
+exit pass=true
+OK
+
+# hidden test
+HIDDEN OK

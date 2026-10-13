@@ -1,0 +1,15 @@
+# agent stdout/stderr
+  ▎ nexus  claude
+
+    I fixed both edge cases in `parseCSV` in `csv.js`, and `node test.js` now prints `OK`.
+    
+    - **Empty input:** an empty string now returns `[]` right away instead of `[[""]]`.
+    - **Trailing newline:** if the last line after splitting is empty, it's dropped, so `"a,b\n1,2\n"` no longer gets an extra `[""]` row.
+    
+    Only one trailing newline is removed. Input ending in `"\n\n"` still produces one empty row, and blank lines in the middle of the text are still kept as rows.
+    
+
+
+# verify (node test.js)
+exit pass=true
+OK

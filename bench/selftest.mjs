@@ -29,7 +29,12 @@ for (const id of readdirSync(TASKS_DIR).sort()) {
   const w2 = mkdtempSync(join(tmpdir(), `st-${id}-sol-`));
   cpSync(join(dir, "seed"), w2, { recursive: true });
   if (existsSync(join(dir, "solution"))) cpSync(join(dir, "solution"), w2, { recursive: true });
-  const solPass = runTest(w2);
+  let solPass = runTest(w2);
+  // 3. a hidden test, when the task has one, must also pass with the solution
+  if (solPass && existsSync(join(dir, "hidden.test.js"))) {
+    cpSync(join(dir, "hidden.test.js"), join(w2, "hidden.test.js"));
+    solPass = spawnSync("node", ["hidden.test.js"], { cwd: w2, encoding: "utf8", timeout: 30000 }).status === 0;
+  }
   rmSync(w2, { recursive: true, force: true });
 
   const ok = !seedPass && solPass;

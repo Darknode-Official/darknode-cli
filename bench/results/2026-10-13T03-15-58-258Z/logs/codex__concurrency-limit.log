@@ -1,0 +1,24 @@
+# agent stdout/stderr
+error: unexpected argument '--full-auto' found
+
+  tip: to pass '--full-auto' as a value, use '-- --full-auto'
+
+Usage: codex exec [OPTIONS] [PROMPT]
+       codex exec [OPTIONS] <COMMAND> [ARGS]
+
+For more information, try '--help'.
+
+
+# verify (node test.js)
+exit pass=false
+AssertionError [ERR_ASSERTION]: peak concurrency must equal the limit
+
+3 !== 2
+
+    at /tmp/bench-concurrency-limit-zKE0Hq/test.js:10:10 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: 3,
+  expected: 2,
+  operator: 'strictEqual'
+}

@@ -1,0 +1,13 @@
+const assert = require("assert");
+const { satisfies: s } = require("./semver.js");
+assert.strictEqual(s("1.2.3", "1.2.3"), true);
+assert.strictEqual(s("1.2.4", ">=1.2.3 <2.0.0"), true);
+assert.strictEqual(s("2.0.0", ">=1.2.3 <2.0.0"), false);
+assert.strictEqual(s("1.9.9", "^1.2.3"), true);
+assert.strictEqual(s("2.0.0", "^1.2.3"), false);
+assert.strictEqual(s("1.2.9", "~1.2.3"), true);
+assert.strictEqual(s("1.3.0", "~1.2.3"), false);
+assert.strictEqual(s("3.1.0", "1.x || >=3.0.0"), true);
+assert.strictEqual(s("2.5.0", "1.x || >=3.0.0"), false);
+assert.strictEqual(s("9.9.9", "*"), true);
+console.log("OK");

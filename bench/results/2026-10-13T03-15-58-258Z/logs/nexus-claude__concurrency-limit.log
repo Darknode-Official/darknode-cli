@@ -1,0 +1,19 @@
+# agent stdout/stderr
+  ▎ nexus  claude
+
+    I fixed `limit.js` and `node test.js` now prints `OK`. I also ran a quick extra check with a limit of 1: two tasks that fail (one async, one throwing immediately) each rejected with their own error. The two tasks after them still ran and returned their values, and no more than one task ever ran at once.
+    
+    What was wrong:
+    1. **Going over the limit:** the check was `if (active <= n)`, which lets an extra task start. It's now `active < n`.
+    2. **Failures stalling the queue:** when a task rejected, `active` was never decreased and the next task was never started. Now every finished task, whether it succeeded or failed, decreases the count and starts the next one (done in `.finally`).
+    3. **Not filling free slots:** `next()` only started one task per call. It now loops, starting tasks until the limit is reached or the queue is empty.
+    4. **Tasks that throw immediately:** a task that throws before returning a promise now rejects its own promise instead of breaking the limiter.
+    
+
+
+# verify (node test.js)
+exit pass=true
+OK
+
+# hidden test
+HIDDEN OK

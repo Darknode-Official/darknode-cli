@@ -1,0 +1,33 @@
+# agent stdout/stderr
+error: unexpected argument '--full-auto' found
+
+  tip: to pass '--full-auto' as a value, use '-- --full-auto'
+
+Usage: codex exec [OPTIONS] [PROMPT]
+       codex exec [OPTIONS] <COMMAND> [ARGS]
+
+For more information, try '--help'.
+
+
+# verify (node test.js)
+exit pass=false
+node:internal/assert/utils:281
+    throw err;
+    ^
+
+AssertionError [ERR_ASSERTION]: too slow: 16968ms
+    at Object.<anonymous> (/tmp/bench-perf-pairs-abqiGb/test.js:9:8)
+    at Module._compile (node:internal/modules/cjs/loader:1521:14)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1623:10)
+    at Module.load (node:internal/modules/cjs/loader:1266:32)
+    at Module._load (node:internal/modules/cjs/loader:1091:12)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:164:12)
+    at node:internal/main/run_main_module:28:49 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: false,
+  expected: true,
+  operator: '=='
+}
+
+Node.js v20.20.2

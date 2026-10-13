@@ -1,0 +1,13 @@
+# agent stdout/stderr
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+I fixed `parseCSV` in `csv.js`, and `node test.js` now prints `OK`.
+
+- **Empty input:** `""` now returns `[]` instead of `[[""]]`.
+- **Trailing newline:** if the text ends with a newline, the empty last line is dropped, so there's no extra empty row.
+
+Only one trailing newline is dropped. Input ending in `"\n\n"` still produces one empty row, which keeps blank lines that are actually part of the data. It also still splits only on `\n`, so files with Windows line endings (`\r\n`) will leave a `\r` at the end of the last field in each row.
+
+
+# verify (node test.js)
+exit pass=true
+OK

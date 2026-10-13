@@ -1,0 +1,242 @@
+# agent stdout/stderr
+Reading additional input from stdin...
+OpenAI Codex v0.157.1
+--------
+workdir: /tmp/bench-concurrency-limit-zAFPjD
+model: gpt-5.6-terra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a133a5-bf5c-7612-838c-f6f9b29b214f
+--------
+user
+limit.js exports pLimit(n), which should run at most n async tasks at a time and return, for each call, a promise of that task's result. It has bugs: it can exceed the limit, and a task that rejects can stall the rest of the queue. Fix it so the limit always holds, every task's own promise resolves or rejects with that task's outcome, and a failure never blocks later tasks. Verify with: node test.js
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+hook: SessionStart Completed
+codex
+I’ll inspect the limiter and its tests, then patch the scheduling logic and run the requested test command.
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/bash -lc "pwd && rg --files && sed -n '1,240p' limit.js && sed -n '1,260p' test.js" in /tmp/bench-concurrency-limit-zAFPjD
+ succeeded in 0ms:
+/tmp/bench-concurrency-limit-zAFPjD
+test.js
+limit.js
+function pLimit(n) {
+  let active = 0;
+  const queue = [];
+  function next() {
+    if (!queue.length) return;
+    active++;
+    const { fn, resolve, reject } = queue.shift();
+    fn().then((v) => { active--; resolve(v); next(); }, reject);
+  }
+  return (fn) => new Promise((resolve, reject) => {
+    queue.push({ fn, resolve, reject });
+    if (active <= n) next();
+  });
+}
+module.exports = { pLimit };
+const assert = require("assert");
+const { pLimit } = require("./limit.js");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+(async () => {
+  const limit = pLimit(2);
+  let active = 0, peak = 0;
+  const job = (i) => limit(async () => { active++; peak = Math.max(peak, active); await sleep(20); active--; return i * 2; });
+  const out = await Promise.all([1, 2, 3, 4, 5, 6].map(job));
+  assert.deepStrictEqual(out, [2, 4, 6, 8, 10, 12]);
+  assert.strictEqual(peak, 2, "peak concurrency must equal the limit");
+  console.log("OK");
+})().catch((e) => { console.error(e); process.exit(1); });
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+apply patch
+patch: completed
+/tmp/bench-concurrency-limit-zAFPjD/limit.js
+diff --git a/limit.js b/limit.js
+index 526fcd315624ea7faef470d8129927749bf25b28..9618b3bf120c72f7e3601b598c902a14e553ce30
+--- a/limit.js
++++ b/limit.js
+@@ -2,14 +2,21 @@
+   let active = 0;
+   const queue = [];
+   function next() {
+-    if (!queue.length) return;
+-    active++;
+-    const { fn, resolve, reject } = queue.shift();
+-    fn().then((v) => { active--; resolve(v); next(); }, reject);
++    while (active < n && queue.length) {
++      active++;
++      const { fn, resolve, reject } = queue.shift();
++      Promise.resolve()
++        .then(fn)
++        .then(resolve, reject)
++        .finally(() => {
++          active--;
++          next();
++        });
++    }
+   }
+   return (fn) => new Promise((resolve, reject) => {
+     queue.push({ fn, resolve, reject });
+-    if (active <= n) next();
++    next();
+   });
+ }
+ module.exports = { pLimit };
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+diff --git a/limit.js b/limit.js
+index 526fcd315624ea7faef470d8129927749bf25b28..9618b3bf120c72f7e3601b598c902a14e553ce30
+--- a/limit.js
++++ b/limit.js
+@@ -2,14 +2,21 @@
+   let active = 0;
+   const queue = [];
+   function next() {
+-    if (!queue.length) return;
+-    active++;
+-    const { fn, resolve, reject } = queue.shift();
+-    fn().then((v) => { active--; resolve(v); next(); }, reject);
++    while (active < n && queue.length) {
++      active++;
++      const { fn, resolve, reject } = queue.shift();
++      Promise.resolve()
++        .then(fn)
++        .then(resolve, reject)
++        .finally(() => {
++          active--;
++          next();
++        });
++    }
+   }
+   return (fn) => new Promise((resolve, reject) => {
+     queue.push({ fn, resolve, reject });
+-    if (active <= n) next();
++    next();
+   });
+ }
+ module.exports = { pLimit };
+
+hook: PreToolUse
+hook: PreToolUse
+hook: PreToolUse Completed
+hook: PreToolUse Completed
+exec
+/bin/bash -lc 'node test.js' in /tmp/bench-concurrency-limit-zAFPjD
+ succeeded in 0ms:
+OK
+
+hook: PostToolUse
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse Completed
+diff --git a/limit.js b/limit.js
+index 526fcd315624ea7faef470d8129927749bf25b28..9618b3bf120c72f7e3601b598c902a14e553ce30
+--- a/limit.js
++++ b/limit.js
+@@ -2,14 +2,21 @@
+   let active = 0;
+   const queue = [];
+   function next() {
+-    if (!queue.length) return;
+-    active++;
+-    const { fn, resolve, reject } = queue.shift();
+-    fn().then((v) => { active--; resolve(v); next(); }, reject);
++    while (active < n && queue.length) {
++      active++;
++      const { fn, resolve, reject } = queue.shift();
++      Promise.resolve()
++        .then(fn)
++        .then(resolve, reject)
++        .finally(() => {
++          active--;
++          next();
++        });
++    }
+   }
+   return (fn) => new Promise((resolve, reject) => {
+     queue.push({ fn, resolve, reject });
+-    if (active <= n) next();
++    next();
+   });
+ }
+ module.exports = { pLimit };
+
+codex
+Fixed `pLimit` scheduling: it now never exceeds `n`, propagates each task’s own result or rejection, and always releases a slot after failures.
+
+Verified with `node test.js` — `OK`.
+diff --git a/limit.js b/limit.js
+index 526fcd315624ea7faef470d8129927749bf25b28..9618b3bf120c72f7e3601b598c902a14e553ce30
+--- a/limit.js
++++ b/limit.js
+@@ -2,14 +2,21 @@
+   let active = 0;
+   const queue = [];
+   function next() {
+-    if (!queue.length) return;
+-    active++;
+-    const { fn, resolve, reject } = queue.shift();
+-    fn().then((v) => { active--; resolve(v); next(); }, reject);
++    while (active < n && queue.length) {
++      active++;
++      const { fn, resolve, reject } = queue.shift();
++      Promise.resolve()
++        .then(fn)
++        .then(resolve, reject)
++        .finally(() => {
++          active--;
++          next();
++        });
++    }
+   }
+   return (fn) => new Promise((resolve, reject) => {
+     queue.push({ fn, resolve, reject });
+-    if (active <= n) next();
++    next();
+   });
+ }
+ module.exports = { pLimit };
+
+hook: Stop
+hook: Stop
+hook: Stop
+hook: Stop Completed
+hook: Stop Completed
+hook: Stop Completed
+tokens used
+21,629
+Fixed `pLimit` scheduling: it now never exceeds `n`, propagates each task’s own result or rejection, and always releases a slot after failures.
+
+Verified with `node test.js` — `OK`.
+
+
+# verify (node test.js)
+exit pass=true
+OK
+
+# hidden test
+HIDDEN OK

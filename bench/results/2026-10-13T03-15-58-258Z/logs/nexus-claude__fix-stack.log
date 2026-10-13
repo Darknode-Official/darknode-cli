@@ -1,0 +1,14 @@
+# agent stdout/stderr
+  ▎ nexus  claude
+
+    I fixed `peek()`, and `node test.js` now prints `OK`.
+    
+    The bug was an off-by-one error. `peek()` read `this.items[this.items.length]`, which is one slot past the end of the array, so it always got `undefined`. It now reads `this.items[this.items.length - 1]` (`stack.js:5`), which is the most recently pushed item, and it doesn't remove anything from the stack.
+    
+    On an empty stack, `peek()` returns `undefined`, while `pop()` throws an error. The tests don't check this case. If you want `peek()` to throw too, I can make that change.
+    
+
+
+# verify (node test.js)
+exit pass=true
+OK
