@@ -19,6 +19,7 @@ const { pickCoderModel } = require("../lib/nexus/ollama");
 const { validatePolicy, validateTeam } = require("../lib/cli/validate");
 const { oneline, extractJson } = require("../lib/cli/text");
 const { frameDiff, diffTokens, wordHi } = require("../lib/cli/diff");
+const { stripAnsi, visLen, fitWidth, padRight, shortenPath, bootHeader } = require("../lib/cli/tui-format");
 const { TOP_PORTS, parsePorts, idHash, parseCve, cidrCalc, ipToInt, inCidr } = require("../lib/toolkit/scanutil");
 const { DONE_TOKEN, loopDecision, clampRounds, loopPrompt } = require("../lib/nexus/loop");
 const { semverGt, autoUpdateMode, shouldCheck } = require("../lib/nexus/update");
@@ -2025,6 +2026,54 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("git_tool requires op", NT2.TOOL_SCHEMAS.git_tool.required[0] === "op");
     ok("notebook_edit requires path", NT2.TOOL_SCHEMAS.notebook_edit.required[0] === "path");
     ok("all three listed by buildToolList", ["git_tool", "lint_format", "notebook_edit"].every((n) => NT2.buildToolList().some((t) => t.name === n)));
+  }
+
+  group("tui-format (boot header + width fitting)");
+  {
+    const A = (s) => "\x1b[36m" + s + "\x1b[0m"; // a sample colored span
+    // visLen / stripAnsi are ANSI-aware
+    eq("visLen ignores color codes", visLen(A("hello")), 5);
+    eq("stripAnsi removes escapes", stripAnsi(A("hi")), "hi");
+    // fitWidth: no-op when it fits, truncates with ellipsis otherwise
+    eq("fitWidth keeps short strings", fitWidth("hello", 10), "hello");
+    eq("fitWidth truncates with ellipsis", fitWidth("hello world", 7), "hello …");
+    eq("fitWidth max<=0 is empty", fitWidth("hello", 0), "");
+    ok("fitWidth counts visible width, not bytes", visLen(fitWidth(A("hello world"), 7)) === 7);
+    ok("fitWidth re-closes color when it cuts mid-span", /\x1b\[0m$/.test(fitWidth(A("hello world"), 7)));
+    ok("plain input stays escape-free (NO_COLOR safe)", !/\x1b/.test(fitWidth("hello world", 6)));
+    // padRight never truncates
+    eq("padRight pads to width", padRight("ab", 5), "ab   ");
+    eq("padRight leaves longer strings", padRight("abcdef", 3), "abcdef");
+    ok("padRight pads by visible width", visLen(padRight(A("ab"), 5)) === 5);
+    // shortenPath: ~ for home, tail-preserving truncation
+    eq("shortenPath collapses home to ~", shortenPath("/home/u/p", 20, "/home/u"), "~/p");
+    eq("shortenPath keeps whole path when it fits", shortenPath("/a/b", 20, "/x"), "/a/b");
+    ok("shortenPath truncates from the left and fits", visLen(shortenPath("/home/u/very/deep/project/dir", 12, "/home/u")) <= 12);
+    ok("shortenPath keeps the informative tail", /dir$/.test(shortenPath("/home/u/very/deep/project/dir", 12, "/home/u")));
+    // bootHeader: plain (NO_COLOR / non-TTY) output carries no escapes
+    const plain = bootHeader({ version: "2.46.0", engine: "claude", engineLabel: "Claude Code", cwd: "/home/u/proj", branch: "main", home: "/home/u", cols: 80 });
+    ok("bootHeader returns an array of lines", Array.isArray(plain) && plain.length >= 5);
+    ok("bootHeader plain output has no ANSI escapes", plain.every((l) => !/\x1b/.test(l)));
+    ok("bootHeader shows the product name", plain.some((l) => /NEXUS/.test(l)));
+    ok("bootHeader shows the version", plain.some((l) => /v2\.46\.0/.test(l)));
+    ok("bootHeader shows engine + label", plain.some((l) => /engine/.test(l) && /Claude Code/.test(l)));
+    ok("bootHeader shows the branch", plain.some((l) => /branch/.test(l) && /main/.test(l)));
+    ok("bootHeader shows the cwd with ~ home", plain.some((l) => /~\/proj/.test(l)));
+    ok("bootHeader includes the key hints", plain.some((l) => /\/help/.test(l) && /\/model/.test(l) && /Esc/.test(l)));
+    // every line fits the terminal width (80 and a narrow 40)
+    ok("bootHeader fits 80 cols", plain.every((l) => visLen(l) <= 80));
+    const narrow = bootHeader({ version: "2.46.0", engine: "ollama", cwd: "/home/u/very/deep/nested/project/path", branch: "feature/x", home: "/home/u", cols: 40 });
+    ok("bootHeader fits a narrow 40 cols", narrow.every((l) => visLen(l) <= 40));
+    ok("bootHeader drops the tagline when narrow", narrow.every((l) => !/multi-engine coding agent/.test(l)));
+    // colored output via paint hooks still fits and does carry escapes
+    const colored = bootHeader({ version: "2.46.0", engine: "claude", cwd: "/home/u/proj", home: "/home/u", cols: 80, paint: { brand: (s) => "\x1b[1m" + s + "\x1b[0m", accent: A, muted: A } });
+    ok("bootHeader colored output carries escapes", colored.some((l) => /\x1b/.test(l)));
+    ok("bootHeader colored output still fits width", colored.every((l) => visLen(l) <= 80));
+    // model row only appears when it differs from the engine
+    const noModel = bootHeader({ version: "1", engine: "claude", model: "claude", cwd: "/x", cols: 80 });
+    ok("bootHeader hides a redundant model row", !noModel.some((l) => /^\s*model/.test(l)));
+    const withModel = bootHeader({ version: "1", engine: "claude", model: "claude-sonnet-4", cwd: "/x", cols: 80 });
+    ok("bootHeader shows a distinct model row", withModel.some((l) => /model/.test(l) && /sonnet/.test(l)));
   }
 
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");

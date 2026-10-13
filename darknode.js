@@ -15,7 +15,7 @@ const crypto = require("crypto");
 const readline = require("readline");
 const os = require("os");
 const dnsp = require("dns").promises;
-const VERSION = "2.45.0";
+const VERSION = "2.46.0";
 
 // ---- backward compat: accept old SENTINEL_* env vars as DARKNODE_* ----
 for (const k of Object.keys(process.env)) { if (k.startsWith("SENTINEL_") && !process.env["DARKNODE_" + k.slice(9)]) process.env["DARKNODE_" + k.slice(9)] = process.env[k]; }
@@ -26,10 +26,15 @@ let tuiActive = false; // set while the full-screen TUI owns the terminal, so th
 const A = { reset: "\x1b[0m", b: "\x1b[1m", dim: "\x1b[2m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m", mag: "\x1b[35m", gray: "\x1b[90m", blue: "\x1b[34m" };
 const p = (code, s) => (useColor ? code + s + A.reset : s);
 const cyan = (s) => p(A.cyan, s), green = (s) => p(A.green, s), red = (s) => p(A.red, s), yellow = (s) => p(A.yellow, s), gray = (s) => p(A.gray, s), bold = (s) => p(A.b, s), mag = (s) => p(A.mag, s), blue = (s) => p(A.blue, s), dim = (s) => p(A.dim, s);
+// Semantic palette — the single place the UI maps meaning to color. Build new
+// UI from these roles (accent/ok/warn/err/muted/faint/info/strong) rather than
+// reaching for a raw color, so the look stays consistent and themeable.
+const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint: dim, info: blue, special: mag, strong: bold };
 
 const { frameDiff, wordHi } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
+const { bootHeader } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header)
 const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA codes (lib/totp.js)
 
 // ---------- data ----------
@@ -1536,16 +1541,10 @@ async function aiCoder(argv) {
     }
     if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
   if (!printMode) {
-    banner();
-    const W = 56, bx = (s) => cyan("│ ") + s + " ".repeat(Math.max(0, W - 1 - s.length)) + cyan("│");
-    const dir = cwd.length > W - 8 ? "…" + cwd.slice(-(W - 9)) : cwd;
-    console.log("  " + cyan("╭" + "─".repeat(W) + "╮"));
-    console.log("  " + bx("Nexus — AI coding agent"));
-    console.log("  " + bx("engine: " + engine + (model ? "  (" + model + ")" : "  (Claude Code)")));
-    console.log("  " + bx("dir:    " + dir));
-    if (nexusMd) console.log("  " + bx("context: .nexus/NEXUS.md loaded"));
-    console.log("  " + cyan("╰" + "─".repeat(W) + "╯"));
-    console.log("  " + gray("message Nexus below · /help for commands · /exit to quit") + (autoApprove ? gray(" · auto-approve ON") : "") + "\n");
+    const paint = useColor ? { brand: bold, accent: mag, muted: gray, faint: dim, rule: gray, value: cyan } : null;
+    const cols = (process.stdout.columns || 80);
+    for (const ln of bootHeader({ version: VERSION, engine, engineLabel: (ENGINES[engine] || {}).label, model: model || "", cwd, home: os.homedir(), cols, paint })) console.log(ln);
+    if (nexusMd || autoApprove) console.log("  " + gray((nexusMd ? ".nexus/NEXUS.md loaded" : "") + (nexusMd && autoApprove ? "  ·  " : "") + (autoApprove ? "auto-approve ON" : "")) + "\n");
   }
   const SYS = "Nexus — coding agent in " + cwd + ". One action/step, read observation, repeat. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} list_dir{path?} run_command{command}. Reply ONE JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Prefer edit_file for changes. Greetings/questions → action:final immediately. Else work until done.\nEfficiency: minimize calls. Chain shell commands with && or ;. Read only needed lines. Never re-read after write. Simple task = 2-5 calls." + (nexusMd ? "\n\nPROJECT:\n" + nexusMd.slice(0, 1000) : "");
   const messages = [{ role: "system", content: SYS }];
@@ -2343,7 +2342,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const out = process.stdout, ESC = "\x1b";
     const cols = () => out.columns || 80, rows = () => out.rows || 24;
     const PAID = {}, CTXW = {}; for (const e of ENGINE_ORDER) { PAID[e] = ENGINES[e].paid; CTXW[e] = ENGINES[e].ctx; } // derived from the registry — never drifts
-    const transcript = [{ role: "art" }, { role: "system", text: "AI coding agent  ·  " + engine + "  ·  " + cwd + "\ntype a message  ·  / for commands  ·  @file / @image.png  ·  !cmd shell  ·  #note memory" }];
+    const transcript = [{ role: "art" }, { role: "system", text: "type a message, or:  / commands  ·  @file / @image.png attach  ·  !cmd shell  ·  #note memory" }];
     const sess = { model: engine, ctxWindow: CTXW[engine] || 200000, ctxUsed: 0, inTok: 0, outTok: 0, cost: 0, liveOut: 0 };
     const ident = resolveOperator({ cwd }); // operator/team for chargeback attribution + audit provenance
     const oMsgs = nexusMd ? [{ role: "system", content: "Nexus coding assistant.\n" + nexusMd }] : [{ role: "system", content: "Nexus coding assistant." }];
@@ -2435,15 +2434,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const colorCode = (v) => { if (!v) return null; if (COLORS[v]) return COLORS[v]; if (/^\d{1,3}$/.test(v) && +v <= 255) return "38;5;" + v; const h = v.replace(/^#/, ""); if (/^[0-9a-fA-F]{6}$/.test(h)) return "38;2;" + parseInt(h.slice(0, 2), 16) + ";" + parseInt(h.slice(2, 4), 16) + ";" + parseInt(h.slice(4, 6), 16); return null; };
     const setAccent = (code) => { A.cyan = "\x1b[" + code + "m"; };
     try { const st = readGlobal("state.json", {}) || {}; if (st.accent) setAccent(st.accent); if (Array.isArray(st.gradient) && st.gradient.length) GRAD = st.gradient; } catch (_) {}
-    const gline = (s, i) => useColor ? "\x1b[1;" + GRAD[i % GRAD.length] + "m" + s + "\x1b[0m" : s;
-    const ART = [
-      "  ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗",
-      "  ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝",
-      "  ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗",
-      "  ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║",
-      "  ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║",
-      "  ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝",
-    ];
     const CMDS = [
       ["/help", "commands, input prefixes & keys"], ["/clear", "start a fresh chat"], ["/compact", "summarize & shrink the context"],
       ["/trust", "trust this workspace's .nexus MCP servers + hooks"],
@@ -2576,7 +2566,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const bodyLines = () => {
       const L = [];
       for (const m of transcript) {
-        if (m.role === "art") { const w = stripA(ART[0]).length; const wm = useColor ? "N E X U S".split("").map((ch, k) => "\x1b[1;" + GRAD[k % GRAD.length] + "m" + ch).join("") + "\x1b[0m" : "N E X U S"; L.push(""); L.push(gline("  " + "▁".repeat(Math.max(0, w - 2)), 0)); ART.forEach((ln, i) => L.push(gline(ln, i))); L.push(gline("  " + "▔".repeat(Math.max(0, w - 2)), 4)); L.push("  " + wm + gray("   the multi-engine AI coding agent   ") + mag("v" + VERSION)); L.push(""); continue; }
+        if (m.role === "art") {
+          // Compact, calm header (no wall of ASCII, no rainbow). One tidy
+          // wordmark + the facts that matter: engine/model, cwd, branch, hints.
+          const wordmark = useColor ? "NEXUS".split("").map((ch, k) => "\x1b[1;" + GRAD[k % GRAD.length] + "m" + ch).join("") + "\x1b[0m" : "NEXUS";
+          const paint = useColor ? { brand: () => wordmark, accent: mag, muted: gray, faint: dim, rule: gray, value: (s) => s } : null;
+          for (const ln of bootHeader({ version: VERSION, engine, engineLabel: (ENGINES[engine] || {}).label, model: sess.model !== engine ? sess.model : "", cwd, branch: gitBranch, home: os.homedir(), cols: cols(), paint })) L.push(ln);
+          continue;
+        }
         if (m.role === "diff") {
           const W = cols() - 3;
           const raw = String(m.text).replace(/\r/g, "").split("\n");
@@ -4220,41 +4217,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
     } catch (err) { busy = false; try { transcript.push({ role: "system", text: "internal error: " + (err && err.message || err) }); render(); } catch (_) {} } });
     out.on("resize", onResize);
-    // ---- boot loading animation ----
-    (function boot() {
-      if (fastBoot) return finishBoot();   // instant start when asked
-      const caps = [["claude", hasBin("claude")], ["ollama", false], ["opencode", hasBin("opencode")], ["git", fs.existsSync(path.join(cwd, ".git"))], ["index", fs.existsSync(path.join(cwd, ".nexus", "index.json"))], ["memory", fs.existsSync(path.join(cwd, ".nexus", "NEXUS.md"))]];
-      let localModels = -1; try { ollamaTags().then((m) => { localModels = m.length; }).catch(() => { localModels = 0; }); } catch (_) { localModels = 0; }
-      const taglines = ["multi-engine · Claude + local + OpenCode", "race cloud vs local — /race", "save tokens — /cowork /lean /effort", "git-native — /undo /diff /commit", "secure by default — /guard /redact", "private local RAG — /index", "50+ commands — just type /", "press any key to skip"];
-      const artW = ART[0].length;
-      const gart = (s, i, off) => useColor ? "\x1b[1;" + GRAD[(i + off) % GRAD.length] + "m" + s + "\x1b[0m" : s;
-      const stars = []; for (let k = 0; k < 16; k++) stars.push({ x: 1 + (Math.random() * (cols() - 2) | 0), y: 1 + (Math.random() * (rows() - 2) | 0), ph: (Math.random() * 6) | 0 });
-      let f = 0; const total = 12;   // was 22 — ~half the frames, snappier start
-      bootTimer = setInterval(() => {
-        const C = cols(), R = rows(), cx = (C / 2) | 0, cy = (R / 2) | 0, top = Math.max(1, cy - 6);
-        caps[1][1] = localModels > 0;
-        const put = (row, str, vis) => ESC + "[" + row + ";" + Math.max(1, cx - (((vis || str.length) / 2) | 0)) + "H" + str;
-        let b = ESC + "[2J";
-        for (const s of stars) { if (s.x >= C || s.y >= R) continue; const tw = (f + s.ph) % 6; const ch = tw < 2 ? "·" : tw < 4 ? "+" : "*"; b += ESC + "[" + s.y + ";" + s.x + "H" + (tw < 2 ? gray(ch) : tw < 4 ? dim(cyan(ch)) : cyan(ch)); } // twinkling starfield behind the logo
-        for (let i = 0; i < ART.length; i++) b += ESC + "[" + (top + i) + ";" + Math.max(1, cx - (artW / 2 | 0)) + "H" + gart(ART[i], i, f); // shimmer wave down the logo
-        b += put(top + ART.length + 1, dim(gray("the multi-engine AI coding agent")), 32);
-        const nShown = Math.min(caps.length, ((f / total) * caps.length | 0) + 1);
-        let cap = ""; for (let i = 0; i < nShown; i++) { const [nm, okc] = caps[i]; cap += (okc ? green("●") : gray("○")) + " " + (okc ? nm : gray(nm)) + (nm === "ollama" && localModels > 0 ? gray("(" + localModels + ")") : "") + "   "; }
-        b += put(top + ART.length + 3, cap, stripA(cap).length);
-        const bar = Math.round((f / total) * 26);
-        b += put(top + ART.length + 5, gray("[") + cyan("▓".repeat(bar)) + gray("░".repeat(26 - bar)) + gray("]"), 28);
-        const tl = taglines[(f / 3 | 0) % taglines.length];
-        b += put(top + ART.length + 7, cyan(tl), tl.length);
-        out.write(b);
-        if (++f > total) { clearInterval(bootTimer); bootTimer = null;
-          // power-on flash: one bright frame of the logo, then hand off to the chat
-          const cx2 = (cols() / 2) | 0, cy2 = (rows() / 2) | 0, top2 = Math.max(1, cy2 - 6);
-          let fl = ESC + "[2J"; for (let i = 0; i < ART.length; i++) fl += ESC + "[" + (top2 + i) + ";" + Math.max(1, cx2 - (artW / 2 | 0)) + "H" + (useColor ? "\x1b[1;97m" + ART[i] + "\x1b[0m" : ART[i]);
-          out.write(fl);
-          setTimeout(finishBoot, 80);
-        }
-      }, 45);
-    })();
+    // ---- boot ----
+    // No animation, no starfield, no latency: render the compact header (see the
+    // "art" transcript row) straight away. fastBoot/NO_MOTION kept for parity.
+    finishBoot();
+    void fastBoot;
   });
 }
 // add `.nexus/` to .gitignore (Nexus's state dir shouldn't clutter git); returns true if it added it
