@@ -2769,7 +2769,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const combined = menu.length ? menu : amenu;
       if (menuSel > combined.length - 1) menuSel = Math.max(0, combined.length - 1);
       if (menuSel < 0) menuSel = 0;
-      const fixedChrome = 5; // status + buttons + 2 rules + hint (always present)
+      const fixedChrome = 6; // body/HUD divider + status + buttons + composer box (top & bottom borders) + hint (always present)
       const avail = Math.max(0, R - fixedChrome);
       const menuRows = Math.min(combined.length, Math.max(0, avail - 2));
       const menuStart = combined.length > menuRows ? Math.max(0, Math.min(menuSel - (menuRows >> 1), combined.length - menuRows)) : 0;
@@ -2786,6 +2786,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // one growing text line differ, so we write ~2 rows instead of the whole screen.
       const frame = [];
       for (let i = 0; i < bodyRows; i++) frame.push(" " + clip(view[i] || "", C - 2));
+      frame.push(dim(gray("─".repeat(C)))); // hairline divider — separates the live transcript from the persistent status HUD below
       frame.push(statusBar());
       // ⋯ status menu — a single click target that expands to one-tap actions
       // (cost/usage & more). Collapsed by default so it stays out of the way.
@@ -2811,11 +2812,26 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
       }
       for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(nm)) : cyan(nm)) + gray("  " + (ds || "")) + pos, C - 2)); }
-      frame.push(gray("─".repeat(C)));
+      // ---- composer: a framed input box. Rounded box-drawing borders tint to the
+      // accent while you're typing or a command menu is open (a quiet focus cue),
+      // and stay muted otherwise. Each content row is padded to the exact interior
+      // width so the right border stays plumb across lines; the block caret (█) is
+      // drawn inline because the hardware cursor is hidden in the alt-screen.
+      const _bd = (input.length || combined.length) ? cyan : gray;
+      const _innerW = Math.max(0, C - 2); // the span between the two │ borders (one-space gutter each side)
+      frame.push(_bd("╭" + "─".repeat(_innerW) + "╮"));
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
-      for (let i = 0; i < inRows; i++) { let raw = shown[i] || ""; const li = _showStart + i; if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol); frame.push(clip((i === 0 ? bold(mag("❯ ")) : "  ") + colorInput(raw), C)); }
-      frame.push(gray("─".repeat(C)));
+      for (let i = 0; i < inRows; i++) {
+        let raw = shown[i] || ""; const li = _showStart + i;
+        if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
+        // one-space gutter + caret/indent + highlighted input, clipped then padded
+        // to the exact interior width so the right border stays plumb at every width
+        let interior = clip(" " + (i === 0 ? bold(mag("❯ ")) : "  ") + colorInput(raw), _innerW);
+        interior += " ".repeat(Math.max(0, _innerW - stripA(interior).length));
+        frame.push(_bd("│") + interior + _bd("│"));
+      }
+      frame.push(_bd("╰" + "─".repeat(_innerW) + "╯"));
       frame.push(hint());
       const b = frameDiff(lastLines, frame, ESC);
       lastLines = frame;
