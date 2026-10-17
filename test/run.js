@@ -47,8 +47,25 @@ const eq = (name, a, b) => ok(name + "  (" + JSON.stringify(a) + " === " + JSON.
 const group = (t) => console.log("\n\x1b[1m" + t + "\x1b[0m");
 
 group("pricing");
-for (const [m, i, o] of [["opus", 5, 25], ["sonnet", 3, 15], ["haiku", 0.8, 4], ["fable", 1, 5], ["gemini-2.5-pro", 1.25, 10], ["gemini-2.5-flash", 0.3, 2.5], ["gpt-5-codex", 1.25, 10], ["o4-mini", 1.1, 4.4], ["gpt-4o", 2.5, 10], ["totally-unknown", 3, 15]])
+for (const [m, i, o] of [["opus", 4, 20], ["claude-opus-5-5", 4, 20], ["claude-opus-4-8", 5, 25], ["claude-opus-4-1-20250805", 15, 75], ["sonnet", 2, 10], ["claude-sonnet-4-6", 3, 15], ["haiku", 0.1, 0.5], ["claude-haiku-4-5-20251001", 1, 5], ["claude-3-5-haiku-20241022", 0.8, 4], ["fable", 10, 50], ["gemini-2.5-pro", 1.25, 10], ["gemini-2.5-flash", 0.3, 2.5], ["gpt-5-codex", 1.25, 10], ["o4-mini", 1.1, 4.4], ["gpt-4o", 2.5, 10], ["totally-unknown", 3, 15]])
   ok("priceOf " + m, priceOf(m).in === i && priceOf(m).out === o);
+{
+  const P = require("../lib/nexus/pricing");
+  const o55 = P.priceOf("claude-opus-5-5[1m]");
+  ok("opus 5.5 exact cache rates (5m 5, 1h 8, read 0.20)", o55.cw5 === 5 && o55.cw1h === 8 && o55.cr === 0.2 && o55.label === "Claude Opus 5.5" && o55.known);
+  ok("sonnet 5.5 cache read 0.10, sonnet 5 cache read 0.20", P.priceOf("claude-sonnet-5-5").cr === 0.1 && P.priceOf("claude-sonnet-5").cr === 0.2);
+  ok("fable 5.1 cache read 0.25, opus 4 (dated id) = 15/75", P.priceOf("claude-fable-5-1").cr === 0.25 && P.priceOf("claude-opus-4-20250514").in === 15);
+  ok("unlisted claude version falls back to family latest, flagged", P.priceOf("claude-opus-9-9").in === 4 && P.priceOf("claude-opus-9-9").known === false);
+  eq("costOf opus 5.5, 1M in every bucket", P.costOf("claude-opus-5-5", { input: 1e6, output: 1e6, cacheWrite5m: 1e6, cacheWrite1h: 1e6, cacheRead: 1e6 }), 37.2);
+  eq("haiku 5.5 tier: 50k prompt", P.costOf("claude-haiku-5-5", { input: 50000 }), 0.005);
+  eq("haiku 5.5 tier: 200k prompt uses >100k rates", P.costOf("claude-haiku-5-5", { input: 200000 }), 0.1);
+  ok("haiku 5.5 tier counts cache reads toward the 100k threshold", Math.abs(P.costOf("claude-haiku-5-5", { input: 1000, cacheRead: 150000 }) - (1000 * 0.5 + 150000 * 0.05) / 1e6) < 1e-12);
+  const f = P.priceOf("opus", { fast: true });
+  ok("fast mode opus 5.5 = 8/40, cache scaled 2x", f.in === 8 && f.out === 40 && f.cr === 0.4 && f.cw5 === 10);
+  eq("usageBuckets splits 5m/1h writes", P.usageBuckets({ input_tokens: 3, output_tokens: 4, cache_read_input_tokens: 5, cache_creation_input_tokens: 10, cache_creation: { ephemeral_5m_input_tokens: 4, ephemeral_1h_input_tokens: 6 } }), { input: 3, output: 4, cacheWrite5m: 4, cacheWrite1h: 6, cacheRead: 5 });
+  eq("usageBuckets without split = all 5m", P.usageBuckets({ cache_creation_input_tokens: 7 }).cacheWrite5m, 7);
+  ok("pricingTable lists every model with all five rates", P.pricingTable().length === Object.keys(P.CLAUDE_PRICES).length && P.pricingTable().every((r) => [r.in, r.cw5, r.cw1h, r.cr, r.out].every((v) => typeof v === "number")));
+}
 ok("isMechanical: run tests", isMechanical("run the tests"));
 ok("isMechanical: NOT refactor", !isMechanical("refactor the auth module"));
 ok("shouldDelegate opus->haiku on big output", shouldDelegate(5000, 2000, "opus", "haiku") === true);
@@ -417,7 +434,7 @@ group("edge cases");
   ok("globToRe .env.* matches .env.prod", globToRe(".env.*").test(".env.prod"));
   ok("globToRe ? single char", globToRe("id_rsa?").test("id_rsa1") && !globToRe("id_rsa?").test("id_rsaXY"));
   // priceOf: case-insensitive
-  ok("priceOf OPUS (caps)", priceOf("OPUS").out === 25);
+  ok("priceOf OPUS (caps)", priceOf("OPUS").out === 20);
   // describe: tolerates a sparse/empty state without throwing
   ok("settings describe empty state", describe({}).length === 6 && describe({}).every((g) => g.rows.length > 0));
   // codexParse: multiple agent messages -> last wins
@@ -1094,9 +1111,9 @@ group("cost-savings analysis");
   ok("run-rate over 2 active days → 30d projection", a.activeDays === 2 && Math.round(a.dailyAvg) === 45 && Math.round(a.projected30) === 1350);
   ok("local lever = fraction of paid cost (default 30%)", a.localFrac === 0.30 && Math.round(a.localSaved) === 27);
   ok("mechanicalFraction override honored + clamped", Math.round(analyzeSavings(recs, { mechanicalFraction: 0.5 }).localSaved) === 45 && analyzeSavings(recs, { mechanicalFraction: 9 }).localFrac === 1);
-  // opus 1M in @ $5 + 1M out @ $25 = $30; same tokens on sonnet ($3/$15) = $18 → save $12.
+  // opus 4.8: 1M in @ $5 + 1M out @ $25 = $30; same tokens on sonnet 5.5 ($2/$10) = $12 → save $18.
   const opus = a.byModel.find((m) => /opus/.test(m.model));
-  ok("opus downshifts to sonnet with correct saving", opus.downshift.to === "sonnet" && Math.round(opus.downshift.altCost) === 18 && Math.round(opus.downshift.saved) === 12);
+  ok("opus downshifts to sonnet with correct saving", opus.downshift.to === "sonnet" && Math.round(opus.downshift.altCost) === 12 && Math.round(opus.downshift.saved) === 18);
   ok("free/local model has no downshift", a.byModel.find((m) => /qwen/.test(m.model)).downshift === null);
   ok("totalSavable = local + downshift", Math.round(a.totalSavable) === Math.round(a.localSaved + a.downshiftSaved));
   const txt = renderSavings(a, { project: "acme" });

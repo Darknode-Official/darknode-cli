@@ -2141,7 +2141,7 @@ function formatToolLines(name, res) {
 // ---------- cost-aware model tiering for /cowork ----------
 // Rough Claude price table ($ per 1M tokens: input, output). Used only to ESTIMATE
 // whether delegating a task to a cheaper model saves more than the delegation overhead.
-const { priceOf, isMechanical, shouldDelegate } = require("./lib/nexus/pricing"); // cost model (lib/pricing.js)
+const { priceOf, costOf, usageBuckets, pricingTable, PRICING_SOURCE, PRICING_CHECKED, isMechanical, shouldDelegate } = require("./lib/nexus/pricing"); // cost model (lib/pricing.js)
 // Darknode preflight — classify a shell command's destructive intent (inspired by Glitch's
 // Darknode guard: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
 const { oneline, extractJson } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
@@ -2345,7 +2345,24 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const cols = () => out.columns || 80, rows = () => out.rows || 24;
     const PAID = {}, CTXW = {}; for (const e of ENGINE_ORDER) { PAID[e] = ENGINES[e].paid; CTXW[e] = ENGINES[e].ctx; } // derived from the registry — never drifts
     const transcript = [{ role: "art" }, { role: "system", text: "type a message, or:  / commands  ·  @file / @image.png attach  ·  !cmd shell  ·  #note memory" }];
-    const sess = { model: engine, ctxWindow: CTXW[engine] || 200000, ctxUsed: 0, inTok: 0, outTok: 0, cost: 0, liveOut: 0 };
+    const sess = { model: engine, ctxWindow: CTXW[engine] || 200000, ctxUsed: 0, inTok: 0, outTok: 0, cost: 0, liveOut: 0, byModel: {} }; // byModel: exact per-bucket token totals, priced with lib/nexus/pricing.js
+    // Claude Code result -> per-model buckets. modelUsage lists every model the
+    // turn used (incl. subagents); its cache writes are split 5m/1h with the
+    // ratio the turn's usage.cache_creation reports (all 5m when absent).
+    const money = (n) => n == null ? "-" : "$" + (Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/(\.\d\d)0$/, "$1")); // exact rate: $0.125 stays $0.125, $2.5 shows $2.50
+    const padR = (t, w) => { t = String(t); return t.length >= w ? t + " " : t + " ".repeat(w - t.length); };
+    // Model to show before the engine reports one: the resolved id once a turn
+    // ran, else the claude CLI's configured default (~/.claude/settings.json
+    // "model"), else the engine's own default.
+    let _cliModel; const cliDefaultModel = () => { if (_cliModel === undefined) { _cliModel = ""; if (engine === "claude") { try { _cliModel = String(JSON.parse(require("fs").readFileSync(require("path").join(os.homedir(), ".claude", "settings.json"), "utf8")).model || ""); } catch (_) {} } } return _cliModel; };
+    const shownModel = () => (sess.model && sess.model !== engine) ? sess.model : (cliDefaultModel() || (ENGINES[engine] || {}).model || "");
+    const addUsage = (modelUsage, u, mainModel) => {
+      const b = usageBuckets(u); const w = b.cacheWrite5m + b.cacheWrite1h; const r1h = w ? b.cacheWrite1h / w : 0;
+      const add = (name, x) => { const t = sess.byModel[name] || (sess.byModel[name] = { input: 0, output: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, reported: 0 }); for (const k of ["input", "output", "cacheWrite5m", "cacheWrite1h", "cacheRead"]) t[k] += x[k] || 0; t.reported += x.reported || 0; };
+      const names = modelUsage && typeof modelUsage === "object" ? Object.keys(modelUsage) : [];
+      if (names.length) for (const n of names) { const m = modelUsage[n] || {}; const cw = m.cacheCreationInputTokens || 0; add(n, { input: m.inputTokens || 0, output: m.outputTokens || 0, cacheWrite1h: Math.round(cw * r1h), cacheWrite5m: cw - Math.round(cw * r1h), cacheRead: m.cacheReadInputTokens || 0, reported: m.costUSD || 0 }); }
+      else add(mainModel || engine, b);
+    };
     const ident = resolveOperator({ cwd }); // operator/team for chargeback attribution + audit provenance
     const oMsgs = nexusMd ? [{ role: "system", content: "Nexus coding assistant.\n" + nexusMd }] : [{ role: "system", content: "Nexus coding assistant." }];
     let input = "", curPos = 0, busy = false, cont = false, busyStart = 0, busyWord = "", tick = null;
@@ -2455,7 +2472,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/help", "commands, input prefixes & keys"], ["/clear", "start a fresh chat"], ["/compact", "summarize & shrink the context"],
       ["/trust", "trust this workspace's .nexus MCP servers + hooks"],
       ["/connect", "connect an AI: local model · Claude (API) · any provider"],
-      ["/context", "show token / context usage"], ["/cost", "session token cost so far"], ["/budget", "set a spend cap in USD"],
+      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
       ["/report", "cost & usage report for chargeback (/report json|save|since <date>)"],
       ["/compliance", "write a signed audit+usage compliance bundle (SOC2/review)"],
       ["/undo", "revert the last turn's file changes"], ["/rewind", "restore a specific checkpoint (/rewind N)"], ["/checkpoints", "list undo checkpoints"],
@@ -2668,9 +2685,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // engine · resolved model name (with version) · effort — the most useful
       // identity up front, so it survives truncation on a narrow terminal.
       const parts = [bold(engine)];
-      const mLabel = modelLabel(sess.model && sess.model !== engine ? sess.model : "");
+      const mLabel = modelLabel(shownModel());
       if (mLabel) parts.push(bold(mLabel));
-      if (effort) parts.push(cyan(effortLabel(effort)));
+      if (mLabel && ENGINES[engine] && ENGINES[engine].kind === "stream") parts.push(effort ? cyan(effortLabel(effort)) : gray("default effort"));
       if (gitBranch) parts.push(blue("⌥ " + gitBranch));
       parts.push(gray("ctx ") + pc(pct + "%") + " " + bar, gray("↑") + fmtK(sess.inTok) + gray(" ↓") + fmtK(sess.outTok) + gray(" tok"));
       if (PAID[engine]) { const isSubscription = engine === "codex" && CODEX_LOCAL.authMode ? onPlan(engine) : (onPlan(engine) || (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY)); if (isSubscription) { parts.push(green("included in plan")); } else { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); } }
@@ -3053,6 +3070,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             sess.outTok += u.output_tokens || 0;
             sess.ctxUsed = newIn + cacheIn + (u.output_tokens || 0);
             if (typeof ev.total_cost_usd === "number") sess.cost += ev.total_cost_usd;
+            addUsage(ev.modelUsage, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
         }, ctl, { model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt()) || undefined, fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
@@ -3646,7 +3664,32 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/clear" || cmd === "/new") { transcript.length = 0; transcript.push({ role: "art" }, { role: "system", text: "new chat  ·  " + engine + "  ·  " + cwd }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; }
       else if (cmd === "/compact") doCompact(false);
       else if (cmd === "/context") transcript.push({ role: "system", text: "context: " + fmtK(sess.ctxUsed) + " / " + fmtK(sess.ctxWindow) + " tokens (" + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "%)  ·  window " + fmtK(sess.ctxWindow) });
-      else if (cmd === "/cost") transcript.push({ role: "system", text: PAID[engine] ? ("session: ↑" + fmtK(sess.inTok) + " in · ↓" + fmtK(sess.outTok) + " out" + (sess.cost ? " · $" + sess.cost.toFixed(4) : "") + (costCap ? " · cap $" + costCap.toFixed(2) : "")) : "engine is local (Ollama) — free, no token charges" });
+      else if (cmd === "/cost") {
+        if (!PAID[engine]) transcript.push({ role: "system", text: "engine is local (Ollama) — free, no token charges" });
+        else {
+          const names = Object.keys(sess.byModel);
+          const sub = onPlan(engine) || (engine === "claude" && !process.env.ANTHROPIC_API_KEY);
+          const lines = ["session: ↑" + fmtK(sess.inTok) + " in · ↓" + fmtK(sess.outTok) + " out" + (costCap ? " · cap $" + costCap.toFixed(2) : "")];
+          let total = 0, reported = 0;
+          for (const n of names) {
+            const t = sess.byModel[n], p = priceOf(n), c = costOf(n, t); total += c; reported += t.reported;
+            const seg = (tok, rate, what) => tok ? fmtK(tok) + " " + what + " × " + money(rate) : "";
+            lines.push("  " + bold(p.label) + gray(p.known ? "" : " (unlisted — priced as " + p.label + ")") + "  " + [seg(t.input, p.in, "in"), seg(t.cacheWrite5m, p.cw5, "5m write"), seg(t.cacheWrite1h, p.cw1h, "1h write"), seg(t.cacheRead, p.cr, "cache read"), seg(t.output, p.out, "out")].filter(Boolean).join(" · ") + "  = " + bold("$" + c.toFixed(4)));
+          }
+          if (names.length) lines.push("  list-price total " + bold("$" + total.toFixed(4)) + (sub ? green("  — included in your plan, no per-token charge") : "") + (reported && Math.abs(reported - total) > Math.max(0.0001, total * 0.01) ? gray("  (Claude Code reported $" + reported.toFixed(4) + ")") : ""));
+          else if (sess.cost) lines.push("  $" + sess.cost.toFixed(4) + (ENGINES[engine] && ENGINES[engine].kind === "stream" ? "" : gray(" (estimated from input/output totals)")));
+          lines.push(gray("  rates: USD per million tokens, " + PRICING_SOURCE + " (checked " + PRICING_CHECKED + ") · /pricing for the full table"));
+          transcript.push({ role: "system", text: lines.join("\n") });
+        }
+      }
+      else if (cmd === "/pricing") {
+        const cur = priceOf(shownModel());
+        const row = (r) => padR(r.label, 20) + padR(money(r.in), 9) + padR(money(r.cw5), 10) + padR(money(r.cw1h), 10) + padR(money(r.cr), 11) + money(r.out);
+        const out = ["exact Claude prices, USD per million tokens " + gray("(" + PRICING_SOURCE + ", checked " + PRICING_CHECKED + ")"), "  current: " + bold(cur.label) + (cur.cr != null ? "  in " + money(cur.in) + " · out " + money(cur.out) + " · cache read " + money(cur.cr) + " · 5m write " + money(cur.cw5) + " · 1h write " + money(cur.cw1h) : "  in " + money(cur.in) + " · out " + money(cur.out)), "", "  " + gray(padR("model", 20) + padR("input", 9) + padR("5m write", 10) + padR("1h write", 10) + padR("cache read", 11) + "output")];
+        for (const r of pricingTable()) { out.push("  " + (r.label === cur.label ? cyan(row(r)) : row(r))); if (r.over100k) out.push("  " + gray(row(Object.assign({}, r.over100k, { label: "  prompt >100k" })))); if (r.fast) out.push("  " + gray(padR("  fast mode", 20) + padR(money(r.fast.in), 9) + padR("", 31) + money(r.fast.out))); }
+        out.push(gray("  Batch API: 50% off input and output. US-only inference (inference_geo: \"us\"): 1.1x on every category."));
+        transcript.push({ role: "system", text: out.join("\n") });
+      }
       else if (cmd === "/budget") { const v = parseFloat(arg); if (arg && !isNaN(v) && v > 0) { costCap = v; saveSetting("budgetCap", v); transcript.push({ role: "system", text: "budget cap set to $" + v.toFixed(2) + " — turns pause when session cost reaches it (saved)" }); } else if (arg === "off" || arg === "0") { costCap = 0; saveSetting("budgetCap", 0); transcript.push({ role: "system", text: "budget cap removed (unlimited) — no --max-budget-usd is sent (saved)" }); } else transcript.push({ role: "system", text: "usage: /budget <usd>  (e.g. /budget 5.00, or /budget off)" }); }
       else if (cmd === "/report") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet" + (since ? " since " + since : "") + " (.nexus/usage.jsonl fills up as you run turns)" }); } else { const s = summarize(recs); if (parts[0] === "json") transcript.push({ role: "system", text: JSON.stringify(s, null, 2) }); else { const rep = renderReport(s, { project: path.basename(cwd) }); if (parts[0] === "save") { try { const f = path.join(cwd, ".nexus", "usage-report.md"); fs.writeFileSync(f, "```\n" + rep + "\n```\n"); transcript.push({ role: "system", text: "saved usage report to " + f }); } catch (e) { transcript.push({ role: "system", text: "could not save report: " + (e && e.message || e) }); } } else transcript.push({ role: "system", text: rep + "\n\n  /report json · /report save · /report since 2026-08-01 · headless: darknode report" }); } } }
       else if (cmd === "/savings") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet — the savings analysis needs some Nexus turns in .nexus/usage.jsonl first" }); } else { const a = analyzeSavings(recs); transcript.push({ role: "system", text: (parts[0] === "json" ? JSON.stringify(a, null, 2) : renderSavings(a, { project: path.basename(cwd) }) + "\n\n  headless: darknode savings") }); } }
@@ -3823,7 +3866,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else transcript.push({ role: "system", text: cowork.on ? ("cowork: " + cowork.strong + " (code) + " + (cowork.weakKind === "ollama" ? "local:" : "") + cowork.weak + " (cheap work) — " + impact.delegated + " task(s) delegated so far") : "cowork off.\nusage: /cowork <strong> <weak>  —  weak = haiku|sonnet|opus|<full-id> or ollama:<local-model>\ne.g. /cowork opus haiku · /cowork opus sonnet · /cowork opus ollama:qwen2.5-coder · /cowork off" }); }
       else if (cmd === "/lean") { lean = !lean; saveSetting("lean", lean); transcript.push({ role: "system", text: "lean mode " + (lean ? "ON — saves tokens:\n  • minimal output (no preamble/recap)\n  • agent steps capped at 12 per turn\n  • tool output truncated to 8K chars\n  • read_file capped at 8K chars\n  • @file inline capped at 3K chars\n  • per-turn output budget: 8K tokens\n  • history pruned to last 4 messages\n  • claude --max-turns 8\n  toggle off with /lean" : "OFF — full power, no token limits") }); }
       else if (cmd === "/style") { if (arg && styleMap[arg] !== undefined) { style = arg; transcript.push({ role: "system", text: "output style: " + bold(arg) + (arg === "default" ? "" : " — " + styleDir(arg)) + gray("  (applies to every engine)") }); } else transcript.push({ role: "system", text: "output styles (shape HOW the AI works — add your own as .nexus/styles/<name>.md):\n" + Object.keys(styleMap).map((n) => "  " + (n === style ? cyan("● " + n) : "  " + n) + gray(n === "default" ? "" : "  " + styleDir(n).slice(0, 60))).join("\n") + "\n  usage: /style <name>" }); }
-      else if (cmd === "/effort") { const _ml = modelLabel(sess.model && sess.model !== engine ? sess.model : engine); if (["low", "medium", "high", "xhigh", "max"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(effort || "default") + ".  usage: /effort low|medium|high|max  (lower = fewer thinking tokens = cheaper)" }); }
+      else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(effort || "default") + ".  usage: /effort low|medium|high|max  (lower = fewer thinking tokens = cheaper)" }); }
       else if (cmd === "/hack") { hack = arg === "on" ? true : arg === "off" ? false : !hack; transcript.push({ role: "system", text: hack ? red("● HACK MODE") + " — Nexus is now an offensive-security specialist for AUTHORIZED engagements, with the full Darknode toolkit (scan · dns · cert · subs · cve · payloads · revshell · dorks · jwt · hash · totp · encode …) available via run_command. Systems you own or are explicitly in-scope to test only. " + gray("/hack off to exit") : "hack mode OFF — back to the standard coding agent" }); }
       else if (cmd === "/pentest") { const { startPentest } = require("./lib/nexus/pentest-engine"); startPentest(arg || null, { reportDir: process.cwd() }).catch(e => transcript.push({ role: "system", text: "HYDRA error: " + e.message })); }
       else if (cmd === "/ai-prompt" || cmd === "/aiprompt") {
