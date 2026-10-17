@@ -182,12 +182,45 @@ Only applies to Claude engine (controls Claude's extended thinking).
 
 ### /budget — Hard Cost Cap
 
+**Off by default (unlimited).** When off, no `--max-budget-usd` is sent to the
+engine. Turn it on to cap spend; `/budget off` turns it back off.
+
 ```
-/budget 5         cap session at $5
+/budget 5         cap session at $5 (saved)
 /budget 0.50      cap at 50 cents
+/budget off       remove the cap (unlimited — the default)
 ```
 
-Enforced mid-turn — Claude stops if the budget would be exceeded.
+Enforced mid-turn — Claude stops if the budget would be exceeded. Your choice
+is saved to `~/.nexus/settings.json` and restored next launch.
+
+### Off-by-default limits & persistent settings
+
+Every default that would *limit* your work ships **off**; turn on only what you
+want. All toggles persist to `~/.nexus/settings.json` (atomic write) and reload
+at launch. Precedence: an env var / CLI flag for this launch > the saved file >
+the default.
+
+| Setting | Default | Turn on | What it does when on |
+| --- | --- | --- | --- |
+| `budgetCap` | off | `/budget <n>` | hard spend cap (mid-turn) |
+| `autoCompact` | off\* | `/settings autoCompact on` | aggressive compaction to save spend (claude at 40K, local at 60%) |
+| `minimizeCalls` | off | `/settings minimizeCalls on` | adds the "2–5 tool calls" nudge to the system prompt |
+| `stepCap` | off | `/settings stepCap on` | caps the native loop at 20 steps/turn |
+| `trimOutput` | off | `/settings trimOutput on` | trims tool output / elides tool history outside lean mode |
+| `cache` | off | `/cache on` | serves an exact-repeat read-only answer for free |
+| `map` | off | `/map on` | auto-injects a repo map to orient the agent |
+
+\* `autoCompact` off still performs the **minimal safe** compaction needed to
+keep a request from failing when the real context window is nearly full (local
+engines at ~90% of the window; claude near its real window) — that is
+correctness, not a limit. The legacy `DARKNODE_COMPACT_AT` env still opts into
+aggressive compaction at that token count. Protective safety features
+(filestate stale-write guard, guard/redact/permission modes, loopguard) stay
+**on** — they protect you, they don't limit you.
+
+`/settings` lists every setting with its live value and whether it came from the
+default, the saved file, or an env var.
 
 ### /estimate — Pre-Send Cost Check
 
@@ -386,9 +419,19 @@ Lets the local model auto-pull only relevant files instead of reading everything
 | `\` at end of line | Continue on next line (multi-line input) |
 | `Shift+Tab` | Cycle through modes (normal → auto-accept → plan) |
 | `Ctrl+O` | Expand/collapse output |
-| `Ctrl+C` | Stop current operation |
-| `Up/Down` | Command history |
+| `Alt+Enter` / `Shift+Enter` / `Ctrl+J` | Insert a newline (so does `\` then Enter) |
+| `Up/Down` | Move between lines, then step through history (typed draft preserved) |
+| `Ctrl+R` | Reverse-i-search history (Ctrl+R again = older · Enter accept · Esc cancel) |
+| `Home`/`End`, `Ctrl+A`/`Ctrl+E` | Start / end of the current line |
+| `Ctrl+←/→`, `Alt+B`/`Alt+F` | Jump a word · `Alt+Backspace` deletes a word back |
+| `Ctrl+W`/`Ctrl+U`/`Ctrl+K` | Kill word back / to start / to end (fills the kill-ring) |
+| `Ctrl+Y` | Yank the last kill · `Ctrl+_` undo |
+| `Ctrl+G` | Edit the message in `$EDITOR` · `Ctrl+L` redraw |
+| `Esc` | Interrupt a running turn · `Esc Esc` (idle) clears the buffer |
+| `Ctrl+C` | Interrupt / clear / again-to-exit · `Ctrl+D` exit on an empty line |
+| `?` (empty buffer) | Show the keyboard help |
 | `Wheel/PgUp/PgDn` | Scroll output |
+| Paste | Multi-line kept; a large paste shows as `[Pasted text #N +X lines]`, expanded on send |
 | `/` | Open command menu |
 
 ---
@@ -561,7 +604,7 @@ Nexus is designed to minimize token usage without reducing capability:
 2. **Thought stripping** — model reasoning displayed but not kept in message history
 3. **Plain string results** — `"ok"` not `{"ok":true}`, raw content not `{"content":"..."}`
 4. **Tool efficiency directive** — system prompt tells the model to chain commands, read only needed lines, never re-read after write
-5. **Auto-compact at 60%** — conversation summarized before context fills up
+5. **Safe auto-compaction** — off by default; still compacts to prevent a context-window overflow (local ~90%, claude near its real window). Opt into aggressive compaction with `/settings autoCompact on` (claude 40K, local 60%)
 6. **Carry note limits** — 1500 chars/message, 6000 total after compaction
 7. **Output truncation** — tool results capped at 8K chars
 
