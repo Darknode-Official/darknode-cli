@@ -47,7 +47,7 @@ const eq = (name, a, b) => ok(name + "  (" + JSON.stringify(a) + " === " + JSON.
 const group = (t) => console.log("\n\x1b[1m" + t + "\x1b[0m");
 
 group("pricing");
-for (const [m, i, o] of [["opus", 15, 75], ["sonnet", 3, 15], ["haiku", 0.8, 4], ["fable", 1, 5], ["gemini-2.5-pro", 1.25, 10], ["gemini-2.5-flash", 0.3, 2.5], ["gpt-5-codex", 1.25, 10], ["o4-mini", 1.1, 4.4], ["gpt-4o", 2.5, 10], ["totally-unknown", 3, 15]])
+for (const [m, i, o] of [["opus", 5, 25], ["sonnet", 3, 15], ["haiku", 0.8, 4], ["fable", 1, 5], ["gemini-2.5-pro", 1.25, 10], ["gemini-2.5-flash", 0.3, 2.5], ["gpt-5-codex", 1.25, 10], ["o4-mini", 1.1, 4.4], ["gpt-4o", 2.5, 10], ["totally-unknown", 3, 15]])
   ok("priceOf " + m, priceOf(m).in === i && priceOf(m).out === o);
 ok("isMechanical: run tests", isMechanical("run the tests"));
 ok("isMechanical: NOT refactor", !isMechanical("refactor the auth module"));
@@ -417,7 +417,7 @@ group("edge cases");
   ok("globToRe .env.* matches .env.prod", globToRe(".env.*").test(".env.prod"));
   ok("globToRe ? single char", globToRe("id_rsa?").test("id_rsa1") && !globToRe("id_rsa?").test("id_rsaXY"));
   // priceOf: case-insensitive
-  ok("priceOf OPUS (caps)", priceOf("OPUS").out === 75);
+  ok("priceOf OPUS (caps)", priceOf("OPUS").out === 25);
   // describe: tolerates a sparse/empty state without throwing
   ok("settings describe empty state", describe({}).length === 6 && describe({}).every((g) => g.rows.length > 0));
   // codexParse: multiple agent messages -> last wins
@@ -1094,9 +1094,9 @@ group("cost-savings analysis");
   ok("run-rate over 2 active days → 30d projection", a.activeDays === 2 && Math.round(a.dailyAvg) === 45 && Math.round(a.projected30) === 1350);
   ok("local lever = fraction of paid cost (default 30%)", a.localFrac === 0.30 && Math.round(a.localSaved) === 27);
   ok("mechanicalFraction override honored + clamped", Math.round(analyzeSavings(recs, { mechanicalFraction: 0.5 }).localSaved) === 45 && analyzeSavings(recs, { mechanicalFraction: 9 }).localFrac === 1);
-  // opus 1M in @ $15 + 1M out @ $75 = $90; same tokens on sonnet ($3/$15) = $18 → save $72.
+  // opus 1M in @ $5 + 1M out @ $25 = $30; same tokens on sonnet ($3/$15) = $18 → save $12.
   const opus = a.byModel.find((m) => /opus/.test(m.model));
-  ok("opus downshifts to sonnet with correct saving", opus.downshift.to === "sonnet" && Math.round(opus.downshift.altCost) === 18 && Math.round(opus.downshift.saved) === 72);
+  ok("opus downshifts to sonnet with correct saving", opus.downshift.to === "sonnet" && Math.round(opus.downshift.altCost) === 18 && Math.round(opus.downshift.saved) === 12);
   ok("free/local model has no downshift", a.byModel.find((m) => /qwen/.test(m.model)).downshift === null);
   ok("totalSavable = local + downshift", Math.round(a.totalSavable) === Math.round(a.localSaved + a.downshiftSaved));
   const txt = renderSavings(a, { project: "acme" });
