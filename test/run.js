@@ -19,7 +19,7 @@ const { pickCoderModel } = require("../lib/nexus/ollama");
 const { validatePolicy, validateTeam } = require("../lib/cli/validate");
 const { oneline, extractJson } = require("../lib/cli/text");
 const { frameDiff, diffTokens, wordHi } = require("../lib/cli/diff");
-const { stripAnsi, visLen, fitWidth, padRight, shortenPath, bootHeader } = require("../lib/cli/tui-format");
+const { stripAnsi, visLen, fitWidth, padRight, shortenPath, bootHeader, modelLabel, effortLabel } = require("../lib/cli/tui-format");
 const { TOP_PORTS, parsePorts, idHash, parseCve, cidrCalc, ipToInt, inCidr } = require("../lib/toolkit/scanutil");
 const { DONE_TOKEN, loopDecision, clampRounds, loopPrompt } = require("../lib/nexus/loop");
 const { semverGt, autoUpdateMode, shouldCheck } = require("../lib/nexus/update");
@@ -2074,6 +2074,28 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("bootHeader hides a redundant model row", !noModel.some((l) => /^\s*model/.test(l)));
     const withModel = bootHeader({ version: "1", engine: "claude", model: "claude-sonnet-4", cwd: "/x", cols: 80 });
     ok("bootHeader shows a distinct model row", withModel.some((l) => /model/.test(l) && /sonnet/.test(l)));
+  }
+
+  group("model display names (status bar)");
+  eq("claude-opus-5-5 -> Opus 5.5", modelLabel("claude-opus-5-5"), "Opus 5.5");
+  eq("claude-sonnet-5-5 -> Sonnet 5.5", modelLabel("claude-sonnet-5-5"), "Sonnet 5.5");
+  eq("claude-haiku-5-5 -> Haiku 5.5", modelLabel("claude-haiku-5-5"), "Haiku 5.5");
+  eq("fable-5-1 -> Fable 5.1", modelLabel("fable-5-1"), "Fable 5.1");
+  eq("version-first id claude-3-5-sonnet-20241022 -> Sonnet 3.5", modelLabel("claude-3-5-sonnet-20241022"), "Sonnet 3.5");
+  eq("bare alias opus -> Opus (no invented version)", modelLabel("opus"), "Opus");
+  eq("engine name claude -> Claude", modelLabel("claude"), "Claude");
+  eq("ollama model passes through", modelLabel("qwen2.5-coder"), "qwen2.5-coder");
+  eq("gpt-4o passes through", modelLabel("gpt-4o"), "gpt-4o");
+  eq("empty id -> empty", modelLabel(""), "");
+  eq("effort max -> 'max effort'", effortLabel("max"), "max effort");
+  eq("effort low -> 'low effort'", effortLabel("low"), "low effort");
+  eq("no effort -> '' (omit, don't invent)", effortLabel(""), "");
+  {
+    // the status segment the renderer builds: engine · model · effort
+    const seg = (engine, model, effort) => { const p = [engine]; const ml = modelLabel(model && model !== engine ? model : ""); if (ml) p.push(ml); const el = effortLabel(effort); if (el) p.push(el); return p.join(" · "); };
+    eq("segment with model + effort", seg("claude", "claude-opus-5-5", "max"), "claude · Opus 5.5 · max effort");
+    eq("segment without effort omits it", seg("claude", "claude-sonnet-5-5", ""), "claude · Sonnet 5.5");
+    eq("segment before a model resolves shows just the engine", seg("claude", "claude", ""), "claude");
   }
 
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
