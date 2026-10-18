@@ -34,7 +34,7 @@ const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint
 const { frameDiff, wordHi } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
-const { bootHeader, welcomeCard, footerLine, helpLines, padRight: padRightV, modelLabel, effortLabel } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
+const { bootHeader, welcomeCard, footerLine, helpLines, padRight: padRightV, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const nexusSettings = require("./lib/cli/nexus-settings"); // persistent, off-by-default TUI settings (~/.nexus/settings.json)
 const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA codes (lib/totp.js)
@@ -2394,6 +2394,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let ctl = null, costCap = S.budgetCap || 0, rate = null, warned50 = false, notify = !!S.notify, redact = false, offline = false, guard = "enforce", lean = !!S.lean, effort = S.effort || "", fallback = "", style = "default";
     // Off-by-default governance toggles (opt in via /settings or their own command).
     let minimizeCalls = !!S.minimizeCalls, stepCap = !!S.stepCap, trimOutput = !!S.trimOutput, autoCompact = !!S.autoCompact;
+    let clearPending = false; // /clear asks once before wiping a non-empty conversation (reset by any other input)
     if (S.mode != null && typeof S.mode === "number" && S.mode >= 0 && S.mode <= 2) mode = S.mode; // restore last mode (shift+tab)
     if (S.model && engine === "claude") { sess.model = S.model; sess.userModel = true; } // restore the saved /model choice (the init event replaces it with the resolved id)
     const READONLY_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"]; // disallowed to enforce read-only (plan mode / /bench)
@@ -2952,6 +2953,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     process.on("exit", cleanup); process.on("SIGINT", onSigint); process.on("SIGTERM", onSigterm); process.on("uncaughtException", onFatal); process.on("unhandledRejection", onRejection);
     // ---- engine turn ----
     const submit = (text) => {
+      clearPending = false; // sending a message cancels a pending /clear confirmation
       // Only enforce budget cap on API-billed engines, not Claude Max subscription
       const isSubEngine = onPlan(engine);
       if (costCap && sess.cost >= costCap && !isSubEngine) { transcript.push({ role: "system", text: "budget reached ($" + sess.cost.toFixed(4) + " ≥ cap $" + costCap.toFixed(2) + ") — raise it with /budget <amount> to continue" }); render(); return; }
@@ -3139,7 +3141,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           for (let step = 1; step <= stepLimit; step++) {
             if (ctl && ctl.stopped) { ensureText().full += (ensureText().full.trim() ? "\n" : "") + "(interrupted)"; break; }
             if (lean && (sess.outTok - turnStartTok) > 8000) { ensureText().full += "\n(token budget for this turn reached — wrap up with /continue if needed)"; break; }
-            let raw; try { raw = await ollamaChat(mdl, oMsgs, CODER_SCHEMA, aSignal(ctl)); } catch (e) { if (ctl && ctl.stopped) break; ensureText().full += "\nmodel error: " + e.message; break; }
+            let raw; try { raw = await ollamaChat(mdl, oMsgs, CODER_SCHEMA, aSignal(ctl)); } catch (e) { if (ctl && ctl.stopped) break; ensureText().full += "\n" + explainEngineError(e && e.message, { engine, model: mdl }); break; }
             sess.outTok += Math.ceil(raw.length / 4); sess.liveOut += Math.ceil(raw.length / 4);
             let o; try { o = JSON.parse(raw); } catch (_) { oMsgs.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
             // Strip `thought` from history (it's shown to the user below, not needed
@@ -3533,6 +3535,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const cmd = (sp === -1 ? t : t.slice(0, sp)).toLowerCase();
       const argstr = sp === -1 ? "" : t.slice(sp + 1).trim();
       const arg = argstr.split(/\s+/)[0];
+      // Any command other than a repeated /clear cancels a pending clear confirmation.
+      const clearWasPending = clearPending; if (cmd !== "/clear" && cmd !== "/new") clearPending = false;
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
       if (cmd === "/help") {
         const HS = [
@@ -3677,7 +3681,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/export") { try { const L = ["# Nexus conversation", "", "_" + new Date().toLocaleString() + " · " + engine + " · " + cwd + "_", ""]; for (const m of transcript) { if (m.role === "user") L.push("## You", "", m.text, ""); else if (m.role === "nexus") { L.push("## Nexus", ""); for (const it of (m.items || [])) { if (it.type === "text") L.push(it.full); else if (it.type === "tool") L.push("- `" + it.label + "`"); } L.push(""); } else if (m.role === "system") L.push("> " + String(m.text).replace(/\n/g, " "), ""); } const fp = path.join(cwd, "nexus-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, L.join("\n")); transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
       else if (cmd === "/copy") { let last = ""; for (let i = transcript.length - 1; i >= 0; i--) { const m = transcript[i]; if (m.role === "nexus") { last = (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join("\n").trim(); if (last) break; } } if (last) { out.write("\x1b]52;c;" + Buffer.from(last).toString("base64") + "\x07"); transcript.push({ role: "system", text: "copied Nexus's last reply to the clipboard" }); } else transcript.push({ role: "system", text: "nothing to copy yet" }); }
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed" : "the working tree")) : "rewind failed (git error)" }); } } }
-      else if (cmd === "/clear" || cmd === "/new") { transcript.length = 0; transcript.push({ role: "art" }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); }
+      else if (cmd === "/clear" || cmd === "/new") {
+        const hasContent = oMsgs.length > 1 || transcript.some((m) => m.role === "user" || m.role === "assistant");
+        if (hasContent && !clearWasPending) { clearPending = true; transcript.push({ role: "system", text: yellow("Clear the whole conversation?") + gray("  press " + cmd + " again to confirm · any other input keeps it") }); }
+        else { clearPending = false; transcript.length = 0; transcript.push({ role: "art" }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); }
+      }
       else if (cmd === "/compact") doCompact(false);
       else if (cmd === "/context") transcript.push({ role: "system", text: "context: " + fmtK(sess.ctxUsed) + " / " + fmtK(sess.ctxWindow) + " tokens (" + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "%)  ·  window " + fmtK(sess.ctxWindow) });
       else if (cmd === "/cost") {

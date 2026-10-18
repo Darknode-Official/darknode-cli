@@ -19,7 +19,7 @@ const { pickCoderModel } = require("../lib/nexus/ollama");
 const { validatePolicy, validateTeam } = require("../lib/cli/validate");
 const { oneline, extractJson } = require("../lib/cli/text");
 const { frameDiff, diffTokens, wordHi } = require("../lib/cli/diff");
-const { stripAnsi, visLen, fitWidth, padRight, shortenPath, bootHeader, modelLabel, effortLabel } = require("../lib/cli/tui-format");
+const { stripAnsi, visLen, fitWidth, padRight, shortenPath, bootHeader, modelLabel, effortLabel, explainEngineError } = require("../lib/cli/tui-format");
 const { TOP_PORTS, parsePorts, idHash, parseCve, cidrCalc, ipToInt, inCidr } = require("../lib/toolkit/scanutil");
 const { DONE_TOKEN, loopDecision, clampRounds, loopPrompt } = require("../lib/nexus/loop");
 const { semverGt, autoUpdateMode, shouldCheck } = require("../lib/nexus/update");
@@ -2136,6 +2136,21 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("segment with model + effort", seg("claude", "claude-opus-5-5", "max"), "claude · Opus 5.5 · max effort");
     eq("segment without effort omits it", seg("claude", "claude-sonnet-5-5", ""), "claude · Sonnet 5.5");
     eq("segment before a model resolves shows just the engine", seg("claude", "claude", ""), "claude");
+  }
+
+  group("explainEngineError (actionable engine/network errors)");
+  {
+    const has = (s, sub) => ok("'" + sub + "' in: " + s.slice(0, 60), s.toLowerCase().includes(sub));
+    ok("local connection refused -> mentions Ollama", /ollama/i.test(explainEngineError("connect ECONNREFUSED 127.0.0.1:11434", { engine: "ollama" })));
+    has(explainEngineError("fetch failed", { engine: "ollama" }), "ollama serve");
+    has(explainEngineError("fetch failed", { engine: "claude" }), "connection");
+    has(explainEngineError("The operation was aborted due to timeout", {}), "timed out");
+    has(explainEngineError("429 Too Many Requests", { engine: "claude" }), "rate-limiting");
+    has(explainEngineError("401 Unauthorized: invalid api key", { engine: "claude" }), "authentication failed");
+    ok("unknown model names the model + /models", (() => { const s = explainEngineError("model not found", { engine: "ollama", model: "qwen2.5-coder" }); return /qwen2\.5-coder/.test(s) && /\/models/.test(s); })());
+    has(explainEngineError("you exceeded your current quota", { engine: "openai" }), "billing");
+    ok("unrecognised error keeps the raw text + a next step", (() => { const s = explainEngineError("weird kaboom", {}); return /weird kaboom/.test(s) && /\/engine/.test(s); })());
+    eq("empty/no message is safe", typeof explainEngineError("", {}), "string");
   }
 
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
