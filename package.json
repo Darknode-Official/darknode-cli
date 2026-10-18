@@ -1,6 +1,6 @@
 {
   "name": "darknode-cli",
-  "version": "2.46.0",
+  "version": "2.46.1",
   "description": "Darknode — AI security platform CLI. AI-powered security platform with Nexus AI engine for Windows and Linux: native port scanner, reverse shells, encoders, payloads, and cheat sheets.",
   "bin": {
     "darknode": "darknode.js",
