@@ -4252,7 +4252,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           child.on("error", (e) => { blk.text = "failed to run `darknode " + verb + "`: " + (e && e.message || e); render(); });
         } catch (e) { blk.text = "failed: " + (e && e.message || e); render(); }
       }
-      else transcript.push({ role: "system", text: "unknown command '" + cmd + "' — try /help" });
+      else { const near = (fuzzyCmds(cmd) || []).slice(0, 3).map((c) => c[0]); transcript.push({ role: "system", text: "unknown command '" + cmd + "'" + (near.length ? " — did you mean " + near.map((n) => cyan(n)).join(gray(", ")) + "?" : "") + gray("   (/help lists them all)") }); }
     };
     // ---- input / keys ----
     const setMouse = (on) => { mouseOn = on; try { out.write(on ? ESC + "[?1000h" + ESC + "[?1006h" : ESC + "[?1000l" + ESC + "[?1006l"); } catch (_) {} };
