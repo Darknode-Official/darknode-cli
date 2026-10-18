@@ -2374,7 +2374,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // compaction did nothing for claude and a chat grew unbounded (one session
     // reached 726 turns / 794K context / one context that never reset).
     let carryNote = "";
-    let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = true, hack = false; // mode: 0 normal, 1 auto-accept, 2 plan; scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
+    let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = false, hack = false; // mode: 0 normal, 1 auto-accept, 2 plan; scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
     let gitBranch = ""; // cached "branch" (+ "*" when the tree is dirty), shown in the status bar
     const refreshGit = async () => { try { const b = await sh(["rev-parse", "--abbrev-ref", "HEAD"]); if (b.err) { gitBranch = ""; return; } const st = await sh(["status", "--porcelain"]); const next = (b.stdout || "").trim() + ((st.stdout || "").trim() ? "*" : ""); if (next !== gitBranch) { gitBranch = next; try { render(); } catch (_) {} } } catch (_) { gitBranch = ""; } };
     const MODES = [{ k: "normal", c: gray }, { k: "auto-accept", c: green }, { k: "plan", c: cyan }];
@@ -2826,7 +2826,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const frame = [];
       for (let i = 0; i < bodyRows; i++) frame.push(" " + clip(view[i] || "", C - 2));
       frame.push("");
-      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(padRightV(nm, nmW))) : padRightV(nm, nmW)) + gray(" " + (ds || "")) + pos, C - 2)); }
       // ---- composer: a framed input box. Rounded box-drawing borders tint to the
       // accent while you're typing or a command menu is open (a quiet focus cue),
       // and stay muted otherwise. Each content row is padded to the exact interior
@@ -2847,6 +2846,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         frame.push(_bd("│") + interior + _bd("│"));
       }
       frame.push(_bd("╰" + "─".repeat(_innerW) + "╯"));
+      // ---- completion menu: directly BELOW the input box (like Claude Code), so
+      // it never pushes up into / hides the AI output above the composer.
+      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(padRightV(nm, nmW))) : padRightV(nm, nmW)) + gray(" " + (ds || "")) + pos, C - 2)); }
       // footer: contextual hint on the left, status on the right. The status
       // menu (cost, savings & more) is the clickable "..." at the far right;
       // when open its buttons take over the row.
@@ -2941,7 +2943,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     };
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
     let cleaned = false;
-    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.iv) { clearInterval(compact.iv); compact.iv = null; } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { out.write(ESC + "]0;\x07" + ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {} };
+    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.iv) { clearInterval(compact.iv); compact.iv = null; } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { out.write(ESC + "]0;\x07" + ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?1007l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {} };
     tuiActive = true;
     const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
@@ -3919,9 +3921,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/keys") {
         const KS = [
           { title: "Send & edit", rows: [["Enter","send the message"],["Alt+Enter / Shift+Enter / Ctrl+J","insert a newline"],["Home / End","start / end of the line"],["Ctrl+A / Ctrl+E","start / end of the line"],["Ctrl+← / → · Alt+B / F","jump a word"],["Alt+Backspace · Ctrl+W","delete the word before the cursor"],["Ctrl+U / Ctrl+K","kill to start / end of line"],["Ctrl+Y","yank back what was killed"],["Ctrl+_","undo the last edit"]] },
-          { title: "History", rows: [["Up / Down","step through history (your draft is kept)"],["Ctrl+R","reverse-search history"]] },
+          { title: "History", rows: [["Ctrl+P / Ctrl+N","previous / next command (your draft is kept)"],["Up / Down (while typing)","step through history"],["Ctrl+R","reverse-search history"]] },
           { title: "Session", rows: [["Shift+Tab","cycle mode: normal / auto-accept / plan"],["Ctrl+O","expand or collapse tool detail"],["Esc","interrupt a running turn"],["Esc Esc","clear the input (idle)"],["Ctrl+C","interrupt, then clear, then exit"],["Ctrl+D","exit on an empty line"],["Ctrl+G","edit the message in $EDITOR"],["Ctrl+L","redraw the screen"]] },
-          { title: "Scroll & select", rows: [["Wheel · PgUp / PgDn","scroll the transcript"],["End","jump to the latest"],["/mouse off or Shift+drag","select & copy text"]] },
+          { title: "Scroll, select & copy", rows: [["Mouse wheel","scroll the transcript"],["Up / Down (empty input)","scroll line by line"],["PgUp / PgDn","scroll a page"],["End","jump to the latest"],["Select with the mouse","just drag to select, then copy — the mouse is yours by default"],["/mouse on","re-enable click + wheel capture (selection then needs Shift+drag)"]] },
         ];
         transcript.push({ role: "system", lines: helpLines(KS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }) });
       }
@@ -4265,18 +4267,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const edBin = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : (hasBin("nano") ? "nano" : "vi"));
       let tmp;
       try { tmp = path.join(require("os").tmpdir(), "nexus-compose-" + process.pid + "-" + Date.now() + ".md"); fs.writeFileSync(tmp, composer.expand(input)); } catch (_) { return; }
-      try { out.write(ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {}
+      try { out.write(ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?1007l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {}
       try { process.stdin.setRawMode(false); } catch (_) {}
       try { _cp.spawnSync(edBin, [tmp], { stdio: "inherit" }); } catch (_) {}
       try { process.stdin.setRawMode(true); } catch (_) {}
       process.stdin.resume();
-      try { out.write(ESC + "[?1049h" + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[?2004h" + ESC + "[?25l" + ESC + "[2J"); } catch (_) {}
+      try { out.write(ESC + "[?1049h" + ESC + "[?1007h" + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[?2004h" + ESC + "[?25l" + ESC + "[2J"); } catch (_) {}
       try { const txt = fs.readFileSync(tmp, "utf8").replace(/\n$/, ""); input = txt; curPos = txt.length; composer.text = txt; composer.cursor = txt.length; } catch (_) {}
       try { fs.unlinkSync(tmp); } catch (_) {}
       lastLines = null; render();
     };
     try { const st = readGlobal("state.json", {}) || {}; if (st.mouse === false) mouseOn = false; } catch (_) {} // restore mouse-capture preference
-    out.write(ESC + "[?1049h" + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[?2004h" + ESC + "[?25l" + ESC + "[2J");
+    out.write(ESC + "[?1049h" + ESC + "[?1007h" + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[?2004h" + ESC + "[?25l" + ESC + "[2J");
     idleTitle();
     try { process.stdin.setRawMode(true); } catch (_) {}
     process.stdin.resume(); process.stdin.setEncoding("utf8");
@@ -4376,6 +4378,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (s === "\x1b[6~" || s === "[6~") { scroll = Math.max(0, scroll - page); render(); return; } // PageDown
       }
 
+      // ---- Ctrl+P / Ctrl+N: history recall (readline), so ↑/↓ on an empty buffer
+      // can stay free to scroll the transcript in the default mouse-off mode ----
+      if (!busy && !cm.length) {
+        if (s === "\x10") { composer.text = input; composer.cursor = curPos; composer.historyPrev(); input = composer.text; curPos = composer.cursor; hIdx = composer.histIndex; menuSel = 0; render(); return; } // Ctrl+P
+        if (s === "\x0e") { composer.text = input; composer.cursor = curPos; composer.historyNext(); input = composer.text; curPos = composer.cursor; hIdx = composer.histIndex; menuSel = 0; render(); return; } // Ctrl+N
+      }
+
       // ---- during a turn: Esc / Ctrl+C interrupt; other keys buffer & queue ----
       if (busy) {
         if (s === "\x1b" || s === "\x03") { if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); } render(); return; }
@@ -4403,8 +4412,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         case "help": handleSlash("/keys"); render(); return;             // '?' on an empty buffer
         case "home-scroll": scroll += 100000; render(); return;          // Home on empty buffer -> top
         case "end-scroll": scroll = 0; render(); return;                 // End on empty buffer -> latest
-        case "history-up": { hIdx = composer.histIndex; if (history.length) { composer.historyPrev(); flush(); hIdx = composer.histIndex; } menuSel = 0; render(); return; } // Up fell off the top line
-        case "history-down": { composer.historyNext(); flush(); hIdx = composer.histIndex; menuSel = 0; render(); return; }                                                  // Down fell off the bottom line
+        case "history-up": { if (!mouseOn && !input.length) { scroll += 3; render(); return; } hIdx = composer.histIndex; if (history.length) { composer.historyPrev(); flush(); hIdx = composer.histIndex; } menuSel = 0; render(); return; } // Up: scroll the transcript on an empty buffer (wheel = ?1007h arrows), else history
+        case "history-down": { if (!mouseOn && !input.length) { scroll = Math.max(0, scroll - 3); render(); return; } composer.historyNext(); flush(); hIdx = composer.histIndex; menuSel = 0; render(); return; }                                                  // Down: scroll down on an empty buffer, else history
         case "interrupt": if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); } render(); return;
         case "exit": cleanup(); resolve(); return;                       // ctrl+d empty / 2nd ctrl+c
         case "exit-confirm": transcript.push({ role: "system", text: "Press Ctrl+C again to exit" }); render(); return;
