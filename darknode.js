@@ -1957,7 +1957,7 @@ const { autoReview } = require("./lib/nexus/code-review-auto"); // fast rule-bas
 const { explainDiff } = require("./lib/nexus/code-diff-explain"); // semantic diff explainer
 const { generateTests } = require("./lib/nexus/smart-test"); // structure-aware test scaffolder
 const { MCP_CATALOG, catalogGet, isBundled, bundledSpecs, addServerToConfig, removeServerFromConfig } = require("./lib/nexus/mcp-catalog"); // one-command + bundled MCP servers (lib/mcp-catalog.js)
-const { squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats } = require("./lib/nexus/costsave"); // extra cost savers (lib/costsave.js)
+const { squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats, supersedeReread } = require("./lib/nexus/costsave"); // extra cost savers (lib/costsave.js)
 const CACHE_TTL = 24 * 3600 * 1000; // response-cache entries expire after 24h
 const { TAGS: TODO_TAGS, scanTree: scanTodos, summarizeTodos, rankTodos } = require("./lib/nexus/todos"); // tech-debt marker scanner (lib/nexus/todos.js)
 const { summarizeStats, rankedLangs, scanStats } = require("./lib/nexus/codestats"); // codebase overview (lib/nexus/codestats.js)
@@ -2902,7 +2902,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           for (const k of keep) transcript.push(k);
           // actually shrink the local engine's context: keep the system message + the last few exchanges, and drop the token estimate
           if (oMsgs.length > (lean ? 5 : 7)) { const sys = oMsgs[0]; const tail = oMsgs.slice(lean ? -4 : -6); oMsgs.length = 0; oMsgs.push(sys, ...tail); }
-          sess.readCache = {}; // reads older than the kept tail are now gone from context — reset the dedup cache so it never references pruned content
+          sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); // reads older than the kept tail are gone from context — reset the dedup cache + file-snapshot index so they never reference pruned (re-indexed) messages
           // Claude keeps its context server-side, so pruning the local arrays
           // above does nothing to it. Drop --continue and hand the next turn a
           // text summary of the kept tail instead — that is what makes a
@@ -3117,7 +3117,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // later turn either, not just within one turn. Safe because doCompact
           // clears it whenever it trims oMsgs — so we never tell the model a file
           // is "already in context" after that content was pruned away.
-          let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = sess.readCache || (sess.readCache = {});
+          let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = sess.readCache || (sess.readCache = {}); const fileSnap = sess.fileSnap || (sess.fileSnap = new Map());
           const loopGuard = makeLoopGuard(); // break the agent out of repeat/oscillation stalls
           const stepLimit = lean ? 12 : (stepCap ? 20 : 100000); // step cap is opt-in: off by default = run until the model stops (lean keeps its own 12 cap)
           const turnStartTok = sess.outTok;
@@ -3208,6 +3208,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (a.__act && !blocked) { if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.__act.path, cmd: a.__act.command, status: result && result.error ? "error" : "ok" }); if ((a.__act.type === "write" || a.__act.type === "edit") && result && !result.error) filesThisTurn++; }
             const obs = JSON.stringify(result).slice(0, 14000);
             oMsgs.push({ role: "tool", content: obs }); sess.inTok += Math.ceil(obs.length / 4);
+            // Lossless context compression: a FRESH full read of a file makes any
+            // earlier full copy of that same file in history pure waste — the model
+            // now holds the newest version, and keeping the stale one both costs
+            // tokens and risks the model reasoning over outdated code. Stub the older
+            // copy in place. Only a real re-read triggers this (never the "unchanged"
+            // cache note, and never an edit — the read it was working from stays), so
+            // no context the model still needs is ever removed. Indices are stable:
+            // oMsgs is only appended to or mutated in place, and the map is cleared on
+            // the compaction splice and on /clear.
+            if (name === "read_file" && result && typeof result.content === "string" && result.content.length > 200 && !/^\(unchanged since you last read/.test(result.content)) {
+              impact.squeezeTok += supersedeReread(oMsgs, fileSnap, path.resolve(cwd, a.path || ""), relOf(a.path) || a.path);
+            }
             if (lean || trimOutput) elideToolHistory(oMsgs, lean ? 16000 : 40000, lean ? 3 : 6); // cap cumulative tool bytes carried within the turn (opt-in /settings trimOutput; always in lean)
             // loop guard: if the agent is stuck repeating or oscillating, warn it; if it keeps
             // going anyway, end the turn cleanly instead of burning the whole step budget.
@@ -3663,7 +3675,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/export") { try { const L = ["# Nexus conversation", "", "_" + new Date().toLocaleString() + " · " + engine + " · " + cwd + "_", ""]; for (const m of transcript) { if (m.role === "user") L.push("## You", "", m.text, ""); else if (m.role === "nexus") { L.push("## Nexus", ""); for (const it of (m.items || [])) { if (it.type === "text") L.push(it.full); else if (it.type === "tool") L.push("- `" + it.label + "`"); } L.push(""); } else if (m.role === "system") L.push("> " + String(m.text).replace(/\n/g, " "), ""); } const fp = path.join(cwd, "nexus-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, L.join("\n")); transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
       else if (cmd === "/copy") { let last = ""; for (let i = transcript.length - 1; i >= 0; i--) { const m = transcript[i]; if (m.role === "nexus") { last = (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join("\n").trim(); if (last) break; } } if (last) { out.write("\x1b]52;c;" + Buffer.from(last).toString("base64") + "\x07"); transcript.push({ role: "system", text: "copied Nexus's last reply to the clipboard" }); } else transcript.push({ role: "system", text: "nothing to copy yet" }); }
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed" : "the working tree")) : "rewind failed (git error)" }); } } }
-      else if (cmd === "/clear" || cmd === "/new") { transcript.length = 0; transcript.push({ role: "art" }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; }
+      else if (cmd === "/clear" || cmd === "/new") { transcript.length = 0; transcript.push({ role: "art" }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); }
       else if (cmd === "/compact") doCompact(false);
       else if (cmd === "/context") transcript.push({ role: "system", text: "context: " + fmtK(sess.ctxUsed) + " / " + fmtK(sess.ctxWindow) + " tokens (" + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "%)  ·  window " + fmtK(sess.ctxWindow) });
       else if (cmd === "/cost") {
