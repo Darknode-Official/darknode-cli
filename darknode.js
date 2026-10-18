@@ -34,7 +34,7 @@ const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint
 const { frameDiff, wordHi } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
-const { bootHeader, modelLabel, effortLabel } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
+const { bootHeader, welcomeCard, footerLine, helpLines, padRight: padRightV, modelLabel, effortLabel } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const nexusSettings = require("./lib/cli/nexus-settings"); // persistent, off-by-default TUI settings (~/.nexus/settings.json)
 const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA codes (lib/totp.js)
@@ -2344,7 +2344,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const out = process.stdout, ESC = "\x1b";
     const cols = () => out.columns || 80, rows = () => out.rows || 24;
     const PAID = {}, CTXW = {}; for (const e of ENGINE_ORDER) { PAID[e] = ENGINES[e].paid; CTXW[e] = ENGINES[e].ctx; } // derived from the registry — never drifts
-    const transcript = [{ role: "art" }, { role: "system", text: "type a message, or:  / commands  ·  @file / @image.png attach  ·  !cmd shell  ·  #note memory" }];
+    const transcript = [{ role: "art" }];
     const sess = { model: engine, ctxWindow: CTXW[engine] || 200000, ctxUsed: 0, inTok: 0, outTok: 0, cost: 0, liveOut: 0, byModel: {} }; // byModel: exact per-bucket token totals, priced with lib/nexus/pricing.js
     // Claude Code result -> per-model buckets. modelUsage lists every model the
     // turn used (incl. subagents); its cache writes are split 5m/1h with the
@@ -2601,11 +2601,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const L = [];
       for (const m of transcript) {
         if (m.role === "art") {
-          // Compact, calm header (no wall of ASCII, no rainbow). One tidy
-          // wordmark + the facts that matter: engine/model, cwd, branch, hints.
-          const wordmark = useColor ? "NEXUS".split("").map((ch, k) => "\x1b[1;" + GRAD[k % GRAD.length] + "m" + ch).join("") + "\x1b[0m" : "NEXUS";
-          const paint = useColor ? { brand: () => wordmark, accent: mag, muted: gray, faint: dim, rule: gray, value: (s) => s } : null;
-          for (const ln of bootHeader({ version: VERSION, engine, engineLabel: (ENGINES[engine] || {}).label, model: sess.model !== engine ? sess.model : "", cwd, branch: gitBranch, home: os.homedir(), cols: cols(), paint })) L.push(ln);
+          // Welcome card: product + version, the active model and engine, where
+          // we are, and the three starter hints. One accent, no gradients.
+          const paint = useColor ? { brand: (t) => bold(cyan(t)), border: gray, muted: gray, faint: (t) => t } : null;
+          for (const ln of welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), paint })) L.push(ln);
           continue;
         }
         if (m.role === "diff") {
@@ -2632,31 +2631,36 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           L.push(""); continue;
         }
         if (m.role === "plan") { const done = plan.filter((t) => t.done).length; L.push(bold(cyan("plan")) + gray("  " + done + "/" + plan.length + " done  ·  /plan run to execute")); if (!plan.length) L.push("  " + gray("(empty)")); for (let i = 0; i < plan.length; i++) { const t = plan[i]; const box = t.running ? yellow("[~]") : t.done ? green("[x]") : gray("[ ]"); for (const ln of wrap((i + 1) + ". " + t.text)) L.push("  " + box + " " + colorMd(ln, false)); } L.push(""); continue; }
-        if (m.role === "system") { for (const ln of wrap(m.text)) L.push(gray(ln)); L.push(""); continue; }
-        if (m.role === "user") { const w = wrap(m.text); L.push(mag("› ") + (w[0] || "")); for (let i = 1; i < w.length; i++) L.push("  " + w[i]); L.push(""); continue; }
-        // nexus turn: ordered items (text + tool cards)
-        L.push(cyan("● ") + (useColor ? "nexus".split("").map((ch, k) => "\x1b[1;" + GRAD[k % GRAD.length] + "m" + ch).join("") + "\x1b[0m" : "nexus") + gray("  " + engine + (cowork.on ? " +" + cowork.weak.replace(/^claude-|-\d.*$/g, "") : "")));
+        if (m.role === "system") { if (m.lines) for (const ln of m.lines) L.push("  " + ln); else for (const ln of wrap(m.text)) L.push("  " + ln); L.push(""); continue; }
+        if (m.role === "user") { const w = wrap(m.text); L.push(gray("> ") + bold(w[0] || "")); for (let i = 1; i < w.length; i++) L.push("  " + bold(w[i])); L.push(""); continue; }
+        // nexus turn: ordered items. Each text block opens with a plain bullet,
+        // each tool call with a status dot and a one-line result summary below it.
         { let prevType = "";
         for (let ii = 0; ii < (m.items || []).length; ii++) { const it = m.items[ii];
           if (it.type === "text") {
-            if (prevType === "tool") L.push("");
+            if (prevType) L.push("");
             const vis = it.full.slice(0, it.shown);
-            let inCode = false;
-            for (const ln of wrap(vis)) { if (/^```/.test(ln.trim())) { inCode = !inCode; L.push("  " + gray(ln)); continue; } L.push("  " + colorMd(ln, inCode)); }
+            let inCode = false, first = true;
+            for (const ln of wrap(vis)) { const lead = first && ln.trim() ? "● " : "  "; if (ln.trim()) first = false; if (/^```/.test(ln.trim())) { inCode = !inCode; L.push(lead + gray(ln)); continue; } L.push(lead + colorMd(ln, inCode)); }
             prevType = "text";
           } else if (it.type === "thinking") {
-            L.push("  " + dim(gray("● thinking" + (expanded ? ":" : " (ctrl+o to show)"))));
-            if (expanded) for (const ln of wrap(it.full).slice(0, 24)) L.push("    " + dim(gray(ln)));
+            if (prevType) L.push("");
+            L.push(dim(gray("∴ Thinking" + (expanded ? "" : "  (ctrl+o to expand)"))));
+            if (expanded) for (const ln of wrap(it.full).slice(0, 24)) L.push("  " + dim(gray(ln)));
             prevType = "thinking";
           } else if (it.type === "tool") {
-            if (prevType === "text") L.push("");
-            const dot = it.status === "run" ? yellow(spin[Math.floor(Date.now() / 90) % spin.length]) : it.status === "err" ? red("●") : green("●");
+            if (prevType) L.push("");
+            const dot = it.status === "run" || it.status === "wait" ? cyan(spin[Math.floor(Date.now() / 90) % spin.length]) : it.status === "err" ? red("●") : green("●");
             const rawSec = it.end ? (it.end - it.start) / 1000 : (Date.now() - it.start) / 1000;
             const secs = rawSec < 0.1 ? "<0.1s" : rawSec < 60 ? rawSec.toFixed(1) + "s" : fmtElapsed(Math.round(rawSec));
-            const isLast = !m.items.slice(ii + 1).some((x) => x.type === "tool");
-            const bar = isLast ? "╰" : "├";
-            L.push("  " + dot + " " + dim(gray(bar)) + " " + bold(it.label) + gray("  " + secs));
-            if (expanded && it.detail) for (const ln of wrap(stripA(it.detail)).slice(0, 6)) L.push("    " + dim(gray((isLast ? " " : "│") + " ⎿ " + ln)));
+            L.push(dot + " " + bold(it.label) + gray("  " + secs));
+            const done = it.status === "ok" || it.status === "err";
+            if (it.detail && (done || expanded)) {
+              const dl = wrap(stripA(it.detail)).filter((x) => x.trim());
+              const n = expanded ? 8 : 1;
+              dl.slice(0, n).forEach((x, k) => L.push(gray((k ? "     " : "  ⎿  ") + x)));
+              if (dl.length > n) L.push(gray("     … +" + (dl.length - n) + " line" + (dl.length - n > 1 ? "s" : "") + " (ctrl+o to expand)"));
+            }
             prevType = "tool";
           }
         } }
@@ -2664,12 +2668,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (busy && m === cur()) {
           const el = Math.round((Date.now() - busyStart) / 1000);
           const tok = sess.liveOut ? " · " + fmtK(sess.liveOut) + " tokens" : "";
-          L.push("  " + mag(spin[Math.floor(Date.now() / 90) % spin.length] + " " + busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · ctrl+c to stop)"));
+          L.push(""); L.push(cyan(spin[Math.floor(Date.now() / 90) % spin.length] + " " + busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · esc to interrupt)"));
           const et = ENGINE_TIPS[engine] || [], tips = [];
           for (let k = 0; k < Math.max(NEXUS_TIPS.length, et.length); k++) { if (et[k]) tips.push(et[k]); if (NEXUS_TIPS[k]) tips.push(NEXUS_TIPS[k]); } // interleave so an engine-specific tip shows first
-          if (tips.length) L.push("  " + dim(gray("tip: " + tips[Math.floor(el / 4) % tips.length])));
+          if (tips.length) L.push(gray("  ⎿  Tip: " + tips[Math.floor(el / 4) % tips.length]));
         } else if (m.summary) {
-          L.push("  " + dim(gray(m.summary)));
+          L.push(gray("  ⎿  " + m.summary));
         }
         L.push("");
       }
@@ -2679,19 +2683,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const statusBar = () => {
       const ctxW = sess.ctxWindow || 200000;
       const pct = Math.min(100, Math.round((sess.ctxUsed / ctxW) * 100));
-      const cells = 8, fill = Math.max(0, Math.min(cells, Math.round((pct / 100) * cells)));
-      const pc = pct >= 80 ? red : pct >= 50 ? yellow : cyan;
-      const bar = pc("▓".repeat(fill)) + gray("░".repeat(cells - fill));
-      // engine · resolved model name (with version) · effort — the most useful
-      // identity up front, so it survives truncation on a narrow terminal.
-      const parts = [bold(engine)];
-      const mLabel = modelLabel(shownModel());
-      if (mLabel) parts.push(bold(mLabel));
-      if (mLabel && ENGINES[engine] && ENGINES[engine].kind === "stream") parts.push(effort ? cyan(effortLabel(effort)) : gray("default effort"));
-      if (gitBranch) parts.push(blue("⌥ " + gitBranch));
-      parts.push(gray("ctx ") + pc(pct + "%") + " " + bar, gray("↑") + fmtK(sess.inTok) + gray(" ↓") + fmtK(sess.outTok) + gray(" tok"));
-      if (PAID[engine]) { const isSubscription = engine === "codex" && CODEX_LOCAL.authMode ? onPlan(engine) : (onPlan(engine) || (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY)); if (isSubscription) { parts.push(green("included in plan")); } else { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); } }
-      else parts.push(apiConfigured() ? cyan("api") : green("local · free"));
+      const pc = pct >= 80 ? red : pct >= 50 ? yellow : gray;
+      // Quiet by design: model (with version) and effort, context use, spend on
+      // API billing. Everything else appears only while it is switched on.
+      const parts = [];
+      const mLabel = modelLabel(shownModel()) || engine;
+      parts.push(mLabel + (mLabel && ENGINES[engine] && ENGINES[engine].kind === "stream" && effort ? gray(" · ") + effortLabel(effort) : ""));
+      parts.push(pc(pct + "% context"));
+      if (PAID[engine]) { const isSubscription = engine === "codex" && CODEX_LOCAL.authMode ? onPlan(engine) : (onPlan(engine) || (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY)); if (isSubscription) { /* subscription: nothing to show */ } else { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); } }
+      
       if (runningShells) parts.push(yellow(runningShells + " shell" + (runningShells > 1 ? "s" : "")));
       if (bgJobs.running()) parts.push(cyan(bgJobs.running() + " bg"));
       if (activeAgents) parts.push(mag(activeAgents + " agent" + (activeAgents > 1 ? "s" : "")));
@@ -2706,16 +2706,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (style && style !== "default") parts.push(cyan("style:" + style));
       if (hack) parts.push(red("HACK"));
       if (fallback) parts.push(gray("fb:" + fallback.replace(/^claude-|-\d.*$/g, "")));
-      parts.push(MODES[mode].c(MODES[mode].k));
-      return "  " + clip(parts.join(gray("  ·  ")), cols() - 3);
+      return parts.join(gray("  ·  "));
     };
     const hint = () => {
-      const C = cols();
-      if (composer.searchMode) return clip("  " + yellow("reverse-search: ") + bold(composer.searchQuery) + gray("   (ctrl+r older · ↵ accept · esc cancel)"), C - 2);
-      if (compact.on) { const n = 22, f = Math.min(n, compact.f); return clip("  " + yellow("Compacting conversation… ") + gray("[") + cyan("▓".repeat(f)) + gray("░".repeat(n - f)) + gray("] ") + Math.round((f / n) * 100) + "%", C - 2); }
-      if (slashMatches().length || argMatches().length) return clip("  " + blue("↑↓") + gray("/PgUp·Dn/wheel select  ") + blue("Tab") + gray(" complete  ") + blue("↵") + gray(" run  ") + blue("Esc") + gray(" dismiss"), C - 2);
-      if (scroll > 0) return clip("  " + yellow("↑ scrolled — " + scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  ") + blue("PgUp/PgDn") + gray(" or wheel to scroll  ") + blue("End") + gray(" jump to latest"), C - 2);
-      return clip("  " + blue("↵") + gray(" send  ") + blue("shift+tab") + gray(" mode  ") + blue("ctrl+o") + gray(" " + (expanded ? "collapse" : "expand")) + gray("  ") + blue("@") + gray("file ") + blue("!") + gray("sh ") + blue("#") + gray("note  ") + blue("/") + gray("cmds  ") + blue("/copy") + gray(" clipboard  ") + (mouseOn ? blue("shift+drag") + gray(" select") : green("select ON")), C - 2);
+      if (composer.searchMode) return yellow("reverse search: ") + bold(composer.searchQuery) + gray("   ctrl+r older · enter accept · esc cancel");
+      if (compact.on) { const n = 22, f = Math.min(n, compact.f); return yellow("Compacting conversation ") + gray("▓".repeat(f) + "░".repeat(n - f) + " ") + Math.round((f / n) * 100) + "%"; }
+      if (slashMatches().length || argMatches().length) return gray("↑↓ select · tab complete · enter run · esc dismiss");
+      if (scroll > 0) return yellow(scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  pgup/pgdn scroll · end jump to latest");
+      if (mode === 1) return green("auto-accept edits on") + gray("  (shift+tab to cycle)");
+      if (mode === 2) return cyan("plan mode on") + gray("  (shift+tab to cycle)");
+      return gray("? for shortcuts");
     };
     // matching slash commands for the popup menu (active when the input is a bare /command being typed)
     // Fuzzy command matching: prefer prefix hits, then subsequence (e.g. /cmt -> /commit,
@@ -2808,7 +2808,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const combined = menu.length ? menu : amenu;
       if (menuSel > combined.length - 1) menuSel = Math.max(0, combined.length - 1);
       if (menuSel < 0) menuSel = 0;
-      const fixedChrome = 6; // body/HUD divider + status + buttons + composer box (top & bottom borders) + hint (always present)
+      const fixedChrome = 4; // spacer + composer box (top & bottom borders) + footer row
       const avail = Math.max(0, R - fixedChrome);
       const menuRows = Math.min(combined.length, Math.max(0, avail - 2));
       const menuStart = combined.length > menuRows ? Math.max(0, Math.min(menuSel - (menuRows >> 1), combined.length - menuRows)) : 0;
@@ -2825,38 +2825,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // one growing text line differ, so we write ~2 rows instead of the whole screen.
       const frame = [];
       for (let i = 0; i < bodyRows; i++) frame.push(" " + clip(view[i] || "", C - 2));
-      frame.push(dim(gray("─".repeat(C)))); // hairline divider — separates the live transcript from the persistent status HUD below
-      frame.push(statusBar());
-      // ⋯ status menu — a single click target that expands to one-tap actions
-      // (cost/usage & more). Collapsed by default so it stays out of the way.
-      // Record each hitbox's screen-column span against this row for the mouse
-      // handler. An action click closes the menu and jumps to the live chat.
-      {
-        clickZones = [];
-        const btnRow = frame.length + 1; // 1-indexed screen row this bar occupies
-        const chip = (s2, col, label, extra) => { const txt = " " + label + " "; const width = txt.length + 2; s2.str += gray("[") + cyan(txt) + gray("]") + " "; clickZones.push(Object.assign({ row: btnRow, c0: col, c1: col + width - 1 }, extra)); return col + width + 1; };
-        const box = { str: "  " };
-        let col = 3;
-        if (!navOpen) {
-          col = chip(box, col, "...", { kind: "toggle" });
-          frame.push(box.str + dim(gray("menu — cost, savings & more")));
-        } else {
-          col = chip(box, col, "x", { kind: "close" });
-          for (const [label, cmd] of NAV_BUTTONS) {
-            const width = (" " + label + " ").length + 2;
-            if (col + width > C - 2) break; // don't run off the edge
-            col = chip(box, col, label, { kind: "run", cmd });
-          }
-          frame.push(box.str);
-        }
-      }
-      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(nm)) : cyan(nm)) + gray("  " + (ds || "")) + pos, C - 2)); }
+      frame.push("");
+      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(padRightV(nm, nmW))) : padRightV(nm, nmW)) + gray(" " + (ds || "")) + pos, C - 2)); }
       // ---- composer: a framed input box. Rounded box-drawing borders tint to the
       // accent while you're typing or a command menu is open (a quiet focus cue),
       // and stay muted otherwise. Each content row is padded to the exact interior
       // width so the right border stays plumb across lines; the block caret (█) is
       // drawn inline because the hardware cursor is hidden in the alt-screen.
-      const _bd = (input.length || combined.length) ? cyan : gray;
+      const _bd = gray;
       const _innerW = Math.max(0, C - 2); // the span between the two │ borders (one-space gutter each side)
       frame.push(_bd("╭" + "─".repeat(_innerW) + "╮"));
       const _showStart = Math.max(0, wrapped.length - inRows);
@@ -2866,12 +2842,28 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
         // one-space gutter + caret/indent + highlighted input, clipped then padded
         // to the exact interior width so the right border stays plumb at every width
-        let interior = clip(" " + (i === 0 ? bold(mag("❯ ")) : "  ") + colorInput(raw), _innerW);
+        let interior = clip(" " + (i === 0 ? bold("> ") : "  ") + colorInput(raw), _innerW);
         interior += " ".repeat(Math.max(0, _innerW - stripA(interior).length));
         frame.push(_bd("│") + interior + _bd("│"));
       }
       frame.push(_bd("╰" + "─".repeat(_innerW) + "╯"));
-      frame.push(hint());
+      // footer: contextual hint on the left, status on the right. The status
+      // menu (cost, savings & more) is the clickable "..." at the far right;
+      // when open its buttons take over the row.
+      {
+        clickZones = [];
+        const row = frame.length + 1; // 1-indexed screen row of the footer
+        if (navOpen) {
+          let col = 2, str = " ";
+          const chip = (label, extra) => { const w = label.length + 2; if (col + w > C - 2) return; str += gray("[") + cyan(label) + gray("]") + " "; clickZones.push(Object.assign({ row, c0: col, c1: col + w - 1 }, extra)); col += w + 1; };
+          chip("close", { kind: "close" });
+          for (const [label, cmd] of NAV_BUTTONS) chip(label, { kind: "run", cmd });
+          frame.push(str);
+        } else {
+          frame.push(footerLine(hint(), statusBar() + gray("  ···"), C));
+          clickZones.push({ row, c0: C - 4, c1: C - 1, kind: "toggle" });
+        }
+      }
       const b = frameDiff(lastLines, frame, ESC);
       lastLines = frame;
       if (b) out.write(b);
@@ -3528,7 +3520,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const argstr = sp === -1 ? "" : t.slice(sp + 1).trim();
       const arg = argstr.split(/\s+/)[0];
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
-      if (cmd === "/help") transcript.push({ role: "system", text: "core:  /help /clear /compact /context /cost /budget /undo /redo /rewind /checkpoints /resume /export /copy /status /doctor /update /autoupdate /init /model /engine /commands /expand /exit\nsave-cost:  /cheap (preset) · /cowork (strong+weak) · /lean · /effort low · /estimate · /index · /budget · /report (chargeback) · /compliance (SOC2 bundle) · /impact\nunique:  /race · /ensemble · /bench · /review · /ultrareview · /changelog · /watch · /plan · /guard · /gaps · /dream · /commit · /models · /recent · /keys · /diff · /git · /blame · /explain · /test · /index · /todo · /stats · /deps · /env · /snippet · /pin · /secrets · /scan · /agents a ;; b · /tree · /theme · /offline · /redact\nself-check:  /invariants (diff-lint the pending diff) · /attest (audit-log capability manifest) · /bisect [test] (find the turn that broke it) · /whatbroke [test] (instant blame) · /shrink [test] (minimal breaking file set)\nextend:  /feature create <name> <what it does> · /feature remove <name> · /feature list  ·  /dashboard (localhost web UI: live pipelines, jobs & cowork)\ninput:  @file (Tab-completes paths) · !cmd shell · #note memory · end a line with \\ for a newline · MCP & /hooks from .nexus/\nkeys:  shift+tab mode · ctrl+o expand · esc/ctrl+c interrupt · ↑/↓ history · ctrl+r search · ctrl+g editor · ctrl+l redraw · word+kill+undo (see /keys) · / menu" });
+      if (cmd === "/help") {
+        const HS = [
+          { title: "Session", rows: [["/clear","start a new conversation"],["/compact","summarize the conversation to free up context"],["/resume","reload the last saved session"],["/export","save the conversation to a markdown file"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/exit","quit Nexus"]] },
+          { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low | medium | high"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max-savings preset"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
+          { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
+          { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/dashboard","open the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
+          { title: "Input prefixes", rows: [["/command","run a command (type / to browse)"],["@file","attach a file or image (Tab completes the path)"],["!command","run a shell command"],["#note","save a note to memory"]] },
+        ];
+        transcript.push({ role: "system", lines: helpLines(HS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }).concat(["", gray("  " + allCmds().length + " commands in total — type / to search them, or /keys for shortcuts.")]) });
+      }
+
       else if (cmd === "/commands") { const ks = Object.keys(customCmds); transcript.push({ role: "system", text: ks.length ? ("custom commands (from .nexus/commands or .claude/commands):\n" + ks.map((k) => "  " + k + "  " + customCmds[k].desc.replace(/ \(custom\)$/, "")).join("\n")) : "no custom commands yet — add a file like .nexus/commands/review.md, then use /review" }); }
       else if (cmd === "/feature" || cmd === "/features") {
         // Let the user grow Nexus themselves: /feature create <name> <what it does> writes an
@@ -3661,7 +3663,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/export") { try { const L = ["# Nexus conversation", "", "_" + new Date().toLocaleString() + " · " + engine + " · " + cwd + "_", ""]; for (const m of transcript) { if (m.role === "user") L.push("## You", "", m.text, ""); else if (m.role === "nexus") { L.push("## Nexus", ""); for (const it of (m.items || [])) { if (it.type === "text") L.push(it.full); else if (it.type === "tool") L.push("- `" + it.label + "`"); } L.push(""); } else if (m.role === "system") L.push("> " + String(m.text).replace(/\n/g, " "), ""); } const fp = path.join(cwd, "nexus-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, L.join("\n")); transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
       else if (cmd === "/copy") { let last = ""; for (let i = transcript.length - 1; i >= 0; i--) { const m = transcript[i]; if (m.role === "nexus") { last = (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join("\n").trim(); if (last) break; } } if (last) { out.write("\x1b]52;c;" + Buffer.from(last).toString("base64") + "\x07"); transcript.push({ role: "system", text: "copied Nexus's last reply to the clipboard" }); } else transcript.push({ role: "system", text: "nothing to copy yet" }); }
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed" : "the working tree")) : "rewind failed (git error)" }); } } }
-      else if (cmd === "/clear" || cmd === "/new") { transcript.length = 0; transcript.push({ role: "art" }, { role: "system", text: "new chat  ·  " + engine + "  ·  " + cwd }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; }
+      else if (cmd === "/clear" || cmd === "/new") { transcript.length = 0; transcript.push({ role: "art" }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; }
       else if (cmd === "/compact") doCompact(false);
       else if (cmd === "/context") transcript.push({ role: "system", text: "context: " + fmtK(sess.ctxUsed) + " / " + fmtK(sess.ctxWindow) + " tokens (" + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "%)  ·  window " + fmtK(sess.ctxWindow) });
       else if (cmd === "/cost") {
@@ -3902,10 +3904,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }).catch(() => { transcript.push({ role: "system", text: "could not reach Ollama for the local model list" }); render(); });
       }
       else if (cmd === "/recent") { try { let files = _cp.execSync("git log -12 --name-only --pretty=format:", { cwd, encoding: "utf8" }); let list = [...new Set(files.split("\n").filter(Boolean))]; if (!list.length) { try { list = [...new Set(_cp.execSync("git ls-files -m -o --exclude-standard", { cwd, encoding: "utf8" }).split("\n").filter(Boolean))]; } catch (_) {} } transcript.push({ role: "system", text: list.length ? ("recently changed files (last commits):\n" + list.slice(0, 30).map((f) => "  " + f).join("\n") + (list.length > 30 ? "\n  … +" + (list.length - 30) + " more" : "") + "\n(tip: /pin one to keep it in context)") : "no changes found" }); } catch (_) { transcript.push({ role: "system", text: "/recent needs a git repo" }); } }
-      else if (cmd === "/keys") transcript.push({ role: "system", text: "keys:\n  Enter          send   ·   newline: Alt+Enter · Shift+Enter · Ctrl+J · \\ then Enter\n  Shift+Tab      cycle mode (normal / auto-accept / plan)\n  Ctrl+O         expand tool detail\n  ↑ / ↓          move between lines, then step through history (draft preserved)\n  Ctrl+R         reverse-i-search history (Ctrl+R again = older · Enter accept · Esc cancel)\n  Home/End · Ctrl+A/Ctrl+E   start / end of the current line\n  Ctrl+←/→ · Alt+B/Alt+F     jump a word   ·   Alt+Backspace  delete word back\n  Ctrl+W del word · Ctrl+U kill to start · Ctrl+K kill to end · Ctrl+Y yank · Ctrl+_ undo\n  Ctrl+G         edit the message in $EDITOR   ·   Ctrl+L  redraw the screen\n  Esc            interrupt a running turn   ·   Esc Esc (idle) clear the buffer\n  Ctrl+C         interrupt / clear / again-to-exit   ·   Ctrl+D  exit on an empty line\n  ?              (empty buffer) show this help   ·   Tab  complete /command or @path\n  wheel · PgUp/PgDn   scroll   (PgUp/PgDn also pages the / menu)\n  paste          multi-line kept; a large paste shows as [Pasted text #N +X lines], expanded on send\n  copy text:     /mouse off  (or hold Shift while selecting)\n  prefixes:  /command  ·  @file  ·  !shell  ·  #note" });
-      else if (cmd === "/version" || cmd === "/about") transcript.push({ role: "system", text: "Nexus (darknode " + VERSION + ") — the multi-engine AI coding agent. Engines: claude · ollama (local) · opencode. Type / for the command menu." });
-      else if (cmd === "/docs" || cmd === "/doc" || cmd === "/help?") { const key = (arg || "").toLowerCase().replace(/^\//, ""); scroll = 0; if (!key) transcript.push({ role: "system", text: "docs — /docs <topic> (or /docs all):\n" + DOC_ORDER.map((k) => "  " + k.padEnd(12) + NEXUS_DOCS[k].title).join("\n") }); else if (key === "all") transcript.push({ role: "system", text: DOC_ORDER.map((k) => "── " + NEXUS_DOCS[k].title + " ──\n" + NEXUS_DOCS[k].body).join("\n\n") }); else { const d = NEXUS_DOCS[key] || Object.entries(NEXUS_DOCS).find(([k, v]) => k.startsWith(key) || v.title.toLowerCase().includes(key))?.[1]; transcript.push({ role: "system", text: d ? (d.title + "\n\n" + d.body) : ("no doc topic '" + key + "' — /docs to list topics") }); } }
-      else if (cmd === "/impact") { const BLEND = 6; const avoided = (impact.localTok / 1e6) * BLEND; transcript.push({ role: "system", text: "Impact Receipt (this session):\n  local turns   " + impact.localTurns + "   free · ~" + fmtK(impact.localTok) + " tokens\n  cloud turns   " + impact.cloudTurns + "   ↑" + fmtK(impact.cloudInTok) + " ↓" + fmtK(impact.cloudOutTok) + " tok · $" + impact.cloudCost.toFixed(4) + "\n  cost avoided  ~$" + avoided.toFixed(4) + "   (est. if those local turns had run on the cloud @ ~$" + BLEND + "/M tokens)" + (cowork.on || impact.delegated ? "\n  cowork        " + impact.delegated + " task(s) delegated to " + (cowork.weak || "the weak model") + " · ~$" + impact.coworkSaved.toFixed(4) + " saved" : "") + (impact.cachedHits ? "\n  cache hits    " + impact.cachedHits + " free repeat(s) · ~$" + impact.cachedSaved.toFixed(4) + " saved" : "") + (impact.squeezeTok ? "\n  squeezed      ~" + fmtK(impact.squeezeTok) + " input tokens trimmed (dedup + whitespace)" : "") + "\n  net: spent $" + impact.cloudCost.toFixed(4) + ", avoided ~$" + (avoided + impact.coworkSaved + impact.cachedSaved).toFixed(4) }); }
+      else if (cmd === "/keys") {
+        const KS = [
+          { title: "Send & edit", rows: [["Enter","send the message"],["Alt+Enter / Shift+Enter / Ctrl+J","insert a newline"],["Home / End","start / end of the line"],["Ctrl+A / Ctrl+E","start / end of the line"],["Ctrl+← / → · Alt+B / F","jump a word"],["Alt+Backspace · Ctrl+W","delete the word before the cursor"],["Ctrl+U / Ctrl+K","kill to start / end of line"],["Ctrl+Y","yank back what was killed"],["Ctrl+_","undo the last edit"]] },
+          { title: "History", rows: [["Up / Down","step through history (your draft is kept)"],["Ctrl+R","reverse-search history"]] },
+          { title: "Session", rows: [["Shift+Tab","cycle mode: normal / auto-accept / plan"],["Ctrl+O","expand or collapse tool detail"],["Esc","interrupt a running turn"],["Esc Esc","clear the input (idle)"],["Ctrl+C","interrupt, then clear, then exit"],["Ctrl+D","exit on an empty line"],["Ctrl+G","edit the message in $EDITOR"],["Ctrl+L","redraw the screen"]] },
+          { title: "Scroll & select", rows: [["Wheel · PgUp / PgDn","scroll the transcript"],["End","jump to the latest"],["/mouse off or Shift+drag","select & copy text"]] },
+        ];
+        transcript.push({ role: "system", lines: helpLines(KS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }) });
+      }
+
       else if (cmd === "/cache") { const a2 = (arg || "").toLowerCase(); if (a2 === "off") { cacheOn = false; saveSetting("cache", false); transcript.push({ role: "system", text: "response cache OFF — every turn runs fresh. (saved)" }); } else if (a2 === "on") { cacheOn = true; saveSetting("cache", true); transcript.push({ role: "system", text: "response cache ON — an exact repeat of a read-only answer is served free. (saved)" }); } else if (a2 === "clear") { cacheClear(cwd); transcript.push({ role: "system", text: "response cache cleared (.nexus/cache)." }); } else { const s = cacheStats(cwd); transcript.push({ role: "system", text: "response cache " + (cacheOn ? green("ON") : red("OFF")) + "  ·  " + s.entries + " entr" + (s.entries === 1 ? "y" : "ies") + " · " + s.hits + " hit(s) · saved ~" + fmtK(s.savedTok) + " tokens" + (s.savedCost ? " ($" + s.savedCost.toFixed(4) + ")" : "") + "\n  serves an EXACT repeat of a read-only answer for free; changed context re-runs automatically.\n  /cache on · /cache off · /cache clear" }); } render(); }
       else if (cmd === "/gaps") { try { const files = _cp.execSync("git ls-files", { cwd, encoding: "utf8" }).split("\n").filter(Boolean); const found = []; for (const f of files) { try { if (fs.statSync(path.join(cwd, f)).size > 400000) continue; const lines = fs.readFileSync(path.join(cwd, f), "utf8").split("\n"); for (let i = 0; i < lines.length; i++) { const m = lines[i].match(/\b(TODO|FIXME|HACK|XXX|BUG)\b[:\s-]*(.*)/); if (m) found.push({ file: f, line: i + 1, kind: m[1], text: (m[2] || "").trim().slice(0, 80) }); } } catch (_) {} } if (arg === "plan") { if (!found.length) transcript.push({ role: "system", text: "no gaps to turn into a plan" }); else { plan = found.slice(0, 30).map((g) => ({ text: "resolve " + g.kind + " in " + g.file + ":" + g.line + (g.text ? " — " + g.text : ""), done: false })); savePlan(); transcript.push({ role: "system", text: "turned " + plan.length + " gap(s) into a plan — /plan run to work through them" }); transcript.push({ role: "plan" }); } } else transcript.push({ role: "system", text: found.length ? ("gaps (" + found.length + " TODO/FIXME/HACK/XXX/BUG):\n" + found.slice(0, 40).map((g) => "  " + g.file + ":" + g.line + "  " + g.kind + (g.text ? " " + g.text : "")).join("\n") + (found.length > 40 ? "\n  … and " + (found.length - 40) + " more" : "") + "\n/gaps plan turns these into a checklist") : "no TODO/FIXME/HACK/XXX/BUG markers in tracked files" }); } catch (_) { transcript.push({ role: "system", text: "/gaps needs a git repo (uses git ls-files)" }); } }
       else if (cmd === "/dream") { const conv = transcript.filter((m) => m.role === "user" || m.role === "nexus").slice(-16); if (!conv.length) { transcript.push({ role: "system", text: "nothing to consolidate yet — have a conversation first" }); render(); return; } transcript.push({ role: "user", text: "/dream" }); const block = { role: "nexus", items: [] }; transcript.push(block); scroll = 0; busy = true; busyStart = Date.now(); busyWord = "Dreaming"; ctl = makeCtl(); const card = { type: "tool", id: "dr", name: "Task", label: "Task(consolidate memory)", status: "run", start: Date.now() }; block.items.push(card); startTick(); render(); (async () => {
