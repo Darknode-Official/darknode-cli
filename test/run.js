@@ -1033,6 +1033,7 @@ group("diceware passphrase");
 group("cost savers — squeeze + response cache");
 {
   const { squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats } = require("../lib/nexus/costsave");
+  const { supersedeReread } = require("../lib/nexus/costsave");
   // dedupe: same big file block inlined twice → second replaced with a marker
   const body = "x".repeat(200);
   const dup = "--- pinned: a.js ---\n" + body + "\n--- end a.js ---\n\nquestion\n\n--- context: a.js ---\n" + body + "\n--- end a.js ---";
@@ -1053,6 +1054,28 @@ group("cost savers — squeeze + response cache");
   cacheClear(dir);
   ok("cacheClear wipes the cache dir", cacheGet(dir, k) === null && cacheStats(dir).entries === 0);
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+
+  // supersedeReread — lossless re-read compression
+  {
+    const big = "y".repeat(500);
+    const msgs = [ { role: "assistant", content: "{}" }, { role: "tool", content: big } ];
+    const snap = new Map(); const FP = "/w/a.js";
+    const s1 = supersedeReread(msgs, snap, FP, "a.js", 1);
+    ok("first read is just recorded (nothing to supersede)", s1 === 0 && msgs[1].content === big && snap.get(FP) === 1);
+    msgs.push({ role: "assistant", content: "{}" });
+    msgs.push({ role: "tool", content: "z".repeat(500) });   // a fresh re-read of the same file
+    const s2 = supersedeReread(msgs, snap, FP, "a.js", 3);
+    ok("re-read stubs the earlier full copy + reports savings", s2 > 0 && msgs[1].content.startsWith("[superseded") && msgs[3].content.length === 500 && snap.get(FP) === 3);
+    ok("the newest copy is never touched", msgs[3].content === "z".repeat(500));
+    const before = msgs[1].content;
+    supersedeReread(msgs, snap, FP, "a.js", 3);
+    ok("an already-stubbed copy is not re-stubbed (idempotent)", msgs[1].content === before);
+    const snap2 = new Map(); const msgs2 = [ { role: "tool", content: "short" }, { role: "tool", content: "q".repeat(300) } ];
+    snap2.set("/w/b.js", 0);
+    ok("a too-small earlier copy is left alone", supersedeReread(msgs2, snap2, "/w/b.js", "b.js", 1) === 0 && msgs2[0].content === "short");
+    ok("different files don't supersede each other", (() => { const m = [{ role: "tool", content: "a".repeat(300) }, { role: "tool", content: "b".repeat(300) }]; const sn = new Map(); supersedeReread(m, sn, "/w/x.js", "x.js", 0); const r = supersedeReread(m, sn, "/w/y.js", "y.js", 1); return r === 0 && m[0].content === "a".repeat(300); })());
+    ok("safe on bad input", supersedeReread(null, snap, FP, "a.js") === 0 && supersedeReread(msgs, null, FP, "a.js") === 0);
+  }
 }
 
 group("MCP catalog (/mcp add)");
