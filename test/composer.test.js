@@ -5,6 +5,7 @@ const fs = require("fs"), os = require("os"), path = require("path");
 const C = require("../lib/cli/composer");
 const NS = require("../lib/cli/nexus-settings");
 const T = require("../lib/cli/text");
+const TF = require("../lib/cli/tui-format");
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log("  \x1b[31mFAIL\x1b[0m " + name); } };
@@ -257,6 +258,40 @@ group("settings env docs — every governed limit documents a NEXUS_ env var");
   // var that overrides it. Guard that the doc data stays complete + truthful.
   const limitKeys = ["budgetCap", "autoCompact", "minimizeCalls", "stepCap", "trimOutput", "cache", "map", "lean"];
   for (const k of limitKeys) ok("env var documented for " + k, typeof NS.ENV_NAME[k] === "string" && /^NEXUS_/.test(NS.ENV_NAME[k]));
+}
+
+group("deleteForward — a collapsed-paste marker deletes as one unit");
+{
+  // forward-delete must mirror backspace: a whole [Pasted text #N +M lines]
+  // marker is removed in one keypress, never shredded into a broken marker.
+  const m = new C.ComposerModel({ text: "[Pasted text #1 +12 lines]tail" }); m.cursor = 0;
+  m.deleteForward();
+  eq("forward-delete removes the whole paste marker", m.text, "tail");
+  const mi = new C.ComposerModel({ text: "[Image#2]x" }); mi.cursor = 0;
+  mi.deleteForward();
+  eq("forward-delete removes the whole image marker", mi.text, "x");
+  const m2 = new C.ComposerModel({ text: "abc" }); m2.cursor = 0; m2.deleteForward();
+  eq("forward-delete still removes one normal char", m2.text, "bc");
+}
+
+group("Esc Esc on idle saves EXPANDED text to history (not the raw marker)");
+{
+  const m = new C.ComposerModel();
+  m.pastes = ["the real pasted body"];
+  m.text = "[Pasted text #1 +3 lines]"; m.cursor = m.text.length;
+  C.feed(m, "\x1b", {}, 5000);          // first Esc arms the double-press
+  const r = C.feed(m, "\x1b", {}, 5000); // second Esc within the window clears
+  eq("Esc Esc clears the buffer", m.text, "");
+  eq("Esc Esc returns a render", r.type, "render");
+  eq("history holds the expanded text, not the marker", m.history[m.history.length - 1], "the real pasted body");
+}
+
+group("shortenPath — zero/negative width yields empty, like fitWidth");
+{
+  eq("max 0 -> empty", TF.shortenPath("/home/u/project", 0), "");
+  eq("max negative -> empty", TF.shortenPath("/home/u/project", -5), "");
+  eq("fits untouched", TF.shortenPath("/a/b", 20), "/a/b");
+  ok("over-long is truncated with ellipsis", TF.shortenPath("/home/user/deep/nested/path", 10).length <= 10);
 }
 
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (composer + settings)");
