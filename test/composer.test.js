@@ -294,5 +294,20 @@ group("shortenPath — zero/negative width yields empty, like fitWidth");
   ok("over-long is truncated with ellipsis", TF.shortenPath("/home/user/deep/nested/path", 10).length <= 10);
 }
 
+group("persisted prefs — /style and /redact round-trip; dead defaults removed");
+{
+  ok("DEFAULTS has style", "style" in NS.DEFAULTS);
+  ok("DEFAULTS has redact", "redact" in NS.DEFAULTS);
+  ok("dead default cowork removed", !("cowork" in NS.DEFAULTS));
+  ok("dead default cheap removed", !("cheap" in NS.DEFAULTS));
+  const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "nx-pref-"));
+  const s1 = NS.createStore(HOME, {});
+  s1.set("style", "concise"); s1.set("redact", true);
+  const s2 = NS.createStore(HOME, {});   // a fresh launch loads from disk
+  eq("style persists across launches", s2.get("style"), "concise");
+  eq("redact persists across launches", s2.get("redact"), true);
+  fs.rmSync(HOME, { recursive: true, force: true });
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (composer + settings)");
 process.exit(fail ? 1 : 0);
