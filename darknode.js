@@ -1614,7 +1614,8 @@ async function aiCoder(argv) {
     let didTool = false, nudges = 0;
     for (let step = 1; step <= (lean ? 12 : 25); step++) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); break; }
-      let o; try { o = JSON.parse(raw); } catch (_) { messages.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
+      let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
+      if (!o || typeof o !== "object") { messages.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
       // Strip thought from context to save tokens — it's displayed, not needed in history
       const compact = { action: o.action };
       if (o.tool) compact.tool = o.tool;
@@ -2224,7 +2225,8 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
   for (let step = 1; step <= 15; step++) {
     if (signal && signal.aborted) return { ok: false, output: log + "\n(interrupted)" };
     let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA, signal); } catch (e) { return { ok: signal && signal.aborted ? false : false, output: (signal && signal.aborted) ? log + "\n(interrupted)" : "model error: " + e.message }; }
-    let o; try { o = JSON.parse(raw); } catch (_) { messages.push({ role: "tool", content: "Reply with valid schema JSON." }); continue; }
+    let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
+    if (!o || typeof o !== "object") { messages.push({ role: "tool", content: "Reply with valid schema JSON." }); continue; }
     const compact = { action: o.action }; if (o.tool) compact.tool = o.tool; if (o.args) compact.args = o.args; if (o.final) compact.final = o.final;
     messages.push({ role: "assistant", content: JSON.stringify(compact) });
     if (o.thought) console.log("    " + gray("think: " + (o.thought || "").slice(0, 120)));
@@ -3200,7 +3202,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (lean && (sess.outTok - turnStartTok) > 8000) { ensureText().full += "\n(token budget for this turn reached — wrap up with /continue if needed)"; break; }
             let raw; try { raw = await ollamaChat(mdl, oMsgs, CODER_SCHEMA, aSignal(ctl)); } catch (e) { if (ctl && ctl.stopped) break; ensureText().full += "\n" + explainEngineError(e && e.message, { engine, model: mdl }); break; }
             sess.outTok += Math.ceil(raw.length / 4); sess.liveOut += Math.ceil(raw.length / 4);
-            let o; try { o = JSON.parse(raw); } catch (_) { oMsgs.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
+            let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
+            if (!o || typeof o !== "object") { oMsgs.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
             // Strip `thought` from history (it's shown to the user below, not needed
             // as context) so past chain-of-thought isn't resent on every step.
             const _ctx = { action: o.action }; if (o.tool) _ctx.tool = o.tool; if (o.args) _ctx.args = o.args; if (o.final) _ctx.final = o.final;

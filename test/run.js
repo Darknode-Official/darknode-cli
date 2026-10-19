@@ -128,6 +128,8 @@ group("parsers (gemini/codex structured output → real tokens)");
   const g = geminiParse(JSON.stringify({ response: "Here is the fix.", stats: { models: { "gemini-2.5-pro": { tokens: { prompt: 1200, candidates: 340, thoughts: 60 } } } } }));
   eq("gemini text", g.text, "Here is the fix."); eq("gemini in", g.inTok, 1200); eq("gemini out", g.outTok, 400); eq("gemini model", g.model, "gemini-2.5-pro");
   ok("gemini garbage → null", geminiParse("not json") === null);
+  const gc = geminiParse(JSON.stringify({ response: "x", stats: { models: { "gemini-2.5-pro": { tokens: { prompt: 1200, cached: 500, candidates: 340 } } } } }));
+  eq("gemini cached is part of prompt, not added on top", gc.inTok, 1200);
   const c = codexParse([JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Done." } }), JSON.stringify({ type: "turn.completed", usage: { input_tokens: 2100, cached_input_tokens: 512, output_tokens: 230 } })].join("\n"));
   eq("codex text", c.text, "Done."); eq("codex in (cached is part of input, not extra)", c.inTok, 2100); eq("codex out", c.outTok, 230);
   ok("codex garbage → null", codexParse("hello\nworld") === null);
@@ -451,6 +453,9 @@ group("text helpers");
   ok("extractJson from noisy text (obj)", extractJson("blah {\"a\":1} tail").a === 1);
   ok("extractJson array", Array.isArray(extractJson("x [1,2,3] y")) && extractJson("x [1,2,3] y")[2] === 3);
   ok("extractJson fallback on garbage", extractJson("no json here", "FB") === "FB");
+  // a verdict object whose reason contains "[...]" must not be mis-read as an array
+  ok("extractJson object with bracketed reason stays an object", extractJson('{"done":false,"reason":"fails at [2]"}', null).done === false);
+  ok("extractJson prefers the container that opens first (prose + brackets)", extractJson('Sure: {"done":false,"reason":"see [line 5]"}', null).done === false);
 }
 
 group("render helpers (frameDiff + wordHi) — the trickiest pure algorithms");
