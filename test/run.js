@@ -1267,6 +1267,10 @@ group("compliance bundle (SOC2 export)");
   eq("replaceAll replaces every occurrence", applyEdits("a a a", [{ find: "a", replace: "x", replaceAll: true }]).content, "x x x");
   ok("identical find/replace rejected", !applyEdits("abc", [{ find: "b", replace: "b" }]).ok);
   ok("empty edits list rejected", !applyEdits("abc", []).ok);
+  // $-sequences in replacement text are literal, not regex substitutions (shell/regex/template code)
+  eq("edit preserves $& in replacement", applyEdits("x = Y", [{ find: "Y", replace: "a$&b" }]).content, "x = a$&b");
+  eq("edit preserves $$ in replacement", applyEdits("v = Z", [{ find: "Z", replace: "$$HOME" }]).content, "v = $$HOME");
+  eq("flexible edit preserves $& in replacement", applyEditsFlexible("x = Y", [{ find: "Y", replace: "a$&b" }]).content, "x = a$&b");
   // flexible (whitespace-insensitive) single-match fallback
   const src = "function f() {\n    return   1;\n}\n";
   const fx = applyEditsFlexible(src, [{ find: "  return 1;", replace: "    return 2;" }]);
@@ -1284,6 +1288,7 @@ group("compliance bundle (SOC2 export)");
   ok("patch context-not-found is an error", !applyPatch("totally different\n", patch).ok);
   ok("multi-file patch is parsed into two files", parsePatch(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@", "-a", "+b", "diff --git a/y b/y", "--- a/y", "+++ b/y", "@@", "-c", "+d"].join("\n")).length === 2);
   eq("applyHunks flexible-anchors a hunk whose context indentation differs", applyHunks("  keep\n    old\n  tail\n", [{ before: ["keep", "old"], after: ["keep", "new"] }]).content, "  keep\n  new\n  tail\n");
+  eq("applyHunks preserves $ sequences in replacement", applyHunks("a\nkeep X\nb\n", [{ before: ["keep X"], after: ["new $& v"] }]).content, "a\nnew $& v\nb\n");
 }
 
 {

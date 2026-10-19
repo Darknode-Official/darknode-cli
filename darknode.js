@@ -2231,16 +2231,18 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     if (o.action === "final") { if (!didTool && !isChitchat(task) && step < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; } return { ok: true, output: log + "\n" + (o.final || "") }; }
     const { name, a } = normalizeToolCall(o); let result;
     try {
+      // sandbox file tools to cwd (same invariant deviceTool/apply_patch enforce)
+      if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) { const _r = path.resolve(cwd, a.path); if (_r !== cwd && !_r.startsWith(cwd + path.sep)) throw new Error("path escapes the project directory: " + a.path); }
       if (name === "read_file") result = fs.readFileSync(path.resolve(cwd, a.path), "utf8").slice(0, 14000);
       else if (name === "list_dir") result = fs.readdirSync(path.resolve(cwd, a.path || "."), { withFileTypes: true }).map((e) => e.isDirectory() ? e.name + "/" : e.name).slice(0, 200).join("\n");
       else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = "ok"; log += "\nwrote " + a.path; console.log("    " + green("write ") + gray(a.path)); }
-      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); if (!t.includes(a.find)) result = "error: find text not in file"; else { const occ = t.split(a.find).length - 1; if (occ > 1 && !a.replace_all) result = "error: matches " + occ + " locations — add more context"; else { fs.writeFileSync(fp, a.replace_all ? t.split(a.find).join(a.replace == null ? "" : a.replace) : t.replace(a.find, a.replace == null ? "" : a.replace)); result = "ok"; log += "\nedited " + a.path; console.log("    " + green("edit ") + gray(a.path)); } } }
+      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); if (!t.includes(a.find)) result = "error: find text not in file"; else { const occ = t.split(a.find).length - 1; if (occ > 1 && !a.replace_all) result = "error: matches " + occ + " locations — add more context"; else { fs.writeFileSync(fp, a.replace_all ? t.split(a.find).join(a.replace == null ? "" : a.replace) : t.replace(a.find, () => (a.replace == null ? "" : a.replace))); result = "ok"; log += "\nedited " + a.path; console.log("    " + green("edit ") + gray(a.path)); } } }
       else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = "blocked: " + dg.why; console.log("    " + red("blocked: ") + dg.why); } else { console.log("    " + mag("$ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd); const _rout = compactOutput(r.output, lean ? 2000 : 4000); const _rd = diagnose(_rout, r.code, a.command); result = (r.code ? "exit " + r.code + "\n" : "") + _rout + diagAnnotate(_rd); log += "\n$ " + a.command + "\n" + r.output.slice(0, lean ? 600 : 1200); } }
       else { const dr = await deviceTool(name, a, cwd); if (dr && dr.__vision) delete dr.__vision; result = dr !== null ? (typeof dr === "object" ? JSON.stringify(dr) : String(dr)) : "error: unknown tool " + name; }
     } catch (e) { result = "error: " + e.message; }
     if (!(typeof result === "string" && result.startsWith("error: unknown tool"))) didTool = true;
     messages.push({ role: "tool", content: String(result).slice(0, 8000) });
-    const _lg = loopGuard.note(loopGuard.signature(name, a), !/^(error:|blocked:)/i.test(String(result)));
+    const _lg = loopGuard.note(loopGuard.signature(name, a), !/^(error:|blocked:|exit [1-9])/i.test(String(result)));
     if (_lg) {
       messages.push({ role: "tool", content: "[loop guard] " + _lg.message });
       if (_lg.action === "break") return { ok: true, output: log + "\n" + _lg.message };
@@ -3282,7 +3284,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (lean || trimOutput) elideToolHistory(oMsgs, lean ? 16000 : 40000, lean ? 3 : 6); // cap cumulative tool bytes carried within the turn (opt-in /settings trimOutput; always in lean)
             // loop guard: if the agent is stuck repeating or oscillating, warn it; if it keeps
             // going anyway, end the turn cleanly instead of burning the whole step budget.
-            const _lg = loopGuard.note(loopGuard.signature(name, a), !(result && result.error));
+            const _lg = loopGuard.note(loopGuard.signature(name, a), !(result && (result.error || result.code)));
             if (_lg) {
               transcript.push({ role: "system", text: _lg.message });
               oMsgs.push({ role: "tool", content: "[loop guard] " + _lg.message });
