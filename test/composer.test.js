@@ -4,6 +4,7 @@
 const fs = require("fs"), os = require("os"), path = require("path");
 const C = require("../lib/cli/composer");
 const NS = require("../lib/cli/nexus-settings");
+const T = require("../lib/cli/text");
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log("  \x1b[31mFAIL\x1b[0m " + name); } };
@@ -233,6 +234,29 @@ group("settings — off by default, persisted, env precedence, corrupt-safe");
   NS.createStore(HOME, {}).set("lean", true);
   ok("atomic write leaves no .tmp file behind", !fs.readdirSync(dir).some((f) => f.includes(".tmp-")));
   fs.rmSync(HOME, { recursive: true, force: true });
+}
+
+group("@path completion — longest common prefix, not the first entry");
+{
+  eq("no matches -> null", T.commonPrefix([]), "");
+  eq("single string is its own prefix", T.commonPrefix(["abc"]), "abc");
+  eq("shared prefix of several", T.commonPrefix(["abc", "abd", "abe"]), "ab");
+  eq("no shared prefix -> empty", T.commonPrefix(["abc", "xyz"]), "");
+  eq("completePath: nothing matches -> null", T.completePath([], "re"), null);
+  eq("completePath: one match completes fully + unique", T.completePath(["README.md"], "RE"), { value: "README.md", unique: true });
+  // several matches advance to the common prefix instead of silently picking entry[0]
+  eq("completePath: several matches -> common prefix", T.completePath(["apple", "apply"], "app"), { value: "appl", unique: false, count: 2 });
+  // when the common prefix is already typed, don't commit to the first entry
+  const amb = T.completePath(["app.js", "apple.txt"], "app");
+  ok("ambiguous with no further common chars stays put (no jump to entry[0])", amb.value === "app" && amb.unique === false);
+}
+
+group("settings env docs — every governed limit documents a NEXUS_ env var");
+{
+  // The /settings "Limits" panel shows these keys; each row now prints the env
+  // var that overrides it. Guard that the doc data stays complete + truthful.
+  const limitKeys = ["budgetCap", "autoCompact", "minimizeCalls", "stepCap", "trimOutput", "cache", "map", "lean"];
+  for (const k of limitKeys) ok("env var documented for " + k, typeof NS.ENV_NAME[k] === "string" && /^NEXUS_/.test(NS.ENV_NAME[k]));
 }
 
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (composer + settings)");

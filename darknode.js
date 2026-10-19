@@ -2199,7 +2199,7 @@ function formatToolLines(name, res) {
 const { priceOf, costOf, usageBuckets, pricingTable, PRICING_SOURCE, PRICING_CHECKED, isMechanical, shouldDelegate } = require("./lib/nexus/pricing"); // cost model (lib/pricing.js)
 // Darknode preflight — classify a shell command's destructive intent (inspired by Glitch's
 // Darknode guard: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
-const { oneline, extractJson } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
+const { oneline, extractJson, completePath } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
 async function planGoal(engine, model, goal, memory) {
   const prompt = "Break the GOAL into 5-15 concrete verifiable tasks. Return ONLY a JSON array of short task strings.\n\nGOAL: " + goal + (memory ? "\nCONTEXT:\n" + memory : "");
   let text;
@@ -3922,14 +3922,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         for (const s of describeSettings(v)) { text += "\n\n" + bold(cyan(s.group)); for (const r of s.rows) { const gap = " ".repeat(Math.max(2, 20 - r.value.length)); text += "\n  " + r.label.padEnd(24) + bold(r.value) + gap + gray(r.cmd); } }
         // Governed limits — all OFF by default; each shows its live value and where it came from.
         const liveGov = { budgetCap: costCap, autoCompact, minimizeCalls, stepCap, trimOutput, cache: cacheOn, map: repoMapOn, lean };
-        text += "\n\n" + bold(cyan("Limits")) + gray("  (off by default — opt in with /settings <key> on; persisted to ~/.nexus/settings.json)");
+        text += "\n\n" + bold(cyan("Limits")) + gray("  (off by default — opt in with /settings <key> on; persisted to ~/.nexus/settings.json. The env var shown on each row overrides it for one launch.)");
         for (const row of settingsStore.describe()) {
           if (!(row.key in liveGov)) continue;
           const val = liveGov[row.key];
           const shown = row.key === "budgetCap" ? (val ? "$" + Number(val).toFixed(2) : "off") : (val ? "ON" : "off");
           const src = Ssrc[row.key] === "env" ? gray(" [env]") : Ssrc[row.key] === "saved" ? gray(" [saved]") : gray(" [default]");
-          text += "\n  " + row.key.padEnd(24) + bold(shown) + src + gray("   /settings " + row.key + " on|off");
+          const envName = nexusSettings.ENV_NAME[row.key];
+          text += "\n  " + row.key.padEnd(24) + bold(shown) + src + gray("   /settings " + row.key + " on|off" + (envName ? "  ·  env " + envName : ""));
         }
+        text += "\n  " + gray("colour: NO_COLOR=1 disables, FORCE_COLOR=1 forces (NO_COLOR wins).");
         transcript.push({ role: "system", text });
       }
       else if (cmd === "/jobs") { const js = bgJobs.list(); if (!js.length) transcript.push({ role: "system", text: "no background jobs — the local agent starts them with run_background{command}, polls with check_background{id}" }); else transcript.push({ role: "system", text: "background jobs:\n" + js.map((j) => "  " + (j.status === "running" ? yellow("● running") : j.status === "killed" ? red("● killed ") : green("● done" + (j.code ? " (" + j.code + ")" : ""))) + " " + gray(j.id) + "  " + oneline(j.command, 44) + gray("  " + j.bytes + "b")).join("\n") }); }
@@ -4464,7 +4466,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const mm = slashMatches(); if (mm.length) { input = (mm[menuSel] || mm[0])[0] + " "; curPos = input.length; menuSel = 0; refreshArgCache(); render(); return; }
         const am = argMatches(); if (am.length) { const sp = input.indexOf(" "); const cmd = input.slice(0, sp); input = cmd + " " + (am[menuSel] || am[0])[0] + " "; curPos = input.length; menuSel = 0; render(); return; }
         const at = input.match(/@([^\s]*)$/);
-        if (at) { try { const pt = at[1]; const dir = pt.includes("/") ? pt.slice(0, pt.lastIndexOf("/") + 1) : ""; const bpart = pt.includes("/") ? pt.slice(pt.lastIndexOf("/") + 1) : pt; const entries = fs.readdirSync(path.resolve(cwd, dir || ".")).filter((e) => e.startsWith(bpart)).sort(); if (entries.length) { const hit = entries[0]; const isDir = fs.statSync(path.resolve(cwd, dir + hit)).isDirectory(); input = input.slice(0, at.index) + "@" + dir + hit + (isDir ? "/" : " "); curPos = input.length; } } catch (_) {} render(); }
+        if (at) { try { const pt = at[1]; const dir = pt.includes("/") ? pt.slice(0, pt.lastIndexOf("/") + 1) : ""; const bpart = pt.includes("/") ? pt.slice(pt.lastIndexOf("/") + 1) : pt; const matches = fs.readdirSync(path.resolve(cwd, dir || ".")).filter((e) => e.startsWith(bpart)).sort(); const r = completePath(matches, bpart); if (r) { let suffix = ""; if (r.unique) { const isDir = fs.statSync(path.resolve(cwd, dir + r.value)).isDirectory(); suffix = isDir ? "/" : " "; } input = input.slice(0, at.index) + "@" + dir + r.value + suffix; curPos = input.length; } } catch (_) {} render(); }
         return;
       }
 
