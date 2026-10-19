@@ -21,7 +21,12 @@ const VERSION = "2.46.1";
 for (const k of Object.keys(process.env)) { if (k.startsWith("SENTINEL_") && !process.env["DARKNODE_" + k.slice(9)]) process.env["DARKNODE_" + k.slice(9)] = process.env[k]; }
 
 // ---------- colors ----------
-const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+// Color on when attached to a TTY, unless NO_COLOR is set. FORCE_COLOR (the
+// near-universal convention) forces it on even through a pipe/redirect, so colored
+// output survives `| less -R` or a logfile when the user wants it. NO_COLOR wins;
+// FORCE_COLOR=0/false counts as off.
+const _forceColor = process.env.FORCE_COLOR !== undefined && process.env.FORCE_COLOR !== "0" && process.env.FORCE_COLOR !== "false";
+const useColor = !process.env.NO_COLOR && (_forceColor || !!process.stdout.isTTY);
 let tuiActive = false; // set while the full-screen TUI owns the terminal, so the global SIGINT handler defers to the TUI's own cleanup
 const A = { reset: "\x1b[0m", b: "\x1b[1m", dim: "\x1b[2m", cyan: "\x1b[36m", green: "\x1b[32m", red: "\x1b[31m", yellow: "\x1b[33m", mag: "\x1b[35m", gray: "\x1b[90m", blue: "\x1b[34m" };
 const p = (code, s) => (useColor ? code + s + A.reset : s);
@@ -42,7 +47,7 @@ const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA co
 // ---------- data ----------
 const { SERVICES } = require("./lib/toolkit/ports"); // port<->service map, used by scan (lib/ports.js)
 const { digests, genPass } = require("./lib/toolkit/hashing"); // hash digests + password gen (lib/hashing.js)
-const { COMMAND_GROUPS, renderCommands, documentedVerbs } = require("./lib/cli/reference"); // help catalog = single source of truth (lib/reference.js)
+const { COMMAND_GROUPS, renderCommands, documentedVerbs, nearestCommands } = require("./lib/cli/reference"); // help catalog = single source of truth (lib/reference.js)
 // Documented darknode verbs NOT bridged into the Nexus TUI as /commands: they
 // block (server/listener), prompt for input, or already have a richer in-TUI
 // handler. Everything else documented becomes a slash command automatically.
@@ -1146,7 +1151,16 @@ async function cliRun(args, gate) {
       await aiCoder(rest);
     }
   }
-  else usage();
+  else {
+    // Unknown command: point at the nearest real verb instead of dumping the whole
+    // usage screen (the most common new-user stumble). A bare `darknode`/`nexus` with
+    // no args never lands here (that opens the menu/TUI), so cmd is a real mistype.
+    const near = nearestCommands(cmd, 3);
+    console.error("  " + red("unknown command ") + bold("'" + cmd + "'"));
+    if (near.length) console.error("  did you mean " + near.map((c) => cyan(c)).join(", ") + "?");
+    console.error("  " + gray("run `darknode help` for the full command list"));
+    process.exitCode = 1;
+  }
 }
 
 // ========== global config, auth (Firebase-backed /login) & first-run setup ==========
@@ -1496,6 +1510,7 @@ async function aiCoder(argv) {
   // ---- parse flags ----
   const arr = Array.isArray(argv) ? argv.slice() : String(argv || "").split(/\s+/).filter(Boolean);
   let autoApprove = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, resumeFlag = false, leanFlag = false, parts = [];
+  const unknownFlags = [];
   for (let i = 0; i < arr.length; i++) {
     const a = arr[i];
     if (a === "-y" || a === "--yes" || a === "--skip-permissions" || a === "--dangerously-skip-permissions") autoApprove = true;
@@ -1506,8 +1521,11 @@ async function aiCoder(argv) {
     else if (a === "-m" || a === "--model") modelOverride = arr[++i] || "";
     else if (a === "-e" || a === "--engine") enginePref = arr[++i] || "";
     else if (a === "-h" || a === "--help") return nexusHelp();
-    else parts.push(a);
+    else { if (a[0] === "-" && a.length > 1 && !/^-\d/.test(a)) unknownFlags.push(a); parts.push(a); } // a flag-looking token is probably a typo (e.g. --modell); warn but still pass it through as task text so nothing silently breaks
   }
+  // Surface likely typos: an unrecognized --flag otherwise vanishes into the prompt
+  // and silently wastes a (paid) turn. We keep passing it through — just say so.
+  if (unknownFlags.length) console.error("  " + yellow("note: unrecognized option" + (unknownFlags.length > 1 ? "s " : " ") + unknownFlags.join(", ") + " — treated as task text. See `nexus --help`."));
   let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8")); } catch (_) {}
   const lean = leanFlag || !!cfg.lean; // minimal-output mode (also used for read/step budgets)
   // Any-model support: an OpenAI-compatible endpoint (from .nexus/config.json or

@@ -995,7 +995,7 @@ group("registry: new commands dispatch");
 
 group("help reference (single source of truth)");
 {
-  const { COMMAND_GROUPS, documentedVerbs, renderCommands } = require("../lib/cli/reference");
+  const { COMMAND_GROUPS, documentedVerbs, renderCommands, nearestCommands } = require("../lib/cli/reference");
   ok(">=8 command groups, non-empty", COMMAND_GROUPS.length >= 8 && COMMAND_GROUPS.every((g) => g.title && g.rows.length));
   ok("every row is [left, right] strings", COMMAND_GROUPS.every((g) => g.rows.every((r) => r.length === 2 && typeof r[0] === "string" && typeof r[1] === "string")));
   // DRIFT GUARD: every documented command verb must have a real dispatch handler —
@@ -1014,6 +1014,14 @@ group("help reference (single source of truth)");
   ok("renderCommands substitutes __CHEATS__", txt.includes("aa, bb") && !txt.includes("__CHEATS__"));
   ok("summary column aligned (>=2 spaces, min col 34)", renderCommands([{ title: "T", rows: [["scan <host>", "x"]] }]).endsWith("scan <host>".padEnd(34) + "x"));
   ok("long left cell keeps 2-space gap", renderCommands([{ title: "T", rows: [["encode <b64|hex|url|base32> <text>", "y"]] }]).endsWith("encode <b64|hex|url|base32> <text>  y"));
+  // unknown-command suggestions: prefix, subsequence and typo fallback all point at real verbs
+  ok("nearestCommands: typo 'scna' -> scan", nearestCommands("scna").includes("scan"));
+  ok("nearestCommands: prefix 'sca' -> scan first", nearestCommands("sca")[0] === "scan");
+  ok("nearestCommands: every suggestion is a real verb", nearestCommands("hedars").every((v) => documentedVerbs().has(v)));
+  ok("nearestCommands: caps at max", nearestCommands("s", 2).length <= 2);
+  ok("nearestCommands: empty input -> none", nearestCommands("").length === 0);
+  ok("nearestCommands: gibberish -> no bogus match", nearestCommands("zzzzqqqq").length === 0);
+  ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));
 }
 
 group("diceware passphrase");
