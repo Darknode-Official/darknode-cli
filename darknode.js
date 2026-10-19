@@ -1991,7 +1991,7 @@ function permMatch(rule, name, a) {
   const tool = name;
   if (rtool.trim() !== "*" && permCanon(rtool) !== permCanon(tool)) return false;
   if (!rpat || rpat === "*") return true;
-  const target = String(a.command || a.path || a.to || a.dest || a.url || a.query || "");
+  const target = String(a.command || a.path || a.to || a.dest || a.from || a.url || a.query || "");
   if (rpat.includes("*")) { try { return new RegExp("^" + rpat.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")).test(target); } catch (_) { return false; } }
   return target.toLowerCase().includes(rpat.toLowerCase());
 }
@@ -2219,6 +2219,7 @@ async function verifyTask(engine, model, goal, task, res) {
 // Compact single-task tool loop for the local Ollama engine.
 async function ollamaExec(model, task, ctx, cwd, signal) {
   const fs = require("fs"), path = require("path");
+  const policy = loadPolicy(cwd); // enterprise guardrails (.nexus/policy.json) — enforced here too, not just the in-process loop
   const messages = [{ role: "system", content: "Nexus sub-agent. Complete ONLY the TASK using tools, one action/step, then final. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} list_dir{path?} run_command{command}. JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Minimize calls; chain commands.\n" + ctx }, { role: "user", content: "TASK: " + task }];
   let didTool = false, log = "";
   const loopGuard = makeLoopGuard();
@@ -2232,7 +2233,20 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     if (o.thought) console.log("    " + gray("think: " + (o.thought || "").slice(0, 120)));
     if (o.action === "final") { if (!didTool && !isChitchat(task) && step < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; } return { ok: true, output: log + "\n" + (o.final || "") }; }
     const { name, a } = normalizeToolCall(o); let result;
-    try {
+    // enterprise policy guardrails (.nexus/policy.json) — the same gate the in-process loop applies, so a
+    // sub-agent / local engine can't write a protected path, plant a secret, run a denied command or fetch off-net.
+    const _pa = name === "run_command" ? { type: "run", command: a && a.command }
+      : ["http_fetch", "web_fetch", "fetch_url", "http"].includes(name) ? { type: "fetch" }
+      : name === "write_file" ? { type: "write", path: a && a.path }
+      : name === "edit_file" ? { type: "edit", path: a && a.path }
+      : ["delete", "delete_file", "rm"].includes(name) ? { type: "delete", path: a && a.path }
+      : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a && (a.to || a.dest || a.path), from: a && a.from }
+      : null;
+    let _pblk = null;
+    if (_pa) { let pc = policyCheck(policy, _pa); if (pc.allow && _pa.from) pc = policyCheck(policy, { type: "move", path: _pa.from }); if (!pc.allow) _pblk = pc.reason; }
+    if (!_pblk && name === "write_file" && policy.blockSecrets) { const _sec = scanSecrets(a && a.content == null ? "" : a.content); if (_sec.length) _pblk = "file contains " + _sec.join(", ") + " (policy.blockSecrets)"; }
+    if (_pblk) { result = "blocked: policy — " + _pblk; console.log("    " + red("blocked: ") + _pblk); if (policy.audit) try { auditLog(cwd, { engine: "ollama", tool: name, path: _pa.path, cmd: _pa.command, status: "blocked", reason: _pblk }); } catch (_) {} }
+    else try {
       // sandbox file tools to cwd (same invariant deviceTool/apply_patch enforce)
       if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) { const _r = path.resolve(cwd, a.path); if (_r !== cwd && !_r.startsWith(cwd + path.sep)) throw new Error("path escapes the project directory: " + a.path); }
       if (name === "read_file") result = fs.readFileSync(path.resolve(cwd, a.path), "utf8").slice(0, 14000);
@@ -3230,10 +3244,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
                 : (name === "edit_file" || name === "multi_edit" || name === "multiedit") ? { type: "edit", path: a.path }
                 : (name === "apply_patch" || name === "patch") ? { type: "edit" }
                 : ["delete", "delete_file", "rm"].includes(name) ? { type: "delete", path: a.path }
-                : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a.to || a.dest || a.path }
+                : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a.to || a.dest || a.path, from: a.from }
                 : null;
               if (act) {
-                const pc = policyCheck(policy, act);
+                let pc = policyCheck(policy, act);
+                if (pc.allow && act.from) pc = policyCheck(policy, { type: "move", path: act.from }); // a protected file can't be moved/copied away either
                 if (!pc.allow) { result = { error: "BLOCKED by policy: " + pc.reason + (pc.approval ? " — needs approval (edit .nexus/policy.json or run it yourself with !)" : "") }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "policy blocked " + name + " — " + pc.reason }); if (policy.audit) auditLog(cwd, { engine, tool: name, path: act.path, cmd: act.command, status: "blocked", reason: pc.reason }); }
                 else if ((act.type === "write" || act.type === "edit") && policy.maxFilesPerTurn > 0 && filesThisTurn >= policy.maxFilesPerTurn) { result = { error: "BLOCKED by policy: reached the " + policy.maxFilesPerTurn + "-file-per-turn limit" }; blocked = true; card.status = "err"; }
               }
