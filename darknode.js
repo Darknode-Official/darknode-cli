@@ -1482,7 +1482,7 @@ function nexusDocs(topic) {
 }
 function nexusHelp() {
   banner();
-  console.log("  " + bold("Nexus") + " — terminal AI coding agent (local Ollama)\n");
+  console.log("  " + bold("Nexus") + " — terminal AI coding agent (Claude by default; also Gemini, Codex, OpenCode, Aider, local Ollama, or any OpenAI-compatible API)\n");
   console.log("  " + bold("USAGE"));
   console.log("    darknode nexus [options] [task]     one-shot task, or interactive REPL if no task given");
   console.log("    darknode nexus                      interactive session\n");
@@ -1500,6 +1500,7 @@ function nexusHelp() {
   console.log("    /exit          quit\n");
   console.log("  " + gray("Attach a file to a task with @path  —  e.g.  fix the bug in @src/app.js") + "\n");
   console.log("  " + bold("ENV") + "   DARKNODE_MODEL (default model) · OLLAMA_HOST / OLLAMA_PORT (remote Ollama)");
+  console.log("        DARKNODE_FAST / NO_MOTION (skip boot animation) · DARKNODE_NO_DEFAULT_MCP (no bundled MCP) · DARKNODE_TRUST_REPO (trust repo hooks/MCP) · NO_COLOR / FORCE_COLOR");
   console.log("        " + gray("Any model: DARKNODE_API_BASE + DARKNODE_API_KEY point Nexus at any OpenAI-compatible API (OpenRouter, Groq, DeepSeek, vLLM…), or use /api in the TUI") + "\n");
   console.log("  " + gray("Nexus reads & writes files and runs commands in the current folder. Local models only — private.") + "\n");
 }
@@ -2560,7 +2561,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/restart", "save session, restart Nexus with latest code, resume where you left off"],
       ["/update", "check for & install a newer Nexus (/update apply to install now)"],
       ["/autoupdate", "auto-update on launch: /autoupdate on | check | off"],
-      ["/next", "queue a prompt to auto-run after the current turn finishes"],
+      ["/next", "queue a prompt after the current turn (clear / rm <n> to manage)"],
       ["/feature", "add/remove your own commands: /feature create <name> <what it does> · /feature remove <name>"],
       ["/dashboard", "open the localhost web UI — live pipelines, jobs & cowork agents"],
       ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
@@ -4217,7 +4218,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }, 200);
       }
       else if (cmd === "/next") {
-        if (!argstr) transcript.push({ role: "system", text: "usage: /next <prompt>  — queues a prompt to run right after the current turn finishes\n  queue: " + (nextQueue.length ? nextQueue.map((q, i) => (i + 1) + ". " + q.slice(0, 50)).join("\n  ") : "(empty)") });
+        const mrm = argstr.match(/^rm\s+(\d+)$/);
+        if (!argstr) transcript.push({ role: "system", text: "usage: /next <prompt>  — queue a prompt to run after the current turn\n  /next clear    — drop all queued prompts\n  /next rm <n>   — drop queued prompt #n\n  queue: " + (nextQueue.length ? nextQueue.map((q, i) => (i + 1) + ". " + q.slice(0, 50)).join("\n  ") : "(empty)") });
+        else if (argstr === "clear") { const n = nextQueue.length; nextQueue.length = 0; transcript.push({ role: "system", text: n ? ("cleared " + n + " queued prompt" + (n > 1 ? "s" : "")) : "queue is already empty" }); }
+        else if (mrm) { const i = parseInt(mrm[1], 10) - 1; if (i >= 0 && i < nextQueue.length) { const [removed] = nextQueue.splice(i, 1); transcript.push({ role: "system", text: "removed #" + (i + 1) + ": " + removed.slice(0, 50) + (nextQueue.length ? "\n  queue: " + nextQueue.map((q, j) => (j + 1) + ". " + q.slice(0, 50)).join("\n  ") : "  (queue now empty)") }); } else transcript.push({ role: "system", text: "no queued prompt #" + mrm[1] + " — /next to list" }); }
         else { nextQueue.push(argstr); transcript.push({ role: "system", text: "queued (" + nextQueue.length + "): " + argstr.slice(0, 60) + (argstr.length > 60 ? "…" : "") }); }
       }
       else if (cmd === "/expand") expanded = !expanded;
@@ -4574,8 +4578,11 @@ ${renderCommands(COMMAND_GROUPS, { color: cyan, cheats: Object.keys(CHEATS).join
 
   ${bold("OPTIONS")}
     -h, --help                        show this help
-    -v, --version                     show version
-    NO_COLOR=1                        disable colored output
+    -v, --version [--short]           show version (--short: just the number)
+    NO_COLOR=1 / FORCE_COLOR=1        disable / force colored output
+    DARKNODE_FAST, NO_MOTION          skip the nexus boot animation
+    DARKNODE_NO_DEFAULT_MCP=1         don't auto-connect bundled MCP servers
+    DARKNODE_TRUST_REPO=1             trust this repo's hooks / MCP config
 
   ${bold("EXAMPLES")}
     ${gray("$")} darknode nexus                            ${gray("# open the AI coder (chat)")}
