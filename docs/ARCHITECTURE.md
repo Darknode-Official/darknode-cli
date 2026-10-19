@@ -9,7 +9,7 @@ Nexus is the agent runtime behind the DarkNode product line. It ships as the
 `darknode` CLI (the binary is also installed as `nexus`). It is a dependency-free
 Node program: a single-file **host** plus **extracted pure libraries**.
 
-- **Product name:** Nexus. **Package:** `darknode-cli` (v2.45.0). **Bins:**
+- **Product name:** Nexus. **Package:** `darknode-cli` (v2.46.1). **Bins:**
   `darknode` and `nexus`, both → `darknode.js` (`package.json` `bin`).
 - **Active entry point:** `darknode.js` (`package.json` `main`), ~4200 lines.
 - **Legacy:** `darknode-legacy.js` is the pre-extraction security console. It is
