@@ -1673,6 +1673,42 @@ function hasBin(b) {
   return (_binCache[b] = false);
 }
 
+// Best-effort desktop notification on every OS (was Linux-only notify-send, so
+// macOS/Windows got only a bell). Fire-and-forget; errors are swallowed. The
+// title/body are caller-controlled constant strings (no user input), so the
+// inline shell payloads below carry nothing that needs escaping.
+function osNotify(title, body) {
+  try {
+    if (process.platform === "darwin") {
+      _cp.spawn("osascript", ["-e", 'display notification "' + body + '" with title "' + title + '"'], { stdio: "ignore" }).on("error", () => {});
+    } else if (process.platform === "win32") {
+      const ps = "$ErrorActionPreference='SilentlyContinue';Add-Type -AssemblyName System.Windows.Forms;" +
+        "$n=New-Object System.Windows.Forms.NotifyIcon;$n.Icon=[System.Drawing.SystemIcons]::Information;" +
+        "$n.BalloonTipTitle='" + title + "';$n.BalloonTipText='" + body + "';$n.Visible=$true;$n.ShowBalloonTip(5000);Start-Sleep -Seconds 6;$n.Dispose()";
+      _cp.spawn("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps], { stdio: "ignore", windowsHide: true }).on("error", () => {});
+    } else {
+      _cp.spawn("notify-send", [title, body], { stdio: "ignore" }).on("error", () => {});
+    }
+  } catch (_) {}
+}
+
+// Copy text to the clipboard and report honestly which path was used. OSC-52 is
+// always emitted (the only thing that reaches the real terminal through SSH/tmux),
+// but many local terminals ignore it, so when not over SSH we also pipe to the
+// platform clipboard tool. Returns a human phrase describing what actually ran.
+function copyToClipboard(text, out) {
+  try { out.write("\x1b]52;c;" + Buffer.from(text).toString("base64") + "\x07"); } catch (_) {}
+  if (process.env.SSH_TTY || process.env.SSH_CONNECTION) return "clipboard (terminal OSC-52)";
+  const cands = process.platform === "darwin" ? [["pbcopy", []]]
+    : process.platform === "win32" ? [["clip", []]]
+    : [["wl-copy", []], ["xclip", ["-selection", "clipboard"]], ["xsel", ["--clipboard", "--input"]]];
+  for (const [bin, args] of cands) {
+    if (!hasBin(bin)) continue;
+    try { const p = _cp.spawn(bin, args, { stdio: ["pipe", "ignore", "ignore"] }); p.on("error", () => {}); p.stdin.end(text); return "clipboard"; } catch (_) {}
+  }
+  return "terminal (OSC-52 — enable clipboard access in your terminal if nothing pasted)";
+}
+
 // Run an external tool with inherited stdio (streams its output live). Used by
 // the nmap / nuclei / hashcat wrappers.
 function runTool(bin, args) { return new Promise((res) => { let p; try { p = spawn(bin, args, { stdio: "inherit" }); } catch (e) { console.log(red(bin + ": " + e.message)); return res(1); } p.on("close", (c) => res(c || 0)); p.on("error", (e) => { console.log(red(bin + ": " + e.message)); res(1); }); }); }
@@ -3053,7 +3089,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (!warned50 && sess.ctxUsed > 0.5 * (sess.ctxWindow || 200000)) { warned50 = true; transcript.push({ role: "system", text: "context is over 50% — quality can dip on very long sessions; use /compact or /clear when it makes sense" }); }
         try { saveSession(); } catch (_) {}
         if (hooks) try { runHooks(hooks, "Stop", { NEXUS_ENGINE: engine }, cwd); } catch (_) {}
-        if (notify && (Date.now() - stat.t0) > 15000) { out.write("\x07"); try { _cp.spawn("notify-send", ["Nexus", "turn finished (" + ((Date.now() - stat.t0) / 1000 | 0) + "s)"], { stdio: "ignore" }).on("error", () => {}); } catch (_) {} }
+        if (notify && (Date.now() - stat.t0) > 15000) { out.write("\x07"); osNotify("Nexus", "turn finished (" + ((Date.now() - stat.t0) / 1000 | 0) + "s)"); }
         maybeAutoCompact(); idleTitle(); render(); refreshGit();
         if (nextQueue.length && !busy) { const nxt = nextQueue.shift(); setTimeout(() => { if (!busy) { if (nxt.startsWith("/")) { let cmd = nxt; if (!/\s/.test(nxt)) { const mm = fuzzyCmds(nxt); if (mm.length) cmd = mm[0][0]; } handleSlash(cmd); render(); } else if (nxt[0] === "!" && nxt.length > 1) { runBang(nxt.slice(1).trim()); render(); } else if (nxt[0] === "#" && nxt.length > 1) { addMemory(nxt.slice(1).trim()); render(); } else { submit(nxt); } } }, 300); }
       };
@@ -3696,8 +3732,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }).catch(() => { blk.text += "\n  " + no("Ollama unreachable"); render(); });
       }
       else if (cmd === "/resume") { try { const s = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8")); transcript.length = 0; for (const b of s.transcript) transcript.push(b); if (s.sess) Object.assign(sess, s.sess); if (s.engine && ENGINES[s.engine]) engine = s.engine; cont = true; scroll = 0; transcript.push({ role: "system", text: "resumed the saved session from " + new Date(s.ts).toLocaleString() + " (" + engine + ")" }); } catch (_) { transcript.push({ role: "system", text: "no saved session to resume (sessions are saved to .nexus/session.json after each turn)" }); } }
-      else if (cmd === "/export") { try { const L = ["# Nexus conversation", "", "_" + new Date().toLocaleString() + " · " + engine + " · " + cwd + "_", ""]; for (const m of transcript) { if (m.role === "user") L.push("## You", "", m.text, ""); else if (m.role === "nexus") { L.push("## Nexus", ""); for (const it of (m.items || [])) { if (it.type === "text") L.push(it.full); else if (it.type === "tool") L.push("- `" + it.label + "`"); } L.push(""); } else if (m.role === "system") L.push("> " + String(m.text).replace(/\n/g, " "), ""); } const fp = path.join(cwd, "nexus-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, L.join("\n")); transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
-      else if (cmd === "/copy") { let last = ""; for (let i = transcript.length - 1; i >= 0; i--) { const m = transcript[i]; if (m.role === "nexus") { last = (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join("\n").trim(); if (last) break; } } if (last) { out.write("\x1b]52;c;" + Buffer.from(last).toString("base64") + "\x07"); transcript.push({ role: "system", text: "copied Nexus's last reply to the clipboard" }); } else transcript.push({ role: "system", text: "nothing to copy yet" }); }
+      else if (cmd === "/export") { try { const L = ["# Nexus conversation", "", "_" + new Date().toLocaleString() + " · " + engine + " · " + cwd + "_", ""]; for (const m of transcript) { if (m.role === "user") L.push("## You", "", m.text, ""); else if (m.role === "nexus") { L.push("## Nexus", ""); for (const it of (m.items || [])) { if (it.type === "text") L.push(it.full); else if (it.type === "tool") L.push("- `" + it.label + "`"); } L.push(""); } else if (m.role === "system") L.push("> " + String(m.text).replace(/\n/g, " "), ""); } const dir = path.join(cwd, ".nexus"); try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {} const fp = path.join(dir, "export-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, L.join("\n")); transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) + " (" + fp + ")" }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
+      else if (cmd === "/copy") { let last = ""; for (let i = transcript.length - 1; i >= 0; i--) { const m = transcript[i]; if (m.role === "nexus") { last = (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join("\n").trim(); if (last) break; } } if (last) { const via = copyToClipboard(last, out); transcript.push({ role: "system", text: "copied Nexus's last reply to the " + via }); } else transcript.push({ role: "system", text: "nothing to copy yet" }); }
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed" : "the working tree")) : "rewind failed (git error)" }); } } }
       else if (cmd === "/clear" || cmd === "/new") {
         const hasContent = oMsgs.length > 1 || transcript.some((m) => m.role === "user" || m.role === "assistant");
