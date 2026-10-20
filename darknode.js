@@ -42,6 +42,7 @@ const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command regist
 const { bootHeader, welcomeCard, footerLine, helpLines, padRight: padRightV, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
+const Jail = require("./lib/nexus/jail"); // canonical path jail shared by every file tool (symlink/dot-dot safe) (lib/nexus/jail.js)
 const nexusSettings = require("./lib/cli/nexus-settings"); // persistent, off-by-default TUI settings (~/.nexus/settings.json)
 const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA codes (lib/totp.js)
 
@@ -1634,6 +1635,8 @@ async function aiCoder(argv) {
       }
       const { name, a } = normalizeToolCall(o); let result;
       try {
+        // Sandbox every file tool to the project root (symlink/dot-dot safe); a throw here is reported as a tool error below.
+        if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) Jail.assertInJail(a.path, cwd);
         if (name === "read_file") { const t = fs.readFileSync(path.resolve(cwd, a.path), "utf8"); result = t.slice(0, lean ? 8000 : 16000); if (!printMode) console.log("  " + cyan("read ") + gray(a.path)); }
         else if (name === "list_dir") { const d = path.resolve(cwd, a.path || "."); result = fs.readdirSync(d, { withFileTypes: true }).map((e) => (e.isDirectory() ? e.name + "/" : e.name)).slice(0, lean ? 80 : 200).join("\n"); if (!printMode) console.log("  " + cyan("ls ") + (a.path || ".")); }
         else if (name === "write_file") {
@@ -2039,7 +2042,7 @@ const { describe: describeSettings } = require("./lib/cli/settings"); // /settin
 const AGENT_TODOS = []; // the agent's live task checklist (todo_write), like Claude Code's TodoWrite
 async function deviceTool(name, a, cwd) {
   const fs = require("fs"), path = require("path"), os = require("os");
-  const rp = (p) => { const r = path.resolve(cwd, p == null ? "." : p); if (r !== cwd && !r.startsWith(cwd + path.sep)) throw new Error("path escapes the project directory: " + p); return r; }; // sandbox all device-tool file ops to cwd
+  const rp = (p) => Jail.assertInJail(p == null ? "." : p, cwd); // sandbox all device-tool file ops to cwd (symlink/dot-dot safe)
   const SKIP = /(^|\/)(\.git|node_modules|dist|build|\.nexus|\.cache)(\/|$)/;
   if (name === "search" || name === "grep") {
     const pat = a.pattern || a.query || a.q; if (!pat) return { error: "search needs a pattern" };
@@ -2253,7 +2256,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     if (_pblk) { result = "blocked: policy — " + _pblk; console.log("    " + red("blocked: ") + _pblk); if (policy.audit) try { auditLog(cwd, { engine: "ollama", tool: name, path: _pa.path, cmd: _pa.command, status: "blocked", reason: _pblk }); } catch (_) {} }
     else try {
       // sandbox file tools to cwd (same invariant deviceTool/apply_patch enforce)
-      if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) { const _r = path.resolve(cwd, a.path); if (_r !== cwd && !_r.startsWith(cwd + path.sep)) throw new Error("path escapes the project directory: " + a.path); }
+      if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) Jail.assertInJail(a.path, cwd);
       if (name === "read_file") result = fs.readFileSync(path.resolve(cwd, a.path), "utf8").slice(0, 14000);
       else if (name === "list_dir") result = fs.readdirSync(path.resolve(cwd, a.path || "."), { withFileTypes: true }).map((e) => e.isDirectory() ? e.name + "/" : e.name).slice(0, 200).join("\n");
       else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = "ok"; log += "\nwrote " + a.path; console.log("    " + green("write ") + gray(a.path)); }

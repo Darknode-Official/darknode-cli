@@ -11,6 +11,7 @@ const { styleNames, styleDirective } = require("../lib/cli/styles");
 const { mergeMemory } = require("../lib/nexus/memory");
 const { scanCapabilities, fileRisk, levelFor, indexFiles } = require("../lib/nexus/capindex");
 const { evaluateAction: guardEval } = require("../lib/nexus/guardrails");
+const { resolveInJail, assertInJail } = require("../lib/nexus/jail");
 const { STYLES, allStyles, loadStyles } = require("../lib/cli/styles");
 const { TOOL_CATALOG, discoverTools } = require("../lib/nexus/tools");
 const { createBgJobs, MAX_BUF } = require("../lib/nexus/bgjobs");
@@ -2184,6 +2185,35 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     has(explainEngineError("you exceeded your current quota", { engine: "openai" }), "billing");
     ok("unrecognised error keeps the raw text + a next step", (() => { const s = explainEngineError("weird kaboom", {}); return /weird kaboom/.test(s) && /\/engine/.test(s); })());
     eq("empty/no message is safe", typeof explainEngineError("", {}), "string");
+  }
+
+  group("path jail — canonical, symlink- and dot-dot-safe (NSAFE-020)");
+  {
+    const jroot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "nx-jail-")));
+    try {
+      fs.mkdirSync(path.join(jroot, "sub"));
+      fs.writeFileSync(path.join(jroot, "sub", "a.txt"), "x");
+      ok("a file inside the root is inside", resolveInJail("sub/a.txt", jroot).inside === true);
+      ok("the root itself is inside", resolveInJail(".", jroot).inside === true);
+      eq("assertInJail returns the canonical absolute path", assertInJail("sub/a.txt", jroot), path.join(jroot, "sub", "a.txt"));
+      ok("a dot-dot traversal escapes", resolveInJail("../../etc/passwd", jroot).inside === false);
+      ok("an absolute path outside the root is rejected", resolveInJail("/etc", jroot).inside === false);
+      ok("assertInJail throws on an escape", (() => { try { assertInJail("../x", jroot); return false; } catch (e) { return /escapes the project directory/.test(e.message); } })());
+      ok("a new (non-existent) file inside the root is allowed for write", resolveInJail("sub/new/deep.txt", jroot).inside === true);
+      ok("a NUL byte is refused", (() => { try { resolveInJail("a\u0000b", jroot); return false; } catch (_) { return true; } })());
+      ok("an over-long path is refused", (() => { try { resolveInJail("a".repeat(5000), jroot); return false; } catch (_) { return true; } })());
+      // a symlink inside the root pointing outside is caught — string checks miss this
+      let symRan = false;
+      try {
+        const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "nx-out-")));
+        fs.writeFileSync(path.join(outside, "secret.txt"), "s");
+        fs.symlinkSync(outside, path.join(jroot, "link"));
+        symRan = true;
+        ok("a symlink escaping the root resolves outside the jail", resolveInJail("link/secret.txt", jroot).inside === false);
+        fs.rmSync(outside, { recursive: true, force: true });
+      } catch (_) { /* symlinks may be unavailable (e.g. Windows without privilege) */ }
+      if (!symRan) ok("symlink escape test skipped (symlinks unavailable)", process.platform === "win32");
+    } finally { fs.rmSync(jroot, { recursive: true, force: true }); }
   }
 
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
