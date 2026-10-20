@@ -41,6 +41,7 @@ const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); /
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
 const { bootHeader, welcomeCard, footerLine, helpLines, padRight: padRightV, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
+const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
 const nexusSettings = require("./lib/cli/nexus-settings"); // persistent, off-by-default TUI settings (~/.nexus/settings.json)
 const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA codes (lib/totp.js)
 
@@ -2419,6 +2420,17 @@ const onPlan = (e) => (e === "claude" && !process.env.ANTHROPIC_API_KEY) || (e =
 function nexusTui(engine, cwd, nexusMd, autoResume) {
   return new Promise((resolve) => {
     const out = process.stdout, ESC = "\x1b";
+    // Terminal-mode registry: every mode the TUI enables is recorded here so it
+    // is always restored — on normal exit and, synchronously, on a hard crash.
+    const term = Term.createRegistry({ fd: 1 });
+    const registerModes = () => {
+      term.register("alt-screen", ESC + "[?1049h", ESC + "[?1049l");
+      term.register("focus-arrows", ESC + "[?1007h", ESC + "[?1007l");
+      term.register("mouse", "", ESC + "[?1000l" + ESC + "[?1006l"); // enabled on demand by setMouse
+      term.register("bracketed-paste", ESC + "[?2004h", ESC + "[?2004l");
+      term.register("hide-cursor", ESC + "[?25l", ESC + "[?25h");
+      term.register("title", "", ESC + "]0;\x07");
+    };
     const cols = () => out.columns || 80, rows = () => out.rows || 24;
     const PAID = {}, CTXW = {}; for (const e of ENGINE_ORDER) { PAID[e] = ENGINES[e].paid; CTXW[e] = ENGINES[e].ctx; } // derived from the registry — never drifts
     const transcript = [{ role: "art" }];
@@ -3023,9 +3035,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     };
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
     let cleaned = false;
-    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.iv) { clearInterval(compact.iv); compact.iv = null; } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { out.write(ESC + "]0;\x07" + ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?1007l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {} };
+    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.iv) { clearInterval(compact.iv); compact.iv = null; } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
     tuiActive = true;
-    const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
+    const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { term.teardown(); } catch (_) {} try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
     // a rejected turn promise must never leave the UI wedged with busy=true
     const onRejection = (e) => { if (busy || (ctl)) { busy = false; ctl = null; try { transcript.push({ role: "system", text: "recovered from an internal error: " + (e && e.message || e) }); } catch (_) {} try { render(); } catch (_) {} } };
@@ -4369,18 +4381,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const edBin = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : (hasBin("nano") ? "nano" : "vi"));
       let tmp;
       try { tmp = path.join(require("os").tmpdir(), "nexus-compose-" + process.pid + "-" + Date.now() + ".md"); fs.writeFileSync(tmp, composer.expand(input)); } catch (_) { return; }
-      try { out.write(ESC + "[?2004l" + ESC + "[?1000l" + ESC + "[?1006l" + ESC + "[?1007l" + ESC + "[?25h" + ESC + "[?1049l"); } catch (_) {}
+      try { out.write(term.disableString()); } catch (_) {}
       try { process.stdin.setRawMode(false); } catch (_) {}
       try { _cp.spawnSync(edBin, [tmp], { stdio: "inherit" }); } catch (_) {}
       try { process.stdin.setRawMode(true); } catch (_) {}
       process.stdin.resume();
-      try { out.write(ESC + "[?1049h" + ESC + "[?1007h" + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[?2004h" + ESC + "[?25l" + ESC + "[2J"); } catch (_) {}
+      try { out.write(term.enableString() + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[2J"); } catch (_) {}
       try { const txt = fs.readFileSync(tmp, "utf8").replace(/\n$/, ""); input = txt; curPos = txt.length; composer.text = txt; composer.cursor = txt.length; } catch (_) {}
       try { fs.unlinkSync(tmp); } catch (_) {}
       lastLines = null; render();
     };
     try { const st = readGlobal("state.json", {}) || {}; if (st.mouse === false) mouseOn = false; } catch (_) {} // restore mouse-capture preference
-    out.write(ESC + "[?1049h" + ESC + "[?1007h" + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[?2004h" + ESC + "[?25l" + ESC + "[2J");
+    registerModes(); out.write(term.enableString() + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[2J");
     idleTitle();
     try { process.stdin.setRawMode(true); } catch (_) {}
     process.stdin.resume(); process.stdin.setEncoding("utf8");
