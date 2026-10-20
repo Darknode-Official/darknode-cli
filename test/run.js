@@ -4,7 +4,7 @@
 const os = require("os"), fs = require("fs"), path = require("path");
 const { MODEL_PRICE, priceOf, isMechanical, shouldDelegate } = require("../lib/nexus/pricing");
 const { geminiParse, codexParse } = require("../lib/nexus/parsers");
-const { POLICY_DEFAULTS, globToRe, pathMatchesAny, policyCheck, auditLog, auditVerify } = require("../lib/governance/policy");
+const { POLICY_DEFAULTS, globToRe, pathMatchesAny, policyCheck, auditLog, auditVerify, HARD_DENY, hitsHardDeny } = require("../lib/governance/policy");
 const { ENGINES, ENGINE_ORDER, engineCap } = require("../lib/nexus/engines");
 const { scanSecrets, maskSecrets, classifyDanger, compactOutput, redactArgv, redactCommandSecrets } = require("../lib/governance/security");
 const { styleNames, styleDirective } = require("../lib/cli/styles");
@@ -166,6 +166,33 @@ group("policy (guardrails)");
   ok("policy allow npm test", policyCheck(denied, { type: "run", command: "npm test" }).allow === true);
   ok("policy block fetch when network off", policyCheck(Object.assign({}, POLICY_DEFAULTS, { allowNetwork: false }), { type: "fetch" }).allow === false);
   ok("globToRe ** matches nested", globToRe("**/.env").test("a/b/.env"));
+}
+
+group("hard-deny floor (NSAFE-016)");
+{
+  // A policy that permits everything (default-allow, empty deny list) must still
+  // deny each floor entry — the floor sits below every allow layer.
+  const open = Object.assign({}, POLICY_DEFAULTS, { deniedCommands: [], protectedPaths: [] });
+  const denied = (action) => { const r = policyCheck(open, action); return r.allow === false && r.floor; };
+  ok("floor denies rm -rf / under an all-allow policy", denied({ type: "run", command: "rm -rf /" }) === "host-rm-root");
+  ok("floor denies dd of=/dev/sda", denied({ type: "run", command: "dd if=/dev/zero of=/dev/sda bs=1M" }) === "raw-disk-write");
+  ok("floor denies a write to a raw disk device path", denied({ type: "write", path: "/dev/sdb" }) === "raw-disk-write");
+  ok("floor denies deleting the audit log", denied({ type: "delete", path: "/home/u/proj/.nexus/audit.jsonl" }) === "tamper-audit-log");
+  ok("floor denies a command that truncates the audit log", denied({ type: "run", command: "truncate -s0 .nexus/audit.jsonl" }) === "tamper-audit-log");
+  ok("floor denies editing the safety settings", denied({ type: "edit", path: "/home/u/.nexus/settings.json" }) === "tamper-safety-config");
+  ok("floor denies pkill nexus", denied({ type: "run", command: "pkill -9 nexus" }) === "kill-nexus");
+  ok("a benign command is not caught by the floor", policyCheck(open, { type: "run", command: "ls -la" }).allow === true);
+  ok("a normal file write is not caught by the floor", policyCheck(open, { type: "write", path: "src/app.js" }).allow === true);
+  // hitsHardDeny returns the matching rule (or null) and never throws on a bad action.
+  ok("hitsHardDeny returns the rule id", (hitsHardDeny({ type: "run", command: "rm -rf /etc" }) || {}).id === "host-rm-root");
+  ok("hitsHardDeny returns null for a clean action", hitsHardDeny({ type: "run", command: "git status" }) === null);
+  ok("hitsHardDeny tolerates a malformed action", (() => { try { return hitsHardDeny(null) === null && hitsHardDeny({}) === null; } catch (_) { return false; } })());
+  // evaluateAction surfaces the floor as its own source and always denies.
+  const gv = guardEval({ type: "command", command: "rm -rf /" }, open);
+  ok("guardEval reports a hard-deny source", gv.decision === "deny" && gv.reasons.some((r) => r.source === "hard-deny" && r.id === "host-rm-root"));
+  // The floor is deeply frozen: both the array and each rule reject mutation in strict mode.
+  ok("HARD_DENY array is frozen", (() => { try { HARD_DENY.push({}); return false; } catch (_) { return true; } })());
+  ok("each HARD_DENY rule is frozen", (() => { try { HARD_DENY[0].id = "x"; return false; } catch (_) { return true; } })());
 }
 
 group("audit (tamper-evident hash chain)");
