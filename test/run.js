@@ -1306,6 +1306,8 @@ group("compliance bundle (SOC2 export)");
   eq("python: pytest from pyproject", detectProjectCommands(["pyproject.toml"], {}).test, "pytest -q");
   eq("python: pytest from a tests dir", detectProjectCommands(["tests", "app.py"], {}).test, "pytest -q");
   eq("rust: cargo test + build", (() => { const c = detectProjectCommands(["Cargo.toml"], {}); return c.test + "|" + c.build; })(), "cargo test|cargo build");
+  eq("rust with a tests/ dir is still cargo, not pytest", (() => { const c = detectProjectCommands(["Cargo.toml", "src", "tests"], {}); return c.test + "|" + c.source; })(), "cargo test|cargo");
+  eq("go with a test/ dir is still go test", detectProjectCommands(["go.mod", "test"], {}).test, "go test ./...");
   eq("go: test/build/vet", (() => { const c = detectProjectCommands(["go.mod"], {}); return [c.test, c.build, c.lint].join(","); })(), "go test ./...,go build ./...,go vet ./...");
   eq("make test only when target exists", detectProjectCommands(["Makefile"], { "Makefile": "build:\n\tcc x\ntest:\n\t./t\n" }).test, "make test");
   ok("make with no test target yields no test", !detectProjectCommands(["Makefile"], { "Makefile": "all:\n\tcc x\n" }).test);
@@ -1616,6 +1618,16 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("noNewMarkers flags an added TODO at its line", !mk.ok && mk.violations.some((v) => v.rule === "noNewMarkers" && v.line === 12));
     const noMk = IV.checkInvariants([{ path: "x.js", status: "M", added: [{ n: 1, text: "fine();" }], removed: ["// TODO old"] }], { noNewMarkers: true });
     ok("noNewMarkers ignores a marker that was only REMOVED/pre-existing", noMk.ok === true);
+    const emptyMk = IV.checkInvariants([{ path: "x.js", status: "M", added: [{ n: 1, text: "const z = 1;" }], removed: [] }], { noNewMarkers: [] });
+    ok("noNewMarkers:[] matches nothing (never /\\b()\\b/ flagging every line)", emptyMk.ok === true);
+
+    // --- parseDiff: an added/removed line whose text begins with "++ "/"-- " is body, not a header ---
+    const trickyDiff = [
+      "diff --git a/m.md b/m.md", "--- a/m.md", "+++ b/m.md",
+      "@@ -1,1 +1,3 @@", " keep", "+++ a header-looking added line", "+normal add",
+    ].join("\n");
+    const tf = IV.parseDiff(trickyDiff)[0];
+    ok("parseDiff keeps an added line that reads like a +++ header", tf.added.length === 2 && tf.added[0].text === "++ a header-looking added line" && tf.added[0].n === 2 && tf.added[1].n === 3);
 
     // --- allowPaths / forbidPaths with globs ---
     const allow = IV.checkInvariants(files, { allowPaths: ["src/**"] });
