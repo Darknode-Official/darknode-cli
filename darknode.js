@@ -2438,6 +2438,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const cols = () => out.columns || 80, rows = () => out.rows || 24;
     const PAID = {}, CTXW = {}; for (const e of ENGINE_ORDER) { PAID[e] = ENGINES[e].paid; CTXW[e] = ENGINES[e].ctx; } // derived from the registry — never drifts
     const transcript = [{ role: "art" }];
+    // Register the real secret values from security-named env vars so they are
+    // redacted exactly (not just by pattern) at every sink (NSAFE-062). Values
+    // stay in memory only; collection is best-effort and never fails startup.
+    try { Redact.setKnownSecrets(Redact.buildKnownSecrets(process.env, [])); } catch (_) {}
     const sess = { model: engine, ctxWindow: CTXW[engine] || 200000, ctxUsed: 0, inTok: 0, outTok: 0, cost: 0, liveOut: 0, byModel: {} }; // byModel: exact per-bucket token totals, priced with lib/nexus/pricing.js
     // Claude Code result -> per-model buckets. modelUsage lists every model the
     // turn used (incl. subagents); its cache writes are split 5m/1h with the

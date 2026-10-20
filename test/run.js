@@ -13,7 +13,7 @@ const { scanCapabilities, fileRisk, levelFor, indexFiles } = require("../lib/nex
 const { evaluateAction: guardEval } = require("../lib/nexus/guardrails");
 const { resolveInJail, assertInJail } = require("../lib/nexus/jail");
 const { validateArgs } = require("../lib/nexus/schema-check");
-const { redact, emit } = require("../lib/nexus/redact");
+const { redact, emit, buildKnownSecrets, setKnownSecrets } = require("../lib/nexus/redact");
 const { STYLES, allStyles, loadStyles } = require("../lib/cli/styles");
 const { TOOL_CATALOG, discoverTools } = require("../lib/nexus/tools");
 const { createBgJobs, MAX_BUF } = require("../lib/nexus/bgjobs");
@@ -266,6 +266,34 @@ group("sink redaction + keyed placeholders (NSAFE-060/061)");
   const pk = redact("-----BEGIN PRIVATE KEY-----\nabcd\n-----END PRIVATE KEY-----", { sink: "audit", key: K });
   ok("private key block removed wholesale", /\[REDACTED:private-key:[0-9a-f]{4}\]/.test(pk.text) && !pk.text.includes("BEGIN PRIVATE KEY"));
   ok("clean text passes through untouched", redact("just normal text", { sink: "audit", key: K }).text === "just normal text");
+}
+
+group("known-secret value registry (NSAFE-062)");
+{
+  const K = "nexus-test-install-key";
+  const custom = "wxq-Z9f2Kv8tLmNpR4sB"; // 20 chars, not matched by any pattern rule
+  const env = { GITHUB_TOKEN: "ghp_" + "Q".repeat(36), MY_CUSTOM_SECRET: custom, SHELL: "/bin/bash", TINY_KEY: "abc" };
+  const built = buildKnownSecrets(env, []);
+  ok("collects security-named env values >= 8 chars", built.count === 2);
+  ok("ignores short values and non-secret-named vars", !built.map.has("abc") && !built.map.has("/bin/bash"));
+  const b64 = Buffer.from(custom, "utf8").toString("base64");
+  const r = redact("raw " + custom + " b64 " + b64 + " url " + encodeURIComponent(custom), { sink: "transcript", key: K, known: built });
+  ok("raw form of a custom secret redacted", !r.text.includes(custom));
+  ok("base64 form redacted", !r.text.includes(b64));
+  ok("known-value placeholder used", /\[REDACTED:known-value:[0-9a-f]{4}\]/.test(r.text));
+  const tags = r.text.match(/\[REDACTED:known-value:([0-9a-f]{4})\]/g) || [];
+  ok("every encoded form of the same secret shares one tag", tags.length === 3 && new Set(tags).size === 1);
+  const many = {}; for (let i = 0; i < 20; i++) many["K" + i + "_TOKEN"] = "value_" + i + "_" + "x".repeat(8);
+  const capped = buildKnownSecrets(many, [], { cap: 5 });
+  ok("values capped with truncation reported", capped.truncated === true && capped.count === 5);
+  // file contents contribute whitespace-separated tokens >= 8 chars
+  const fromFile = buildKnownSecrets({}, ["user pass=abcdefgh12345678 host"]);
+  ok("harvests a long token from file content", fromFile.map.has("pass=abcdefgh12345678") || [...fromFile.map.keys()].some((k) => k.includes("abcdefgh12345678")));
+  // setKnownSecrets registers globally; reset afterwards so other groups are unaffected.
+  setKnownSecrets(built);
+  ok("globally-registered known secret redacted without ctx.known", !redact("see " + custom, { sink: "audit", key: K }).text.includes(custom));
+  setKnownSecrets({ matcher: null, map: null });
+  ok("after reset the custom value is no longer redacted", redact("see " + custom, { sink: "audit", key: K }).text.includes(custom));
 }
 
 group("audit (tamper-evident hash chain)");
