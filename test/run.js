@@ -6,7 +6,7 @@ const { MODEL_PRICE, priceOf, isMechanical, shouldDelegate } = require("../lib/n
 const { geminiParse, codexParse } = require("../lib/nexus/parsers");
 const { POLICY_DEFAULTS, globToRe, pathMatchesAny, policyCheck, auditLog, auditVerify } = require("../lib/governance/policy");
 const { ENGINES, ENGINE_ORDER, engineCap } = require("../lib/nexus/engines");
-const { scanSecrets, maskSecrets, classifyDanger, compactOutput } = require("../lib/governance/security");
+const { scanSecrets, maskSecrets, classifyDanger, compactOutput, redactArgv, redactCommandSecrets } = require("../lib/governance/security");
 const { styleNames, styleDirective } = require("../lib/cli/styles");
 const { mergeMemory } = require("../lib/nexus/memory");
 const { scanCapabilities, fileRisk, levelFor, indexFiles } = require("../lib/nexus/capindex");
@@ -195,6 +195,41 @@ group("security (secrets + destructive-command preflight)");
   ok("classifyDanger npm test → ok", classifyDanger("npm test").level === "ok");
   ok("compactOutput trims long text", compactOutput("x".repeat(9000), 4000).length < 9000);
   ok("compactOutput keeps short text", compactOutput("short", 4000) === "short");
+}
+
+group("inline-credential redaction (NSAFE-064)");
+{
+  // Command lines hide credentials behind a flag; they persist in the audit log
+  // and on-disk history and are world-readable via ps. redactCommandSecrets must
+  // strip the value while keeping the command readable.
+  const mysql = redactCommandSecrets("mysql -pHunter2xx -h db.local");
+  ok("mysql -pSECRET attached password redacted", !/Hunter2xx/.test(mysql) && /-p\[redacted:password\]/.test(mysql));
+  ok("mysql redaction keeps the rest of the command", /-h db\.local/.test(mysql));
+  const auth = redactCommandSecrets('curl -H "Authorization: Bearer ghp_' + "z".repeat(36) + '" https://test.darknode.ai');
+  ok("Authorization header value redacted", !/ghp_z{36}/.test(auth) && /\[redacted:(auth-header|github-token)\]/.test(auth));
+  const url = redactCommandSecrets("git clone https://user:pw@test.darknode.ai/repo.git");
+  ok("URL userinfo password redacted", !/user:pw@/.test(url) && /user:\[redacted:userinfo\]@/.test(url));
+  ok("URL redaction keeps the username and host", /https:\/\/user:/.test(url) && /test\.darknode\.ai/.test(url));
+  const eq = redactCommandSecrets("deploy --token=abcd1234secret --region us-east");
+  ok("--token=VALUE redacted", !/abcd1234secret/.test(eq) && /--token=\[redacted:credential\]/.test(eq));
+  const nextarg = redactCommandSecrets("tool --password s3cr3tValue --verbose");
+  ok("--password VALUE (next token) redacted", !/s3cr3tValue/.test(nextarg) && /--password \[redacted:credential\]/.test(nextarg));
+  const basic = redactCommandSecrets("curl -u alice:topsecret https://test.darknode.ai");
+  ok("curl -u user:pass redacts only the password", !/topsecret/.test(basic) && /-u alice:\[redacted:password\]/.test(basic));
+  ok("token-shaped secret anywhere still masked", /\[redacted:aws-key\]/.test(redactCommandSecrets("echo AKIAIOSFODNN7EXAMPLE")));
+  ok("a clean command is unchanged", redactCommandSecrets("npm test && git status") === "npm test && git status");
+  ok("a flag that merely starts with -p is not over-redacted", redactCommandSecrets("cp -pr src dst") === "cp -pr src dst");
+  // redactArgv: the catalog-driven primitive for callers that already hold argv.
+  const ra = redactArgv(["mysql", "-pHunter2", "-h", "db"]);
+  ok("redactArgv redacts attached mysql password", ra.argv[1] === "-p[redacted:password]" && ra.redactions === 1);
+  const rv = redactArgv(["deploy", "--token", "abc123", "--region=us"]);
+  ok("redactArgv redacts --token next-arg", rv.argv[2] === "[redacted:credential]" && rv.redactions === 1);
+  const rvq = redactArgv(["svc", "--api-key=xyz789"]);
+  ok("redactArgv redacts --api-key=VALUE", rvq.argv[1] === "--api-key=[redacted:credential]");
+  const ru = redactArgv(["curl", "-u", "bob:pw", "https://test.darknode.ai"]);
+  ok("redactArgv redacts curl -u password only", ru.argv[2] === "bob:[redacted:password]");
+  ok("redactArgv leaves a clean argv alone", redactArgv(["git", "status"]).redactions === 0);
+  ok("CRED_FLAGS is frozen", (() => { try { require("../lib/governance/security").CRED_FLAGS.push({}); return false; } catch (_) { return true; } })());
 }
 
 group("NX-007: redaction is complete across every channel");
