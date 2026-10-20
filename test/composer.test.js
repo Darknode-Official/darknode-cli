@@ -309,5 +309,88 @@ group("persisted prefs — /style and /redact round-trip; dead defaults removed"
   fs.rmSync(HOME, { recursive: true, force: true });
 }
 
+group("sanitizeControls — neutralize hostile control bytes (NTUI-032)");
+{
+  eq("strips a lone ESC", C.sanitizeControls("a\x1bb"), "ab");
+  eq("neutralizes a full color escape (ESC gone, so [31m is inert text)", C.sanitizeControls("a\x1b[31mb"), "a[31mb");
+  eq("keeps TAB and LF", C.sanitizeControls("a\tb\nc"), "a\tb\nc");
+  eq("CRLF and lone CR normalize to LF", C.sanitizeControls("a\r\nb\rc"), "a\nb\nc");
+  eq("strips DEL and a C1 control", C.sanitizeControls("a\x7fb\x9bc"), "abc");
+  eq("null / undefined -> empty string", C.sanitizeControls(null), "");
+}
+
+group("inspectPaste — paste preflight report (NTUI-031)");
+{
+  const plain = C.inspectPaste("hello\nworld");
+  ok("plain multiline text is not flagged", plain.flagged === false);
+  eq("line count is reported", plain.lines, 2);
+  const esc = C.inspectPaste("a\x1b[2Jb");
+  eq("ESC counted as one control byte", esc.controls, 1);
+  ok("control bytes flag the paste", esc.flagged === true);
+  const bidi = C.inspectPaste("safe‮evil");
+  ok("bidi override detected (Trojan Source)", bidi.hasBidi === true && bidi.flagged === true);
+  const zw = C.inspectPaste("a​b");
+  ok("zero-width character detected", zw.hasZeroWidth === true && zw.flagged === true);
+  const bin = C.inspectPaste("\x01\x02\x03\x04abcd");
+  ok("high non-text ratio reads as binary", bin.binaryRatio > 0.3 && bin.reasons.some((r) => /binary/.test(r)));
+}
+
+group("paste() — sanitizes before insert, returns the report");
+{
+  const m = new C.ComposerModel();
+  const pr = m.paste("a\x1bb");
+  eq("inserted text has no control byte", m.text, "ab");
+  ok("report rides back to the host and is flagged", pr.report && pr.report.flagged === true);
+  const big = Array.from({ length: 15 }, (_, i) => "line" + i).join("\n") + "\x1b";
+  const m2 = new C.ComposerModel();
+  const pr2 = m2.paste(big);
+  ok("a large paste collapses to a marker", pr2.collapsed === true && /\[Pasted text #1 \+/.test(m2.text));
+  ok("expanded submit text carries no control byte", !/\x1b/.test(m2.expand()));
+}
+
+group("appendHistory / loadHistory — redaction, control-strip, perms, compaction (NTUI-006/007)");
+{
+  const POSIX = process.platform !== "win32";
+  const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "nx-hist-"));
+  const proj = path.join(HOME, "proj");
+  try {
+    // NTUI-007: a high-confidence secret is masked on disk.
+    C.appendHistory("deploy with AKIAIOSFODNN7EXAMPLE now", proj, HOME);
+    let h = C.loadHistory(proj, C.HISTORY_CAP, HOME);
+    ok("persisted secret is redacted", h[h.length - 1].includes("[redacted:aws-key]"));
+    ok("raw AWS key never reaches disk", !h[h.length - 1].includes("AKIAIOSFODNN7EXAMPLE"));
+    // NTUI-032 on the persist path: control bytes are stripped before writing.
+    C.appendHistory("echo\x1b[31m hi", proj, HOME);
+    h = C.loadHistory(proj, C.HISTORY_CAP, HOME);
+    ok("control bytes stripped from persisted entry", !/\x1b/.test(h[h.length - 1]));
+    // NTUI-006: file is 0600 and its dir 0700 on POSIX.
+    const p = C.historyPath(proj, HOME);
+    if (POSIX) {
+      eq("history file is mode 0600", fs.statSync(p).mode & 0o777, 0o600);
+      eq("history dir is mode 0700", fs.statSync(path.dirname(p)).mode & 0o777, 0o700);
+    }
+    // consecutive-duplicate writes are skipped
+    C.appendHistory("same-line", proj, HOME);
+    const before = fs.readFileSync(p, "utf8").split("\n").filter(Boolean).length;
+    C.appendHistory("same-line", proj, HOME);
+    eq("a duplicate last line is not re-appended", fs.readFileSync(p, "utf8").split("\n").filter(Boolean).length, before);
+  } finally { fs.rmSync(HOME, { recursive: true, force: true }); }
+
+  // NTUI-006: an oversized file is compacted to the cap on a full load.
+  const HOME2 = fs.mkdtempSync(path.join(os.tmpdir(), "nx-hist2-"));
+  const proj2 = path.join(HOME2, "p");
+  try {
+    const p2 = C.historyPath(proj2, HOME2);
+    fs.mkdirSync(path.dirname(p2), { recursive: true });
+    const lines = [];
+    for (let i = 0; i < C.HISTORY_CAP * 2 + 100; i++) lines.push(JSON.stringify({ text: "cmd-" + i }));
+    fs.writeFileSync(p2, lines.join("\n") + "\n");
+    const got = C.loadHistory(proj2, C.HISTORY_CAP, HOME2);
+    eq("load returns at most the cap", got.length, C.HISTORY_CAP);
+    ok("newest entry survives compaction", got[got.length - 1] === "cmd-" + (C.HISTORY_CAP * 2 + 99));
+    ok("file is compacted on disk", fs.readFileSync(p2, "utf8").split("\n").filter(Boolean).length <= C.HISTORY_CAP);
+  } finally { fs.rmSync(HOME2, { recursive: true, force: true }); }
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (composer + settings)");
 process.exit(fail ? 1 : 0);

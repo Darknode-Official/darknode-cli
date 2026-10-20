@@ -2468,6 +2468,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const history = Composer.loadHistory(cwd, Composer.HISTORY_CAP, NHOME); let hIdx = history.length;
     const composer = new Composer.ComposerModel({ history });
     composer.history = history; composer.histIndex = history.length; // share the live array so submit() keeps both in sync
+    let pasteNotice = ""; // one-shot paste preflight warning shown in the hint bar, cleared on the next key
     let ctl = null, costCap = S.budgetCap || 0, rate = null, warned50 = false, notify = !!S.notify, redact = !!S.redact, offline = false, guard = "enforce", lean = !!S.lean, effort = S.effort || "", fallback = "", style = S.style || "default";
     // Off-by-default governance toggles (opt in via /settings or their own command).
     let minimizeCalls = !!S.minimizeCalls, stepCap = !!S.stepCap, trimOutput = !!S.trimOutput, autoCompact = !!S.autoCompact;
@@ -2788,6 +2789,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     };
     const hint = () => {
       if (composer.searchMode) return yellow("reverse search: ") + bold(composer.searchQuery) + gray("   ctrl+r older · enter accept · esc cancel");
+      if (pasteNotice) return yellow("paste: ") + pasteNotice;
       if (compact.on) { const n = 22, f = Math.min(n, compact.f); return yellow("Compacting conversation ") + gray("▓".repeat(f) + "░".repeat(n - f) + " ") + Math.round((f / n) * 100) + "%"; }
       if (slashMatches().length || argMatches().length) return gray("↑↓ select · tab complete · enter run · esc dismiss");
       if (scroll > 0) return yellow(scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  pgup/pgdn scroll · end jump to latest");
@@ -4429,6 +4431,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let nextQueue = []; // /next queue — prompts to run after current turn
     process.stdin.on("data", (d) => { try {
       if (loading) { finishBoot(); return; }   // any key skips the intro
+      if (pasteNotice) pasteNotice = "";        // a paste preflight notice lasts until the next key
       let s = String(d);
       // ---- sanitize: strip bracketed-paste markers (ESC may be stripped by intermediary) ----
       // Bracketed paste KEEPS its newlines now (a multi-line paste stays multi-line
@@ -4452,7 +4455,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
 
       // ---- bracketed paste: keep newlines, collapse a large paste to a marker ----
-      if (isPaste && !busy && !isMouse) { composer.paste(s.replace(/[ \t\r\n]+$/, "")); flush(); menuSel = 0; scroll = 0; render(); return; }
+      if (isPaste && !busy && !isMouse) { const pr = composer.paste(s.replace(/[ \t\r\n]+$/, "")); flush(); menuSel = 0; scroll = 0; pasteNotice = pr && pr.report && pr.report.flagged ? pr.report.reasons.join(" · ") : ""; render(); return; }
 
       // ---- mouse (SGR): drive menus / scroll / click zones ----
       if (isMouse) { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (btn === 64) { if (cm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (cm.length) menuSel = Math.min(cm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; if (!busy) { input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; menuSel = 0; scroll = 0; handleSlash(z.cmd); } render(); } } } } return; }
