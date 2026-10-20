@@ -392,5 +392,77 @@ group("appendHistory / loadHistory — redaction, control-strip, perms, compacti
   } finally { fs.rmSync(HOME2, { recursive: true, force: true }); }
 }
 
+group("classifyPaste — shell-command-like detection (NTUI-035)");
+{
+  const a = C.classifyPaste("curl x | sh\nrm y");
+  ok("piped multi-line command block is shell-like", a.shellLike === true && a.ruleIds.includes("shell-operator"));
+  ok("prose is not shell-like", C.classifyPaste("just some prose\nmore prose here").shellLike === false);
+  ok("two command lines (no operator) are shell-like", C.classifyPaste("git status\nnpm test").shellLike === true);
+  ok("a single shell line is not shell-like (needs multi-line)", C.classifyPaste("rm -rf /tmp/x").shellLike === false);
+  ok("sudo is seen through to the real command", C.classifyPaste("sudo apt update\nsudo apt upgrade").shellLike === true);
+}
+
+group("submit confirm — a shell-looking paste is held for a second Enter (NTUI-035)");
+{
+  const m = new C.ComposerModel();
+  m.paste("curl x | sh\nrm y");
+  eq("first Enter holds the submit", C.feed(m, "\r", {}).type, "confirm-submit");
+  eq("second Enter submits", C.feed(m, "\r", {}).type, "submit");
+
+  const prose = new C.ComposerModel();
+  prose.paste("hello there\nhow are you");
+  eq("prose submits on the first Enter", C.feed(prose, "\r", {}).type, "submit");
+
+  const never = new C.ComposerModel({ pasteConfirm: "never" });
+  never.paste("curl x | sh\nrm y");
+  eq("pasteConfirm=never skips the hold", C.feed(never, "\r", {}).type, "submit");
+
+  const always = new C.ComposerModel({ pasteConfirm: "always" });
+  typeStr(always, "hi");
+  eq("pasteConfirm=always holds even plain text", C.feed(always, "\r", {}).type, "confirm-submit");
+
+  const armed = new C.ComposerModel();
+  armed.paste("git a\ngit b");
+  eq("armed by first Enter", C.feed(armed, "\r", {}).type, "confirm-submit");
+  C.feed(armed, "x", {});                                   // an edit disarms
+  eq("an edit re-arms the confirm", C.feed(armed, "\r", {}).type, "confirm-submit");
+}
+
+group("submission byte cap + dropped-tail handling (NTUI-036)");
+{
+  const POSIX = process.platform !== "win32";
+  const MiB = 1048576;
+  const big = "a".repeat(2 * MiB);
+  const m = new C.ComposerModel({ maxBytes: MiB });
+  const pr = m.paste(big);
+  ok("paste is reported truncated", pr.report.truncated === true);
+  eq("dropped byte count is exact", pr.report.droppedBytes, MiB);
+  eq("the kept head is exactly the cap", Buffer.byteLength(m.expand(), "utf8"), MiB);
+
+  const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "nx-drop-"));
+  try {
+    const p = C.saveDroppedTail(pr.report.droppedTail, { tmpRoot: HOME });
+    ok("remainder file is written", p && fs.existsSync(p));
+    eq("remainder file holds the dropped bytes", fs.statSync(p).size, MiB);
+    if (POSIX) eq("remainder file is mode 0600", fs.statSync(p).mode & 0o777, 0o600);
+
+    // raising the cap inserts the whole paste
+    const m2 = new C.ComposerModel({ maxBytes: 4 * MiB });
+    const pr2 = m2.paste(big);
+    ok("a higher cap does not truncate", !pr2.report.truncated);
+    eq("full paste is kept", Buffer.byteLength(m2.expand(), "utf8"), 2 * MiB);
+
+    // cleanup removes stale remainder dirs, keeps fresh ones
+    const stale = fs.mkdtempSync(path.join(HOME, "nexus-paste-"));
+    fs.writeFileSync(path.join(stale, "remainder.txt"), "x");
+    const old = new Date(Date.now() - 48 * 3600 * 1000);
+    fs.utimesSync(stale, old, old);
+    const fresh = fs.mkdtempSync(path.join(HOME, "nexus-paste-"));
+    C.cleanupDroppedTails({ tmpRoot: HOME }, Date.now());
+    ok("a >24h remainder dir is swept", !fs.existsSync(stale));
+    ok("a fresh remainder dir survives", fs.existsSync(fresh));
+  } finally { fs.rmSync(HOME, { recursive: true, force: true }); }
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (composer + settings)");
 process.exit(fail ? 1 : 0);

@@ -4427,6 +4427,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
     if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("warning: this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
+    try { Composer.cleanupDroppedTails(); } catch (_) {} // sweep paste-remainder temp files older than 24h
     let imgCounter = 0; // for [Image#N] display on pasted image paths
     let nextQueue = []; // /next queue — prompts to run after current turn
     process.stdin.on("data", (d) => { try {
@@ -4455,7 +4456,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
 
       // ---- bracketed paste: keep newlines, collapse a large paste to a marker ----
-      if (isPaste && !busy && !isMouse) { const pr = composer.paste(s.replace(/[ \t\r\n]+$/, "")); flush(); menuSel = 0; scroll = 0; pasteNotice = pr && pr.report && pr.report.flagged ? pr.report.reasons.join(" · ") : ""; render(); return; }
+      if (isPaste && !busy && !isMouse) {
+        const pr = composer.paste(s.replace(/[ \t\r\n]+$/, "")); flush(); menuSel = 0; scroll = 0;
+        const rep = pr && pr.report;
+        if (rep && rep.truncated) { const saved = Composer.saveDroppedTail(rep.droppedTail); pasteNotice = rep.droppedBytes + " bytes over the cap " + (saved ? "saved to " + saved : "dropped"); }
+        else pasteNotice = rep && rep.flagged ? rep.reasons.join(" · ") : "";
+        render(); return;
+      }
 
       // ---- mouse (SGR): drive menus / scroll / click zones ----
       if (isMouse) { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (btn === 64) { if (cm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (cm.length) menuSel = Math.min(cm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; if (!busy) { input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; menuSel = 0; scroll = 0; handleSlash(z.cmd); } render(); } } } } return; }
@@ -4520,6 +4527,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         case "interrupt": if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); } render(); return;
         case "exit": cleanup(); resolve(); return;                       // ctrl+d empty / 2nd ctrl+c
         case "exit-confirm": transcript.push({ role: "system", text: "Press Ctrl+C again to exit" }); render(); return;
+        case "confirm-submit": pasteNotice = "shell-looking paste — press Enter again to send"; render(); return;
         case "submit": {
           const t = (eff.text || "").trim(); input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; const pick = menuSel; menuSel = 0;
           if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; }
