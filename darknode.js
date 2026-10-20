@@ -1432,11 +1432,15 @@ function isChitchat(s) {
 function coderShell(command, cwd) {
   return new Promise((resolve) => {
     const p = spawn(process.platform === "win32" ? "cmd.exe" : "/bin/sh", [process.platform === "win32" ? "/c" : "-c", command], { cwd });
-    let out = ""; const cap = 12000;
-    const add = (d) => { if (out.length < cap + 200) out += d.toString(); };
+    // Keep the HEAD and (crucially) the TAIL: test/build runners print the failing
+    // assertions and the "N failed" summary at the END, so a head-only cap hid every
+    // real failure from diagnose and the agent. Collapse the middle, bounded by MAX.
+    const HEAD = 8000, TAIL = 4000, MAX = 400000;
+    let out = "", total = 0;
+    const add = (d) => { const s = d.toString(); total += s.length; out += s; if (out.length > MAX) out = out.slice(0, HEAD) + out.slice(-TAIL); };
     const to = setTimeout(() => { try { p.kill("SIGKILL"); } catch (_) {} }, 120000);
     p.stdout.on("data", add); p.stderr.on("data", add);
-    p.on("close", (code) => { clearTimeout(to); resolve({ code, output: out.length > cap ? out.slice(0, cap) + "\n...[truncated]" : (out || "(no output)") }); });
+    p.on("close", (code) => { clearTimeout(to); const output = total > HEAD + TAIL ? out.slice(0, HEAD) + "\n...[" + (total - HEAD - TAIL) + " bytes trimmed]...\n" + out.slice(-TAIL) : (out || "(no output)"); resolve({ code, output }); });
     p.on("error", (e) => { clearTimeout(to); resolve({ code: -1, output: "spawn error: " + e.message }); });
   });
 }

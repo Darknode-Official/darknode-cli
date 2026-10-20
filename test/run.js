@@ -1561,6 +1561,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const net = DG.diagnose("request to https://x failed, reason: ECONNREFUSED", 1);
     ok("network failures are detected and flagged transient", net.category === "network" && net.transient === true);
     ok("failing tests are detected", cat("Tests: 3 failed, 10 passed\nAssertionError: expected 1 to equal 2", 1) === "test-failure");
+    ok("a passing suite reporting '0 failed' on exit 0 is NOT a test-failure", DG.diagnose("test result: ok. 10 passed; 0 failed; 0 ignored", 0, "cargo test") === null);
+    ok("a counted failure still reports the right number", (DG.diagnose("=== 2 failed, 8 passed ===", 1) || {}).summary === "2 test(s) failing");
     ok("an unrecognized non-zero exit still yields nonzero-exit", cat("weird output with no pattern", 2) === "nonzero-exit");
     const d = DG.diagnose("bash: gcc: command not found", 127, "gcc x.c");
     ok("diagnosis carries a key line and a hint", /gcc/.test(d.line) && d.hint.length > 10);
