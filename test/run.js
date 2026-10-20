@@ -13,6 +13,7 @@ const { scanCapabilities, fileRisk, levelFor, indexFiles } = require("../lib/nex
 const { evaluateAction: guardEval } = require("../lib/nexus/guardrails");
 const { resolveInJail, assertInJail } = require("../lib/nexus/jail");
 const { validateArgs } = require("../lib/nexus/schema-check");
+const { redact, emit } = require("../lib/nexus/redact");
 const { STYLES, allStyles, loadStyles } = require("../lib/cli/styles");
 const { TOOL_CATALOG, discoverTools } = require("../lib/nexus/tools");
 const { createBgJobs, MAX_BUF } = require("../lib/nexus/bgjobs");
@@ -236,6 +237,35 @@ group("tool-arg schema validation (NSAFE-039)");
   ok("preflightArgs rejects an object for a string path", /type/.test(NT.preflightArgs("read_file", { path: { x: 1 } }) || ""));
   ok("preflightArgs tolerates a numeric git count (coerced)", NT.preflightArgs("git_tool", { op: "log", count: 20 }) === null);
   ok("preflightArgs returns null for an unknown tool", NT.preflightArgs("not_a_tool", { whatever: 1 }) === null);
+}
+
+group("sink redaction + keyed placeholders (NSAFE-060/061)");
+{
+  const K = "nexus-test-install-key";
+  const aws = "AKIAIOSFODNN7EXAMPLE";
+  const tagOf = (t) => (String(t).match(/\[REDACTED:[^:]+:([0-9a-f]{4})\]/) || [])[1];
+  const r1 = redact("key is " + aws + " ok", { sink: "transcript", key: K });
+  ok("AWS key replaced with a typed placeholder", /\[REDACTED:aws-access-key:[0-9a-f]{4}\]/.test(r1.text) && !r1.text.includes(aws));
+  ok("findings counted", r1.findings === 1);
+  // NSAFE-061: stable keyed tags.
+  const t1 = tagOf(redact(aws, { sink: "audit", key: K }).text);
+  const t2 = tagOf(redact(aws, { sink: "transcript", key: K }).text);
+  ok("same secret -> same tag across sinks", !!t1 && t1 === t2);
+  const ght = "ghp_" + "a".repeat(36);
+  ok("different secrets -> different tags", tagOf(redact(ght, { sink: "audit", key: K }).text) !== t1);
+  ok("tag depends on the install key (per-install correlation)", tagOf(redact(aws, { sink: "audit", key: "other-key" }).text) !== t1);
+  ok("tag reveals no 4-char slice of the secret", (() => { for (let i = 0; i + 4 <= aws.length; i++) if (t1 === aws.slice(i, i + 4).toLowerCase()) return false; return true; })());
+  // credential rule: only the quoted value replaced; key + quotes preserved; fixed low-entropy tag.
+  const cr = redact('password: "hunter2x"', { sink: "transcript", key: K });
+  ok("credential value replaced, prefix+quotes preserved, fixed tag", /password:\s*"\[REDACTED:credential:0000\]"/.test(cr.text) && !cr.text.includes("hunter2x"));
+  // NSAFE-060: model sink is pass-through by default (counted), redacts when enabled.
+  const mr = redact("key " + aws, { sink: "model", key: K });
+  ok("model sink unchanged by default but still counted", mr.text.includes(aws) && mr.findings === 1);
+  ok("model sink redacts when modelRedaction is enabled", !redact("key " + aws, { sink: "model", key: K, modelRedaction: true }).text.includes(aws));
+  ok("emit returns redacted text", !emit("transcript", "k=" + aws, { key: K }).includes(aws));
+  const pk = redact("-----BEGIN PRIVATE KEY-----\nabcd\n-----END PRIVATE KEY-----", { sink: "audit", key: K });
+  ok("private key block removed wholesale", /\[REDACTED:private-key:[0-9a-f]{4}\]/.test(pk.text) && !pk.text.includes("BEGIN PRIVATE KEY"));
+  ok("clean text passes through untouched", redact("just normal text", { sink: "audit", key: K }).text === "just normal text");
 }
 
 group("audit (tamper-evident hash chain)");

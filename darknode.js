@@ -43,6 +43,7 @@ const { bootHeader, welcomeCard, footerLine, helpLines, padRight: padRightV, mod
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
 const Jail = require("./lib/nexus/jail"); // canonical path jail shared by every file tool (symlink/dot-dot safe) (lib/nexus/jail.js)
+const Redact = require("./lib/nexus/redact"); // central sink redaction + keyed placeholders (lib/nexus/redact.js)
 const nexusSettings = require("./lib/cli/nexus-settings"); // persistent, off-by-default TUI settings (~/.nexus/settings.json)
 const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA codes (lib/totp.js)
 
@@ -3589,7 +3590,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // keeping readCache would make a resumed turn claim a file is "still in context" that was
     // never re-loaded (silent wrong edits), and fileSnap is a Map that JSON-serializes to {},
     // which then throws on the .clear()/.get()/.set() calls in doCompact and /clear after resume.
-    const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); const { readCache: _rc, fileSnap: _fs, ...persistSess } = sess; fs.writeFileSync(path.join(cwd, ".nexus", "session.json"), JSON.stringify({ engine, model: sess.model, transcript, sess: persistSess, ts: Date.now() })); secureNexus(cwd); } catch (_) {} };
+    // Redact secrets out of every transcript block's string fields before the
+    // session is written to disk (NSAFE-060). The in-memory transcript keeps the
+    // real text for this session; only the durable session.json copy is redacted.
+    const redactBlock = (b) => { if (!b || typeof b !== "object") return b; let c = null; for (const k of Object.keys(b)) { if (k !== "role" && typeof b[k] === "string" && b[k]) { const r = Redact.emit("transcript", b[k]); if (r !== b[k]) { c = c || Object.assign({}, b); c[k] = r; } } } return c || b; };
+    const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); const { readCache: _rc, fileSnap: _fs, ...persistSess } = sess; fs.writeFileSync(path.join(cwd, ".nexus", "session.json"), JSON.stringify({ engine, model: sess.model, transcript: transcript.map(redactBlock), sess: persistSess, ts: Date.now() })); secureNexus(cwd); } catch (_) {} };
 
     // ---- localhost dashboard (/dashboard) — live web view of this agent session ----
     let dashServer = null;              // { url, port, close } once started
