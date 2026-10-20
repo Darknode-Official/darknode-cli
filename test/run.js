@@ -2027,6 +2027,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("parseStatus branch+ahead+behind", st.branch === "main" && st.upstream === "origin/main" && st.ahead === 2 && st.behind === 1);
     ok("parseStatus files + not clean", st.files.length === 2 && st.files[0].path === "a.js" && st.clean === false);
     ok("parseStatus clean tree", GT.parseStatus("## main\n").clean === true);
+    ok("parseStatus strips 'No commits yet on' prefix to the bare branch", GT.parseStatus("## No commits yet on main\n").branch === "main");
     const lg = GT.parseLog("abc123\x1fAlice\x1f2 days ago\x1fInitial commit\n");
     ok("parseLog one commit", lg.length === 1 && lg[0].author === "Alice" && lg[0].subject === "Initial commit" && lg[0].short === "abc123");
     const bl = GT.parseBlame("abc1234 (Alice 2024-01-02 10:00:00 +0000  12) const x = 1\n");
