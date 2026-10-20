@@ -230,6 +230,11 @@ group("tool-arg schema validation (NSAFE-039)");
   const arr = { type: "object", properties: { edits: { type: "array", items: { type: "object", properties: { find: { type: "string" } }, required: ["find"] } } } };
   ok("array item missing a required nested field is reported with a path", (() => { const r = validateArgs(arr, { edits: [{ find: "a" }, { replace: "b" }] }); return !r.ok && r.errors.some((e) => e.code === "required" && e.path === "edits[1].find"); })());
   ok("well-formed nested array accepted", validateArgs(arr, { edits: [{ find: "a" }, { find: "b" }] }).ok === true);
+  // a nested object schema with no `properties` still enforces its own-object constraints.
+  const nestStrict = { type: "object", properties: { cfg: { type: "object", additionalProperties: false } } };
+  ok("nested additionalProperties:false enforced without properties", (() => { const r = validateArgs(nestStrict, { cfg: { evil: 1 } }); return !r.ok && r.errors.some((e) => e.code === "unknown-property" && e.path === "cfg.evil"); })());
+  const nestReq = { type: "object", properties: { cfg: { type: "object", required: ["x"] } } };
+  ok("nested required enforced without properties", (() => { const r = validateArgs(nestReq, { cfg: {} }); return !r.ok && r.errors.some((e) => e.code === "required" && e.path === "cfg.x"); })());
   // preflightArgs wiring against the real built-in tool schemas.
   const NT = require("../lib/nexus/native-tools");
   ok("preflightArgs passes a valid write_file call", NT.preflightArgs("write_file", { path: "a.txt", content: "x" }) === null);
@@ -2278,6 +2283,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("fitWidth counts visible width, not bytes", visLen(fitWidth(A("hello world"), 7)) === 7);
     ok("fitWidth re-closes color when it cuts mid-span", /\x1b\[0m$/.test(fitWidth(A("hello world"), 7)));
     ok("plain input stays escape-free (NO_COLOR safe)", !/\x1b/.test(fitWidth("hello world", 6)));
+    ok("fitWidth caps non-BMP width (no overshoot)", visLen(fitWidth("\u{1F600}\u{1F600}\u{1F600}", 4)) <= 4);
     // padRight never truncates
     eq("padRight pads to width", padRight("ab", 5), "ab   ");
     eq("padRight leaves longer strings", padRight("abcdef", 3), "abcdef");
