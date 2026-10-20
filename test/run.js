@@ -12,6 +12,7 @@ const { mergeMemory } = require("../lib/nexus/memory");
 const { scanCapabilities, fileRisk, levelFor, indexFiles } = require("../lib/nexus/capindex");
 const { evaluateAction: guardEval } = require("../lib/nexus/guardrails");
 const { resolveInJail, assertInJail } = require("../lib/nexus/jail");
+const { validateArgs } = require("../lib/nexus/schema-check");
 const { STYLES, allStyles, loadStyles } = require("../lib/cli/styles");
 const { TOOL_CATALOG, discoverTools } = require("../lib/nexus/tools");
 const { createBgJobs, MAX_BUF } = require("../lib/nexus/bgjobs");
@@ -193,6 +194,48 @@ group("hard-deny floor (NSAFE-016)");
   // The floor is deeply frozen: both the array and each rule reject mutation in strict mode.
   ok("HARD_DENY array is frozen", (() => { try { HARD_DENY.push({}); return false; } catch (_) { return true; } })());
   ok("each HARD_DENY rule is frozen", (() => { try { HARD_DENY[0].id = "x"; return false; } catch (_) { return true; } })());
+}
+
+group("tool-arg schema validation (NSAFE-039)");
+{
+  const first = (r) => (r.errors[0] || {}).code;
+  // Extra property rejected only when additionalProperties:false.
+  const strict = { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false };
+  ok("extra property rejected as unknown-property", (() => { const r = validateArgs(strict, { path: "a", evil: 1 }); return !r.ok && r.errors.some((e) => e.code === "unknown-property" && e.path === "evil"); })());
+  const open = { type: "object", properties: { path: { type: "string" } }, required: ["path"] };
+  ok("extra property allowed when additionalProperties is open", validateArgs(open, { path: "a", hint: "x" }).ok === true);
+  // 10 MB string against maxLength:65536 — rejected on .length (no copy).
+  const big = "x".repeat(10 * 1024 * 1024);
+  const capped = { type: "object", properties: { q: { type: "string", maxLength: 65536 } } };
+  ok("oversized string rejected (maxLength)", (() => { const r = validateArgs(capped, { q: big }); return !r.ok && first(r) === "maxLength"; })());
+  ok("string within maxLength accepted", validateArgs(capped, { q: "short" }).ok === true);
+  // Wrong type -> typed error, nothing thrown.
+  ok("object where string expected -> type error", (() => { let r; try { r = validateArgs(open, { path: { nested: 1 } }); } catch (_) { return false; } return !r.ok && first(r) === "type"; })());
+  ok("args that are not an object -> root type error", (() => { const r = validateArgs(open, ["a"]); return !r.ok && r.errors[0].path === "" && r.errors[0].code === "type"; })());
+  ok("null args -> root type error without throwing", (() => { try { return validateArgs(open, null).ok === false; } catch (_) { return false; } })());
+  // required / enum / pattern.
+  ok("missing required field reported", (() => { const r = validateArgs(open, {}); return !r.ok && r.errors.some((e) => e.code === "required" && e.path === "path"); })());
+  const en = { type: "object", properties: { op: { type: "string", enum: ["read", "write"] } } };
+  ok("value outside enum rejected", (() => { const r = validateArgs(en, { op: "delete" }); return !r.ok && first(r) === "enum"; })());
+  ok("value inside enum accepted", validateArgs(en, { op: "read" }).ok === true);
+  const pat = { type: "object", properties: { id: { type: "string", pattern: "^[a-f0-9]{4}$" } } };
+  ok("pattern mismatch rejected", !validateArgs(pat, { id: "zzzz" }).ok);
+  ok("pattern match accepted", validateArgs(pat, { id: "ab12" }).ok === true);
+  ok("ignorePattern skips the pattern check", validateArgs(pat, { id: "zzzz" }, { ignorePattern: true }).ok === true);
+  // coerceScalars: a JSON number for a string-typed field is tolerated (dispatcher mode).
+  ok("number for a string field rejected by default", !validateArgs(open, { path: 42 }).ok);
+  ok("coerceScalars accepts a number for a string field", validateArgs(open, { path: 42 }, { coerceScalars: true }).ok === true);
+  // nested array items + objects.
+  const arr = { type: "object", properties: { edits: { type: "array", items: { type: "object", properties: { find: { type: "string" } }, required: ["find"] } } } };
+  ok("array item missing a required nested field is reported with a path", (() => { const r = validateArgs(arr, { edits: [{ find: "a" }, { replace: "b" }] }); return !r.ok && r.errors.some((e) => e.code === "required" && e.path === "edits[1].find"); })());
+  ok("well-formed nested array accepted", validateArgs(arr, { edits: [{ find: "a" }, { find: "b" }] }).ok === true);
+  // preflightArgs wiring against the real built-in tool schemas.
+  const NT = require("../lib/nexus/native-tools");
+  ok("preflightArgs passes a valid write_file call", NT.preflightArgs("write_file", { path: "a.txt", content: "x" }) === null);
+  ok("preflightArgs rejects write_file missing content", /required/.test(NT.preflightArgs("write_file", { path: "a.txt" }) || ""));
+  ok("preflightArgs rejects an object for a string path", /type/.test(NT.preflightArgs("read_file", { path: { x: 1 } }) || ""));
+  ok("preflightArgs tolerates a numeric git count (coerced)", NT.preflightArgs("git_tool", { op: "log", count: 20 }) === null);
+  ok("preflightArgs returns null for an unknown tool", NT.preflightArgs("not_a_tool", { whatever: 1 }) === null);
 }
 
 group("audit (tamper-evident hash chain)");
