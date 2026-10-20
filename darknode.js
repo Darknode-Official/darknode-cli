@@ -2984,7 +2984,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // text summary of the kept tail instead — that is what makes a
           // compaction real for claude rather than cosmetic.
           if (PAID[engine]) { cont = false; carryNote = buildCarryNote(keep); }
-          sess.ctxUsed = Math.floor(sess.ctxUsed * 0.25); warned50 = false;
+          sess.ctxUsed = Math.floor(sess.ctxUsed * 0.25); sess.ctxBase = Math.floor(0.75 * (sess.inTok + sess.outTok) + 0.25 * (sess.ctxBase || 0)); warned50 = false; // advance the CLI-engine baseline so the trim sticks (next turn's ctxUsed starts at ~25%, not the cumulative total)
           compact.on = false; render();
         } else render();
       }, 60);
@@ -3165,7 +3165,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             ensureText().full = display; // show the parsed assistant text (or raw output if the parse failed)
           }
           if (inD == null) { inD = Math.ceil(promptText.length / 4); outD = Math.ceil(display.length / 4); } // estimate fallback
-          sess.inTok += inD; sess.outTok += outD; sess.ctxUsed = sess.inTok + sess.outTok;
+          sess.inTok += inD; sess.outTok += outD; sess.ctxUsed = (sess.inTok + sess.outTok) - (sess.ctxBase || 0); // window since the last compaction, not cumulative spend (doCompact advances ctxBase)
           if (PAID[engine] && !onPlan(engine)) { const pm = mdl || eng.model || ""; const pr = priceOf(pm); sess.cost += (inD * pr.in + outD * pr.out) / 1e6; } // priced from the table → shown as ~$ (a plan login costs nothing per turn)
           finish(res);
         });
@@ -3256,7 +3256,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             }
             if (!blocked && hooks) { const hr = runHooks(hooks, "PreToolUse", { TOOL_NAME: name, TOOL_ARGS: JSON.stringify(a) }, cwd); if (hr.block) { result = { error: "blocked by PreToolUse hook" + (hr.out ? ": " + hr.out : "") }; blocked = true; } }
             if (!blocked) try {
-              if (name === "read_file") { const fp = path.resolve(cwd, a.path); const mt = fs.statSync(fp).mtimeMs; if (readCache[fp] === mt) result = { content: "(unchanged since you last read " + a.path + " — still in context, not re-sending to save tokens)" }; else { readCache[fp] = mt; const _c = fs.readFileSync(fp, "utf8"); fileGuard.recordRead(fp, _c); result = { content: _c.slice(0, 14000) }; } }
+              if (name === "read_file") { const fp = path.resolve(cwd, a.path); const mt = fs.statSync(fp).mtimeMs; if (readCache[fp] === mt && !(lean || trimOutput)) result = { content: "(unchanged since you last read " + a.path + " — still in context, not re-sending to save tokens)" }; /* in lean/trimOutput the file may have been stubbed by elideToolHistory without clearing readCache, so never claim "still in context" there — always re-read */ else { readCache[fp] = mt; const _c = fs.readFileSync(fp, "utf8"); fileGuard.recordRead(fp, _c); result = { content: _c.slice(0, 14000) }; } }
               else if (name === "list_dir") result = { items: fs.readdirSync(path.resolve(cwd, a.path || "."), { withFileTypes: true }).map((e) => e.isDirectory() ? e.name + "/" : e.name).slice(0, 200) };
               else if (name === "write_file") { const fp = path.resolve(cwd, a.path); let _disk = null; try { _disk = fs.readFileSync(fp, "utf8"); } catch (_) {} const _st = fileGuard.checkOverwrite(fp, _disk); if (_st.stale && !(a.force || a.overwrite)) { result = { error: _st.reason }; transcript.push({ role: "system", text: "stale-write blocked: " + a.path + " changed on disk since Nexus last read it" }); } else { const sec = scanSecrets(a.content); if (policy.blockSecrets && sec.length) { result = { error: "BLOCKED by policy: file contains " + sec.join(", ") + " — secret writes are disabled (policy.blockSecrets)" }; transcript.push({ role: "system", text: "policy blocked write to " + a.path + " — contains " + sec.join(", ") }); if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.path, status: "blocked", reason: "secret:" + sec.join("/") }); } else { fs.mkdirSync(path.dirname(fp), { recursive: true }); const _w = a.content == null ? "" : a.content; fs.writeFileSync(fp, _w); delete readCache[fp]; fileGuard.recordWrite(fp, _w); invalidateRepoMap(); result = sec.length ? { ok: true, warning: "Nexus flagged possible secret(s) in this file: " + sec.join(", ") + " — review before committing" } : { ok: true }; if (sec.length) transcript.push({ role: "system", text: "security warning: " + a.path + " may contain " + sec.join(", ") + " — Nexus wrote it but flagged it" }); } } }
               else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const t = fs.readFileSync(fp, "utf8"); const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]); if (!r.ok) result = { error: r.error }; else { fs.writeFileSync(fp, r.content); delete readCache[fp]; fileGuard.recordWrite(fp, r.content); invalidateRepoMap(); result = r.applied[0] && r.applied[0].mode === "flexible" ? { ok: true, note: "matched ignoring whitespace/indentation — the change was re-indented to fit; verify it reads right" } : { ok: true }; } }
@@ -3310,7 +3310,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             }
             render();
           }
-          sess.ctxUsed = sess.inTok + sess.outTok;
+          // Measure the LOCAL engine's real context from oMsgs (the actual request body), not
+          // from cumulative inTok+outTok — otherwise doCompact's trim never sticks (ctxUsed would
+          // bounce back to the ever-growing cumulative total next turn → perpetual re-compaction).
+          sess.ctxUsed = oMsgs.reduce((n, m) => n + Math.ceil((typeof m.content === "string" ? m.content.length : JSON.stringify(m.content || "").length) / 4), 0);
           finish({ output: "done" });
         })();
       }
@@ -3560,7 +3563,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       })();
     };
     // ---- slash commands ----
-    const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "session.json"), JSON.stringify({ engine, model: sess.model, transcript, sess, ts: Date.now() })); secureNexus(cwd); } catch (_) {} };
+    // readCache/fileSnap are in-memory indices of what's currently in oMsgs; oMsgs is NOT
+    // persisted, so a resume starts with empty context. Strip both from the saved session:
+    // keeping readCache would make a resumed turn claim a file is "still in context" that was
+    // never re-loaded (silent wrong edits), and fileSnap is a Map that JSON-serializes to {},
+    // which then throws on the .clear()/.get()/.set() calls in doCompact and /clear after resume.
+    const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); const { readCache: _rc, fileSnap: _fs, ...persistSess } = sess; fs.writeFileSync(path.join(cwd, ".nexus", "session.json"), JSON.stringify({ engine, model: sess.model, transcript, sess: persistSess, ts: Date.now() })); secureNexus(cwd); } catch (_) {} };
 
     // ---- localhost dashboard (/dashboard) — live web view of this agent session ----
     let dashServer = null;              // { url, port, close } once started
