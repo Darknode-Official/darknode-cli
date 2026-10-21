@@ -2435,6 +2435,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       term.register("bracketed-paste", ESC + "[?2004h", ESC + "[?2004l");
       term.register("hide-cursor", ESC + "[?25l", ESC + "[?25h");
       term.register("title", "", ESC + "]0;\x07");
+      // modifyOtherKeys level 1: lets supporting terminals report otherwise-
+      // ambiguous combos (notably Shift+Enter) as CSI sequences the composer
+      // recognizes, so Shift+Enter inserts a newline. Level 1 leaves plain keys
+      // and the C0 control bindings (Ctrl+A..Z) untouched; unsupporting terminals
+      // ignore it. Reset to the default on teardown. Toggle with /terminal-setup.
+      if (S.modkeys !== false) term.register("modify-keys", ESC + "[>4;1m", ESC + "[>4;0m");
     };
     const cols = () => out.columns || 80, rows = () => out.rows || 24;
     const PAID = {}, CTXW = {}; for (const e of ENGINE_ORDER) { PAID[e] = ENGINES[e].paid; CTXW[e] = ENGINES[e].ctx; } // derived from the registry — never drifts
@@ -2614,7 +2620,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/dashboard", "open the localhost web UI — live pipelines, jobs & cowork agents"],
       ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
       ["/cron", "scheduled pipeline runs — /cron add \"0 9 * * *\" <goal> · /cron list · /cron remove <id>"],
-      ["/expand", "toggle tool-call detail"], ["/vim", "toggle vim modal editing in the input box · /vim on|off"], ["/exit", "quit Nexus"],
+      ["/expand", "toggle tool-call detail"], ["/vim", "toggle vim modal editing in the input box · /vim on|off"], ["/terminal-setup", "make Shift+Enter insert a newline (per-terminal setup) · /terminal-setup off"], ["/exit", "quit Nexus"],
     ];
     // Custom project slash commands (Claude-Code / Glitch style): each .md file in
     // .nexus/commands/ or .claude/commands/ becomes /<name>; its body is the prompt,
@@ -4327,6 +4333,44 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const on = a === "on" ? true : a === "off" ? false : !composer.vim;
         composer.vim = on; composer.vimMode = "insert"; composer._vimOp = ""; composer._vimReplace = false; saveSetting("vim", on);
         transcript.push({ role: "system", text: on ? "vim mode ON — start typing (INSERT). Esc → NORMAL. Motions h l j k 0 $ w b e G · edit x D C s r<ch> p u · operators dw cw dd cc d$ · insert i a I A o O · Enter sends. /vim off to disable." : "vim mode OFF — back to standard emacs/readline editing." });
+      }
+      else if (cmd === "/terminal-setup" || cmd === "/terminal") {
+        const a = (arg || "").trim().toLowerCase();
+        if (a === "off") {
+          saveSetting("modkeys", false);
+          try { out.write(ESC + "[>4;0m"); } catch (_) {}
+          transcript.push({ role: "system", text: "Shift+Enter detection OFF — reset modifyOtherKeys (saved). Alt+Enter, Ctrl+J and \\ then Enter still add a newline." });
+        } else {
+          // enable (idempotent) and re-emit so it takes effect this session
+          saveSetting("modkeys", true);
+          term.register("modify-keys", ESC + "[>4;1m", ESC + "[>4;0m");
+          try { out.write(ESC + "[>4;1m"); } catch (_) {}
+          // detect the terminal so the guidance is specific
+          const env = process.env, tp = env.TERM_PROGRAM || "", t = (env.TERM || "").toLowerCase();
+          let name = "your terminal", kind = "unknown";
+          if (env.KITTY_WINDOW_ID) { name = "kitty"; kind = "native"; }
+          else if (env.WEZTERM_PANE || tp === "WezTerm") { name = "WezTerm"; kind = "native"; }
+          else if (env.ALACRITTY_SOCKET || env.ALACRITTY_WINDOW_ID || t === "alacritty") { name = "Alacritty"; kind = "native"; }
+          else if (env.WT_SESSION) { name = "Windows Terminal"; kind = "native"; }
+          else if (env.KONSOLE_VERSION) { name = "Konsole"; kind = "native"; }
+          else if (tp === "ghostty" || t.includes("ghostty")) { name = "Ghostty"; kind = "native"; }
+          else if (tp === "iTerm.app") { name = "iTerm2"; kind = "native"; }
+          else if (tp === "WarpTerminal") { name = "Warp"; kind = "native"; }
+          else if (tp === "vscode") { name = "the VS Code terminal"; kind = "config"; }
+          else if (tp === "Apple_Terminal") { name = "Apple Terminal"; kind = "unsupported"; }
+          else if (tp === "Hyper") { name = "Hyper"; kind = "maybe"; }
+          else if (env.VTE_VERSION) { name = "GNOME Terminal"; kind = "native"; }
+          let body;
+          if (kind === "native") body = green("Shift+Enter") + " should insert a newline now in " + bold(name) + ". If not, update the terminal.";
+          else if (kind === "config") body = bold(name) + " needs one keybinding. Add this to VS Code's " + cyan("keybindings.json") + " (⇧⌘P → “Open Keyboard Shortcuts (JSON)”):\n  " + gray('{ "key": "shift+enter", "command": "workbench.action.terminal.sendSequence",\n    "args": { "text": "\\u001b[27;2;13~" }, "when": "terminalFocus" }');
+          else if (kind === "unsupported") body = bold(name) + " can't report Shift+Enter. Use " + green("Alt+Enter") + " (Esc then Enter), " + green("Ctrl+J") + ", or end a line with " + green("\\") + " then Enter.";
+          else if (kind === "maybe") body = "Try " + green("Shift+Enter") + " in " + bold(name) + " — if it does nothing, use " + green("Alt+Enter") + " or " + green("Ctrl+J") + ".";
+          else body = "Enabled modifyOtherKeys. Try " + green("Shift+Enter") + " — if it does nothing, use " + green("Alt+Enter") + ", " + green("Ctrl+J") + ", or end a line with " + green("\\") + ".";
+          if (env.TMUX) body += "\n" + yellow("tmux detected") + ": add " + gray("set -s extended-keys on") + " to ~/.tmux.conf (tmux 3.2+) so Shift+Enter passes through.";
+          body += gray("\n  Alt+Enter, Ctrl+J and \\ then Enter always add a newline in any terminal. /terminal-setup off to disable.");
+          transcript.push({ role: "system", text: "terminal setup — " + body });
+        }
+        render();
       }
       else if (cmd === "/expand") expanded = !expanded;
       else if (cmd === "/permissions" || cmd === "/perms") {
