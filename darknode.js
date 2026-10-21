@@ -1987,6 +1987,12 @@ async function runSubagents(engine, tasks, cwd, model, onProgress, ctl, pickMode
 }
 // Secret scanner — flags common leaked credentials in text/files (Nexus is a security tool).
 const { scanSecrets, maskSecrets, classifyDanger, compactOutput } = require("./lib/governance/security"); // security utils (lib/security.js)
+// Capability gates for the dispatch loop: EVERY shell-running tool (not just
+// run_command) must pass the danger guard, the policy and HARD_DENY, and plan
+// mode must block everything mutating/executing/egressing — by membership.
+const { isExecTool, isPlanBlocked } = require("./lib/nexus/tool-gates");
+// SSRF guard for http_fetch — reuse the default-posture local-target classifier.
+const { isLocalTarget: _ssrfLocal } = require("./lib/governance/default-guard");
 // ---- permission rules (allow/deny) — a Claude-Code-style allowlist for the local agent ----
 // A rule is "tool", "tool:glob" (glob on the command/path/url), or "Bash(glob)" (= run_command),
 // plus "*" wildcard. deny wins over allow; an allow rule auto-approves & bypasses the Darknode guard.
@@ -2059,6 +2065,7 @@ async function deviceTool(name, a, cwd) {
   }
   if (name === "http_fetch" || name === "web_fetch" || name === "fetch_url" || name === "http") {
     const url = a.url; if (!url) return { error: "http_fetch needs a url" };
+    if (_ssrfLocal(url)) return { error: "http_fetch blocked: refusing to reach a local/private/link-local address (SSRF guard — protects cloud metadata and internal services). If you intend to hit a local service, use run_command (e.g. curl) so it passes through the shell guard." };
     return await new Promise((resolve) => { try { const lib = String(url).startsWith("https") ? require("https") : require("http"); const req = lib.request(url, { method: a.method || "GET", headers: a.headers || {}, timeout: 15000 }, (res) => { let d = ""; res.on("data", (c) => { if (d.length < 200000) d += c; }); res.on("end", () => resolve({ status: res.statusCode, contentType: res.headers["content-type"], body: d.slice(0, 20000) })); }); req.on("timeout", () => { req.destroy(); resolve({ error: "timeout" }); }); req.on("error", (e) => resolve({ error: e.message })); if (a.body != null) req.write(typeof a.body === "string" ? a.body : JSON.stringify(a.body)); req.end(); } catch (e) { resolve({ error: e.message }); } });
   }
   if (name === "sysinfo" || name === "system_info") {
@@ -3286,13 +3293,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (["write_file", "edit_file"].includes(name) && a.path) { stat.files.add(base(a.path)); const r = relOf(a.path); if (r) stat.paths.add(r); }
             render();
             let result, blocked = false;
-            if (mode === 2 && (["write_file", "edit_file", "multi_edit", "multiedit", "apply_patch", "patch", "run_command", "run_background", "delete", "delete_file", "rm", "move", "move_file", "rename", "copy", "copy_file", "make_dir", "mkdir", "spawn_agents"].includes(name) || String(name).startsWith("mcp__"))) { result = { error: "plan mode is on — file/system changes are blocked. Describe the plan instead, then switch mode with shift+tab to execute." }; blocked = true; card.status = "err"; }
+            if (mode === 2 && isPlanBlocked(name)) { result = { error: "plan mode is on — file/system changes are blocked. Describe the plan instead, then switch mode with shift+tab to execute." }; blocked = true; card.status = "err"; }
             const _perm = permDecision(perms, name, a); // permission allowlist (/permissions)
             if (!blocked && _perm === "deny") { result = { error: "denied by a permission rule (/permissions) — the operator disallowed this. They can /allow it or run it directly." }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "permission rule denied " + name + (a.command ? " (" + oneline(a.command, 40) + ")" : a.path ? " (" + a.path + ")" : "") }); }
-            if (!blocked && _perm !== "allow" && (name === "run_command" || name === "run_background") && guard !== "off") { const d = classifyDanger(a.command); if (d.level === "block" && guard === "enforce") { result = { error: "BLOCKED by Darknode guard: " + d.why + " (/guard off to allow, or run it yourself with !)" }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "Darknode guard blocked a destructive command — " + d.why + ": " + oneline(a.command, 46) }); } else if (d.level !== "ok") transcript.push({ role: "system", text: "Darknode: " + d.why + " — " + oneline(a.command, 46) + (d.level === "block" ? " (allowed; guard is " + guard + ")" : "") }); }
+            if (!blocked && _perm !== "allow" && isExecTool(name) && guard !== "off") { const _cmd = String(a.command || ""); const d = classifyDanger(_cmd); if (d.level === "block" && guard === "enforce") { result = { error: "BLOCKED by Darknode guard: " + d.why + " (/guard off to allow, or run it yourself with !)" }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "Darknode guard blocked a destructive command — " + d.why + ": " + oneline(_cmd, 46) }); } else if (d.level !== "ok") transcript.push({ role: "system", text: "Darknode: " + d.why + " — " + oneline(_cmd, 46) + (d.level === "block" ? " (allowed; guard is " + guard + ")" : "") }); }
             // ---- enterprise policy guardrails (.nexus/policy.json) ----
             if (!blocked) {
-              const act = (name === "run_command" || name === "run_background") ? { type: "run", command: a.command }
+              const act = isExecTool(name) ? { type: "run", command: a.command }
                 : ["http_fetch", "web_fetch", "fetch_url", "http"].includes(name) ? { type: "fetch" }
                 : name === "write_file" ? { type: "write", path: a.path }
                 : (name === "edit_file" || name === "multi_edit" || name === "multiedit") ? { type: "edit", path: a.path }

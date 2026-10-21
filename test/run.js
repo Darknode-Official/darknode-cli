@@ -450,6 +450,38 @@ group("NX-002 default posture: active commands need local target or authorizatio
   ok("IPv6 loopback is local", DG.isLocalTarget("::1"));
   ok("public IPv6 is remote", !DG.isLocalTarget("2001:4860:4860::8888"));
   ok("a public DNS resolver is remote, not local", !DG.isLocalTarget("8.8.8.8"));
+  // subrecon is an ACTIVE verb (engagement-gate classifies it cls:"scan"): it
+  // brute-forces subdomains against the target, so it must obey the same gate.
+  ok("subrecon is in the ACTIVE set", DG.ACTIVE.has("subrecon"));
+  ok("subrecon against a remote target is refused without auth", !DG.guardActive("subrecon", "target.com", {}).allow);
+  ok("subrecon against a remote target is allowed with --authorized", DG.guardActive("subrecon", "target.com", { authorized: true }).allow);
+  ok("subrecon against a local target is allowed", DG.guardActive("subrecon", "127.0.0.1", {}).allow);
+}
+
+group("NX dispatch gates: every shell-running tool is screened, not just run_command");
+{
+  const { EXEC_TOOLS, PLAN_BLOCKED, isExecTool, isPlanBlocked } = require("../lib/nexus/tool-gates");
+  // Finding 1: exec tools reach a shell via coderShell/runTest, so the danger
+  // guard, the policy and HARD_DENY must treat them like run_command.
+  for (const t of ["run_command", "run_background", "verify", "run_tests", "test_project", "bisect", "shrink", "explain_break", "lint_format"])
+    ok("exec tool screened by the danger/policy gate: " + t, isExecTool(t));
+  for (const t of ["read_file", "list_dir", "search", "find", "repo_map", "find_symbol"])
+    ok("read-only tool is NOT treated as exec: " + t, !isExecTool(t));
+  // A destructive command routed through verify must now hit HARD_DENY, exactly
+  // as run_command would — proving the act-mapping change closes the bypass.
+  ok("verify maps to a run action (exec gate)", isExecTool("verify"));
+  eq("HARD_DENY catches a host-destroying command regardless of which exec tool carried it",
+    policyCheck(POLICY_DEFAULTS, { type: "run", command: "rm -rf /" }).allow, false);
+  ok("an exec tool with no command is harmless (auto-detected verify)",
+    policyCheck(POLICY_DEFAULTS, { type: "run", command: undefined }).allow === true);
+  // Finding 2: plan mode (read-only) must block everything mutating, executing
+  // or egressing — by membership, so a tool merely absent from a list isn't run.
+  for (const t of ["write_file", "edit_file", "run_command", "verify", "bisect", "shrink", "http_fetch", "web_fetch", "web_search", "browser_eval", "spawn_agents", "notebook_edit", "remember", "todo_write", "mcp__srv__do"])
+    ok("plan mode blocks: " + t, isPlanBlocked(t));
+  for (const t of ["read_file", "list_dir", "search", "find", "repo_map", "find_symbol", "discover"])
+    ok("plan mode allows the read-only tool: " + t, !isPlanBlocked(t));
+  ok("every exec tool is also plan-blocked", [...EXEC_TOOLS].every((t) => PLAN_BLOCKED.has(t)));
+  ok("isPlanBlocked tolerates a non-string name", !isPlanBlocked(undefined) && !isPlanBlocked(null));
 }
 
 group("NX-008: eval harness scoring + task admissibility");
