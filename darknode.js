@@ -2746,26 +2746,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // square boxes; the bottom-right one is the solid brand-amber square. Each
     // box is 6 cells wide x 3 tall so it looks square (terminal cells are ~1:2).
     // #ffaa00 is the brand amber.
-    const _AMF = "\x1b[38;5;214m", _OUT = "\x1b[38;5;252m", _BX = "\x1b[1;38;5;231m", _RS = "\x1b[0m";
-    // Welcome card: the full icon (~13x7), static. No background — transparent.
-    // All four boxes share a BOLD bright-white rounded border (thicker-looking);
-    // the columns sit one space apart. The bottom-right box keeps the white
-    // border and holds the amber square CONTAINED inside its walls — only the
-    // inner square is amber, matching the official icon.
-    const dnBigLogo = () => {
-      const g = (s) => _BX + s + _RS;             // bold bright-white rounded outline
-      const a = (s) => _AMF + s + _RS;            // amber fill
-      const GAP = " ";                            // columns close together
-      return [
-        g("╭────╮") + GAP + g("╭────╮"),
-        g("│    │") + GAP + g("│    │"),
-        g("╰────╯") + GAP + g("╰────╯"),
-        "             ",
-        g("╭────╮") + GAP + g("╭────╮"),
-        g("│    │") + GAP + g("│") + a("████") + g("│"),  // amber square inside white box 4
-        g("╰────╯") + GAP + g("╰────╯"),
-      ];
-    };
+    const _AMF = "\x1b[38;5;214m", _OUT = "\x1b[38;5;252m", _RS = "\x1b[0m";
     // Working animation — "charge the circuit": the amber square orbits the four
     // boxes clockwise, then all four strobe amber as the charge completes, then
     // it settles home in the bottom-right. The icon in miniature, no background.
@@ -2782,7 +2763,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       let t = Date.now() % _DN_TOTAL, i = 0;
       for (; i < _DN_STATES.length; i++) { if (t < _DN_STATES[i].ms) break; t -= _DN_STATES[i].ms; }
       const on = (_DN_STATES[i] || _DN_STATES[0]).on;
-      const cell = (n) => (on.indexOf(n) >= 0 ? _AMF + "◼" : _OUT + "◻") + _RS; // amber filled vs grey outline, no bg
+      const cell = (n) => (on.indexOf(n) >= 0 ? _AMF + "◼" : _OUT + "▢") + _RS; // amber filled vs rounded-corner outline, no bg
       const line = (a, b) => cell(a) + " " + cell(b);                           // one line, transparent
       return { top: line(0, 1), bot: line(2, 3) };
     };
@@ -2796,16 +2777,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           const _liveMcp = mcpServers.filter((s) => s && !s.error).length;
           const _wcStatus = [Math.round((sess.ctxWindow || 200000) / 1000) + "K context", "guard: " + (guard === "enforce" ? "on" : guard), _liveMcp ? _liveMcp + " MCP" : "", effort ? effortLabel(effort) : ""].filter(Boolean).join("  ·  ");
           const cardLines = welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), status: _wcStatus, paint });
-          // The icon sits just OUTSIDE the card's right edge (a 3-col gap), beside
-          // the card body — not pushed out to the terminal's far right.
-          if (useColor) {
-            const big = dnBigLogo(), LW = 13, GAP = 3, topAt = 1;
-            for (let k = 0; k < big.length; k++) {
-              const ri = topAt + k; if (ri >= cardLines.length) break;
-              const curW = stripA(cardLines[ri]).length;
-              if (curW + GAP + LW <= cols() - 2) cardLines[ri] = cardLines[ri] + " ".repeat(GAP) + big[k];
-            }
-          }
           for (const ln of cardLines) L.push(ln);
           continue;
         }
