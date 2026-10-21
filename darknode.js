@@ -2645,6 +2645,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/mode", "capability preset: /mode power|cost|speed|reset (model-compatible only)"],
       ["/god-prompt", "arm max-quality mode for your NEXT message only (gold border, auto-reverts)"],
       ["/autocompact", "auto-shrink the context when it fills up · /autocompact on|off"],
+      ["/title", "name the terminal tab for this session's topic · /title [text|on|off]"],
       ["/feature", "add/remove your own commands: /feature create <name> <what it does> · /feature remove <name>"],
       ["/dashboard", "open the localhost web UI — live pipelines, jobs & cowork agents"],
       ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
@@ -3374,7 +3375,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const relOf = (p) => { try { return path.relative(cwd, path.resolve(cwd, p)); } catch (_) { return null; } };
       const ckTree = nexusCheckpoint(cwd); // every engine can now modify files, so always checkpoint (null if not a git repo)
       let ckObj = null; if (ckTree) { ckObj = { tree: ckTree, label: oneline(text, 40), ts: Date.now() }; checkpoints.push(ckObj); }
-      busy = true; busyStart = Date.now(); busyWord = FORGE[Math.floor(Math.random() * FORGE.length)]; sess.liveOut = 0; setTitle("● " + busyWord + " · " + (base(cwd) || "nexus"));
+      busy = true; busyStart = Date.now(); busyWord = FORGE[Math.floor(Math.random() * FORGE.length)]; sess.liveOut = 0; setTitle("● " + (sessionTitle || base(cwd) || busyWord));
       ctl = makeCtl(); // local engine checks .stopped; claude overrides .kill with a process kill
       startTick(); render();
       const finish = (res) => {
@@ -3424,7 +3425,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             input = text; curPos = input.length; composer.text = input; composer.cursor = curPos; composer.draft = ""; hIdx = history.length; composer.histIndex = history.length;
           }
         }
-        maybeAutoCompact(); idleTitle(); render(); refreshGit();
+        maybeAutoCompact(); maybeAutoTitle(); idleTitle(); render(); refreshGit();
         if (nextQueue.length && !busy) { const nxt = nextQueue.shift(); setTimeout(() => { if (!busy) { if (nxt.startsWith("/")) { let cmd = nxt; if (!/\s/.test(nxt)) { const mm = fuzzyCmds(nxt); if (mm.length) cmd = mm[0][0]; } handleSlash(cmd); render(); } else if (nxt[0] === "!" && nxt.length > 1) { runBang(nxt.slice(1).trim()); render(); } else if (nxt[0] === "#" && nxt.length > 1) { addMemory(nxt.slice(1).trim()); render(); } else { submit(nxt); } } }, 300); }
       };
       const _resumeSid = (engine === "claude" && oneShotRan && claudeSid) ? claudeSid : undefined; // recover the tracked session if a one-shot (/btw, /dream…) ran since the last turn
@@ -3960,7 +3961,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
       if (cmd === "/help") {
         const HS = [
-          { title: "Session", rows: [["/clear","start a new conversation"],["/compact","summarize the conversation to free up context"],["/resume","reload the last saved session"],["/export","save the conversation to a markdown file"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/exit","quit Nexus"]] },
+          { title: "Session", rows: [["/clear","start a new conversation"],["/compact","summarize the conversation to free up context"],["/resume","reload the last saved session"],["/export","save the conversation to a markdown file"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/title","name the terminal tab for this topic (/title [text|on|off])"],["/exit","quit Nexus"]] },
           { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low | medium | high"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max-savings preset"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
           { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
           { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/dashboard","open the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
@@ -4337,6 +4338,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else if (a2 && a2 !== "status") { transcript.push({ role: "system", text: "usage: /autocompact on|off — auto-shrink the conversation when the context fills up (off by default; it drops detail to save spend)" }); return; }
         const _ca = compactAt(); const pct = (_ca > 0 && sess.ctxUsed != null) ? Math.max(0, Math.min(100, Math.round((1 - sess.ctxUsed / _ca) * 100))) : null;
         transcript.push({ role: "system", text: "auto-compact " + (autoCompact ? green("ON") : red("OFF")) + (autoCompact ? " — the context is summarized automatically as it fills, to keep spend down (it drops older detail; /compact does it on demand instead)." : " — the context is only compacted to avoid a hard overflow; use /compact when you want to shrink it yourself.") + (pct != null ? "\n  " + pct + "% of headroom until the next auto-compact." : "") + gray("\n  saved · /autocompact on|off") });
+        return;
+      }
+      else if (cmd === "/title") {
+        const a2 = (argstr || "").trim();
+        if (a2.toLowerCase() === "off") { autoTitle = false; saveSetting("autoTitle", false); sessionTitle = ""; idleTitle(); transcript.push({ role: "system", text: "auto tab-naming " + red("OFF") + " — the tab shows the folder name" + gray("  ·  saved") }); }
+        else if (a2.toLowerCase() === "on") { autoTitle = true; saveSetting("autoTitle", true); titleTried = false; maybeAutoTitle(); transcript.push({ role: "system", text: "auto tab-naming " + green("ON") + " — the tab is named for this session's topic (one small off-ledger model call)" + gray("  ·  saved") }); }
+        else if (a2) { sessionTitle = titleClean(a2).slice(0, 60); autoTitle = true; titleTried = true; idleTitle(); transcript.push({ role: "system", text: "tab named: " + bold(sessionTitle) }); }
+        else { const lu = [...transcript].reverse().find((m) => m.role === "user" && m.text && m.text.trim()); if (!lu) transcript.push({ role: "system", text: "nothing to name yet — send a message first, or use /title <name>" }); else { transcript.push({ role: "system", text: gray("naming the tab…") }); genAiTitle(lu.text).then((t) => { if (t) { sessionTitle = t; titleTried = true; if (!busy) idleTitle(); transcript.push({ role: "system", text: "tab named: " + bold(t) }); } else transcript.push({ role: "system", text: "couldn't generate a name — try /title <name>" }); render(); }).catch(() => {}); } }
         return;
       }
       else if (cmd === "/mode") {
@@ -4797,7 +4806,44 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // terminals (and VS Code's integrated terminal) only pick up one of the two,
     // so writing both keeps the tab from being stuck on a stale "nexus — <repo>".
     const setTitle = (txt) => { try { out.write(ESC + "]0;" + txt + "\x07" + ESC + "]2;" + txt + "\x07"); } catch (_) {} };
-    const idleTitle = () => setTitle("Nexus · " + (base(cwd) || cwd));
+    // AI-named terminal tab (like Claude Code): after the first exchange a tiny,
+    // tool-free, OFF-LEDGER model call names the tab for the session's topic.
+    // It falls back instantly to a local extractive title, then to the folder
+    // name if naming is off or the model returns nothing — so the tab is never
+    // just "Nexus". The model call stays off the cost ledger (it never touches
+    // `sess`) and runs once per session (guarded by titleTried) or via /title.
+    let sessionTitle = "", titleTried = false, autoTitle = S.autoTitle !== false;
+    const titleClean = (s) => String(s || "").replace(/["'`*_#>]+/g, " ").replace(/\s+/g, " ").replace(/^[\s.:\-–—]+|[\s.:\-–—]+$/g, "").trim();
+    const extractiveTitle = (msg) => {
+      let t = String(msg || "").replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ").replace(/https?:\/\/\S+/g, " ").replace(/[~.\/][\w.\/-]+/g, " ").replace(/\[[^\]]*\]/g, " ").replace(/[^A-Za-z0-9 +#-]/g, " ");
+      const stop = new Set("the a an and or but to of in on for with it this that make add fix do just want need so is are was can could would should please help me i you my your our we".split(" "));
+      const words = t.split(/\s+/).filter((w) => w.length > 1 && !stop.has(w.toLowerCase()));
+      const pick = words.slice(0, 6).map((w) => /[a-z]/.test(w) && /[A-Z]/.test(w) ? w : w[0].toUpperCase() + w.slice(1).toLowerCase());
+      return titleClean(pick.join(" ")).slice(0, 48);
+    };
+    const genAiTitle = async (topic) => {
+      const prompt = "Reply with ONLY a 3 to 7 word Title Case name for a terminal tab that describes this task. No quotes, no punctuation, no preamble — just the name.\n\nTask:\n" + String(topic || "").slice(0, 700);
+      const tctl = makeCtl();
+      try {
+        let raw = "";
+        if (engine === "ollama") { const mdl = (sess.model && sess.model !== engine) ? sess.model : pickCoderModel(await ollamaTags()); raw = await ollamaChat(mdl, [{ role: "user", content: prompt }], undefined, aSignal(tctl)); }
+        else if (engine === "claude") { oneShotRan = true; raw = (await runEngineTask("claude", prompt, cwd, false, false, null, tctl, "claude-haiku-5-5")).output; } // cheapest model, off-ledger
+        else return ""; // other CLI engines emit protocol JSON here — stick to the extractive title
+        const cand = (raw || "").split("\n").map((x) => titleClean(x)).filter(Boolean);
+        const line = cand.find((x) => { const w = x.split(/\s+/).length; return w >= 2 && w <= 9 && x.length >= 4 && x.length <= 60 && !/\b(error|cannot|sorry|warning|usage|unable|invalid)\b/i.test(x); }) || "";
+        return line;
+      } catch (_) { return ""; }
+    };
+    const maybeAutoTitle = () => {
+      if (titleTried || !autoTitle) return;
+      const fu = transcript.find((m) => m.role === "user" && m.text && m.text.trim());
+      if (!fu) return;
+      titleTried = true;
+      const ex = extractiveTitle(fu.text);
+      if (ex) { sessionTitle = ex; if (!busy) idleTitle(); }           // instant local name
+      genAiTitle(fu.text).then((t) => { if (t) { sessionTitle = t; if (!busy) idleTitle(); } }).catch(() => {}); // upgrade in the background
+    };
+    const idleTitle = () => setTitle(sessionTitle || (base(cwd) || cwd));
     // Ctrl+G: edit the current buffer in $VISUAL/$EDITOR (fallback vi/nano/notepad).
     // Leaves the alt-screen + raw mode so the editor has the real terminal, then
     // restores the TUI (raw mode, alt-screen, bracketed paste, mouse) and loads
