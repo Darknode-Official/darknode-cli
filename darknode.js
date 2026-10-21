@@ -2721,7 +2721,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // Welcome card: product + version, the active model and engine, where
           // we are, and the three starter hints. One accent, no gradients.
           const paint = useColor ? { brand: (t) => bold(cyan(t)), border: gray, muted: gray, faint: (t) => t } : null;
-          for (const ln of welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), paint })) L.push(ln);
+          const _liveMcp = mcpServers.filter((s) => s && !s.error).length;
+          const _wcStatus = [Math.round((sess.ctxWindow || 200000) / 1000) + "K context", "guard: " + (guard === "enforce" ? "on" : guard), _liveMcp ? _liveMcp + " MCP" : "", effort ? effortLabel(effort) : ""].filter(Boolean).join("  ·  ");
+          for (const ln of welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), status: _wcStatus, paint })) L.push(ln);
           continue;
         }
         if (m.role === "diff") {
