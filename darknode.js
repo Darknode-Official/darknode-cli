@@ -2441,7 +2441,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       term.register("mouse", "", ESC + "[?1000l" + ESC + "[?1006l"); // enabled on demand by setMouse
       term.register("bracketed-paste", ESC + "[?2004h", ESC + "[?2004l");
       term.register("hide-cursor", ESC + "[?25l", ESC + "[?25h");
-      term.register("title", "", ESC + "]0;\x07");
+      term.register("title", ESC + "[22;2t", ESC + "[23;2t"); // save the shell's window title on entry (XTPUSHTITLE) and restore it on exit/crash (XTPOPTITLE), rather than blanking the tab
       // modifyOtherKeys level 1: lets supporting terminals report otherwise-
       // ambiguous combos (notably Shift+Enter) as CSI sequences the composer
       // recognizes, so Shift+Enter inserts a newline. Level 1 leaves plain keys
@@ -4478,7 +4478,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     };
     // ---- input / keys ----
     const setMouse = (on) => { mouseOn = on; try { out.write(on ? ESC + "[?1000h" + ESC + "[?1006h" : ESC + "[?1000l" + ESC + "[?1006l"); } catch (_) {} };
-    // Terminal title via OSC 0 — "nexus — <cwd basename>" when idle, "nexus — working" while a turn runs. Reset on exit.
+    // Terminal title via OSC 0 — "nexus — <cwd basename>" when idle, "nexus — working" while a turn runs.
+    // The shell's own title is saved on entry and restored on exit by the "title" term mode (XTPUSH/POPTITLE), not blanked.
     const setTitle = (txt) => { try { out.write(ESC + "]0;" + txt + "\x07"); } catch (_) {} };
     const idleTitle = () => setTitle("nexus — " + (base(cwd) || cwd));
     // Ctrl+G: edit the current buffer in $VISUAL/$EDITOR (fallback vi/nano/notepad).

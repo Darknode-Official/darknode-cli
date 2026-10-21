@@ -75,5 +75,21 @@ group("crash path — default writer uses fs.writeSync to the fd");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
+group("window-title mode — save on entry, restore on exit (not blank)");
+{
+  // The TUI registers the terminal title with the xterm title stack so quitting
+  // nexus returns the tab to the shell's own title instead of leaving it blank:
+  // enable pushes (ESC[22;2t / XTPUSHTITLE), disable pops (ESC[23;2t / XTPOPTITLE).
+  const E = "\x1b";
+  const w = [];
+  const r = Term.createRegistry({ write: (s) => w.push(s) });
+  r.register("alt-screen", E + "[?1049h", E + "[?1049l");
+  r.register("title", E + "[22;2t", E + "[23;2t");
+  eq("enableString saves the title (push) after the alt-screen enter", r.enableString(), E + "[?1049h" + E + "[22;2t");
+  r.teardown();
+  eq("teardown restores the title (pop) before leaving the alt-screen", w, [E + "[23;2t", E + "[?1049l"]);
+  ok("the disable never blanks the title with an empty OSC 0", !w.join("").includes("]0;"));
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (terminal registry)");
 process.exit(fail ? 1 : 0);
