@@ -2749,7 +2749,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
         if (m.role === "plan") { const done = plan.filter((t) => t.done).length; L.push(bold(cyan("plan")) + gray("  " + done + "/" + plan.length + " done  ·  /plan run to execute")); if (!plan.length) L.push("  " + gray("(empty)")); for (let i = 0; i < plan.length; i++) { const t = plan[i]; const box = t.running ? yellow("[~]") : t.done ? green("[x]") : gray("[ ]"); for (const ln of wrap((i + 1) + ". " + t.text)) L.push("  " + box + " " + colorMd(ln, false)); } L.push(""); continue; }
         if (m.role === "system") { if (m.lines) for (const ln of m.lines) L.push("  " + ln); else for (const ln of wrap(m.text)) L.push("  " + ln); L.push(""); continue; }
-        if (m.role === "user") { const w = wrap(m.text); L.push(gray("> ") + bold(w[0] || "")); for (let i = 1; i < w.length; i++) L.push("  " + bold(w[i])); L.push(""); continue; }
+        if (m.role === "user") { const w = wrap(m.text); L.push(cyan("❯ ") + bold(w[0] || "")); for (let i = 1; i < w.length; i++) L.push("  " + bold(w[i])); L.push(""); continue; }
         // nexus turn: ordered items. Each text block opens with a plain bullet,
         // each tool call with a status dot and a one-line result summary below it.
         { let prevType = "";
@@ -2954,22 +2954,25 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // bottom of the screen until the user picks (handled in the key loop).
         for (const r of askRows) frame.push(r);
       } else {
-      // ---- composer: an open input, framed by a single thin horizontal rule
-      // above and below (no side walls, no rounded corners) — the Claude-style
-      // "> ____" look. The accent ">" marks the first row; the block caret (█)
-      // is drawn inline because the hardware cursor is hidden in the alt-screen.
+      // ---- composer: an open input framed as a rounded box (╭─╮ │ ╰─╯) with
+      // side walls, the Claude-style look. The accent "❯" marks the first row;
+      // the block caret (█) is drawn inline because the hardware cursor is
+      // hidden in the alt-screen. Same row count as before (top + inRows +
+      // bottom), so the chrome/layout math upstream is unchanged.
       const _bd = gray;
-      const _rule = " " + _bd("─".repeat(Math.max(0, C - 2)));
-      frame.push(_rule);
+      const _W = Math.max(2, C - 2);        // box width incl. both side walls
+      const _inner = Math.max(0, _W - 4);   // text area between the walls (one pad each side)
+      frame.push(" " + _bd("╭" + "─".repeat(_W - 2) + "╮"));
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
       for (let i = 0; i < inRows; i++) {
         let raw = shown[i] || ""; const li = _showStart + i;
         if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
-        // accent "> " on the first row, aligned indent after; clipped to width.
-        frame.push(" " + clip((i === 0 ? bold(cyan("> ")) : "  ") + colorInput(raw), C - 2));
+        // accent "❯ " on the first row, aligned indent after; clipped then padded so the right wall aligns.
+        const _body = (i === 0 ? bold(cyan("❯ ")) : "  ") + colorInput(raw);
+        frame.push(" " + _bd("│") + " " + padRightV(clip(_body, _inner), _inner) + " " + _bd("│"));
       }
-      frame.push(_rule);
+      frame.push(" " + _bd("╰" + "─".repeat(_W - 2) + "╯"));
       // ---- completion menu: directly BELOW the input box (like Claude Code), so
       // it never pushes up into / hides the AI output above the composer.
       for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(padRightV(nm, nmW))) : padRightV(nm, nmW)) + gray(" " + (ds || "")) + pos, C - 2)); }
