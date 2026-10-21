@@ -204,6 +204,8 @@ group("tool-arg schema validation (NSAFE-039)");
   // Extra property rejected only when additionalProperties:false.
   const strict = { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false };
   ok("extra property rejected as unknown-property", (() => { const r = validateArgs(strict, { path: "a", evil: 1 }); return !r.ok && r.errors.some((e) => e.code === "unknown-property" && e.path === "evil"); })());
+  ok("prototype-named extra property still rejected under additionalProperties:false", (() => { const r = validateArgs(strict, { path: "a", constructor: 1, toString: 2 }); return !r.ok && r.errors.filter((e) => e.code === "unknown-property").length === 2; })());
+  ok("a required key absent as an own property is flagged even if inherited", (() => { const r = validateArgs({ type: "object", properties: { toString: { type: "string" } }, required: ["toString"] }, {}); return !r.ok && r.errors.some((e) => e.code === "required" && e.path === "toString"); })());
   const open = { type: "object", properties: { path: { type: "string" } }, required: ["path"] };
   ok("extra property allowed when additionalProperties is open", validateArgs(open, { path: "a", hint: "x" }).ok === true);
   // 10 MB string against maxLength:65536 — rejected on .length (no copy).
@@ -2456,6 +2458,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("accepts an http/https url", isSafeUrl("https://test.darknode.ai/x") && isSafeUrl("example.com"));
     ok("rejects a url with shell metacharacters", !isSafeUrl("http://x/$(id)") && !isSafeUrl("http://x;id") && !isSafeUrl("http://x`id`"));
     ok("rejects a non-http scheme", !isSafeUrl("file:///etc/passwd") && !isSafeUrl("javascript:alert(1)"));
+    ok("rejects a leading-dash value (curl would treat it as an option, not a URL)", !isSafeUrl("-o/tmp/pwn") && !isSafeUrl("-K/etc/curlrc") && !isSafeUrl("-V"));
   }
 
   group("path jail — canonical, symlink- and dot-dot-safe (NSAFE-020)");
