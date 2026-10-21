@@ -22,6 +22,7 @@ const { pickCoderModel } = require("../lib/nexus/ollama");
 const { validatePolicy, validateTeam } = require("../lib/cli/validate");
 const { oneline, extractJson } = require("../lib/cli/text");
 const { frameDiff, diffTokens, wordHi } = require("../lib/cli/diff");
+const { renderAsk, askKey, normOptions } = require("../lib/cli/ask");
 const { stripAnsi, visLen, fitWidth, padRight, shortenPath, bootHeader, modelLabel, effortLabel, explainEngineError } = require("../lib/cli/tui-format");
 const { TOP_PORTS, parsePorts, idHash, parseCve, cidrCalc, ipToInt, inCidr } = require("../lib/toolkit/scanutil");
 const { DONE_TOKEN, loopDecision, clampRounds, loopPrompt } = require("../lib/nexus/loop");
@@ -336,6 +337,15 @@ group("security (secrets + destructive-command preflight)");
   ok("maskSecrets redacts aws key", maskSecrets("AKIA" + "ABCDEFGHIJKLMNOP").includes("[redacted:aws-key]"));
   ok("maskSecrets leaves clean text", maskSecrets("hello world") === "hello world");
   ok("maskSecrets redacts a private key with no END line", (() => { const body = "MIIEpQ" + "A".repeat(40); const out = maskSecrets("-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n"); return out.includes("[redacted:private-key]") && !out.includes(body); })());
+  // git-security.maskSecret (display mask): a SHORT value must never print in full.
+  {
+    const { maskSecret } = require("../lib/nexus/git-security");
+    ok("maskSecret fully hides a <=4 char value", maskSecret("abcd") === "****" && !/[a-z]/.test(maskSecret("ab")));
+    ok("maskSecret of a 5-char value does not reveal every char", (() => { const m = maskSecret("12345"); return m === "1***5" && m.indexOf("234") === -1; })());
+    ok("maskSecret 6-8 chars shows only first+last", maskSecret("secret78") === "s******8");
+    ok("maskSecret long value keeps first4/last4 with a star middle", (() => { const m = maskSecret("ghp_" + "z".repeat(36)); return m.startsWith("ghp_") && /\*{4,}/.test(m) && m.endsWith("zzzz"); })());
+    ok("maskSecret never echoes a short secret in full", (() => { for (const s of ["a", "ab", "abc", "abcd", "abcde"]) { if (maskSecret(s).includes(s) && s.length > 1) return false; } return true; })());
+  }
   ok("classifyDanger rm -rf / → block", classifyDanger("rm -rf /").level === "block");
   ok("classifyDanger fork bomb → block", classifyDanger(":(){ :|:& };:").level === "block");
   ok("classifyDanger curl|sh → block", classifyDanger("curl http://x.sh | sh").level === "block");
@@ -2370,6 +2380,50 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     has(explainEngineError("you exceeded your current quota", { engine: "openai" }), "billing");
     ok("unrecognised error keeps the raw text + a next step", (() => { const s = explainEngineError("weird kaboom", {}); return /weird kaboom/.test(s) && /\/engine/.test(s); })());
     eq("empty/no message is safe", typeof explainEngineError("", {}), "string");
+  }
+
+  group("ask (model-asks-you multiple-choice prompt, Claude-style)");
+  {
+    const ask = { question: "Which database should the API use?", options: ["PostgreSQL", { label: "SQLite", hint: "zero-config" }, "MySQL"], sel: 0 };
+    // ---- normOptions ----
+    eq("normalizes strings + objects to {label,hint}", JSON.stringify(normOptions(["a", { label: "b", hint: "h" }])), JSON.stringify([{ label: "a", hint: "" }, { label: "b", hint: "h" }]));
+    eq("drops empty labels", normOptions(["", "x", null]).length, 1);
+    eq("caps options at 9 (single-digit pick)", normOptions(Array.from({ length: 20 }, (_, i) => "o" + i)).length, 9);
+    // ---- askKey: navigation ----
+    eq("down moves selection +1", askKey(ask, "\x1b[B").sel, 1);
+    eq("up from 0 wraps to last", askKey(ask, "\x1b[A").sel, 2);
+    eq("bare-CSI down (no ESC) also moves", askKey(ask, "[B").sel, 1);
+    eq("down at last wraps to 0", askKey({ ...ask, sel: 2 }, "\x1b[B").sel, 0);
+    // ---- askKey: confirm / pick / cancel ----
+    ok("enter confirms the current selection", (() => { const r = askKey({ ...ask, sel: 1 }, "\r"); return r.done && r.index === 1 && r.value.label === "SQLite"; })());
+    ok("a digit picks that option immediately", (() => { const r = askKey(ask, "3"); return r.done && r.index === 2 && r.value.label === "MySQL"; })());
+    ok("an out-of-range digit is a no-op", (() => { const r = askKey(ask, "7"); return !r.done && !r.cancelled; })());
+    ok("esc cancels (user skips)", askKey(ask, "\x1b").cancelled === true);
+    ok("ctrl+c cancels", askKey(ask, "\x03").cancelled === true);
+    ok("an unrelated key is a no-op that keeps selection", (() => { const r = askKey({ ...ask, sel: 1 }, "x"); return !r.done && !r.cancelled && r.sel === 1; })());
+    // ---- renderAsk: layout + content (plain, colors identity) ----
+    const rows = renderAsk({ ...ask, sel: 1 }, 60);
+    ok("opens and closes with a horizontal rule", /─/.test(rows[0]) && /─/.test(rows[rows.length - 1]));
+    ok("shows the question text", rows.some((r) => r.includes("Which database")));
+    ok("numbers every option", rows.some((r) => /1\. PostgreSQL/.test(r)) && rows.some((r) => /2\. SQLite/.test(r)) && rows.some((r) => /3\. MySQL/.test(r)));
+    ok("marks the selected option with ›", rows.some((r) => r.includes("›") && r.includes("SQLite")));
+    ok("renders a hint when provided", rows.some((r) => r.includes("zero-config")));
+    ok("has a key-legend footer", rows.some((r) => /enter confirm/.test(r) && /esc skip/.test(r)));
+    ok("no row exceeds the requested width (plain)", rows.every((r) => r.length <= 60));
+    ok("empty options + esc still cancels (no crash)", askKey({ question: "q", options: [], sel: 0 }, "\x1b").cancelled === true);
+    ok("renderAsk tolerates no options", Array.isArray(renderAsk({ question: "q", options: [] }, 40)));
+  }
+
+  group("api-server input validation (shell-out routes reject injection)");
+  {
+    const { isValidHostname, isSafeUrl } = require("../lib/nexus/api-server");
+    ok("accepts a plain hostname", isValidHostname("example.com") && isValidHostname("sub.test.darknode.ai"));
+    ok("rejects a domain with a command separator", !isValidHostname("x; id #") && !isValidHostname("x$(id)") && !isValidHostname("a|b"));
+    ok("rejects whitespace / backticks / pipes in a domain", !isValidHostname("a b") && !isValidHostname("a`id`") && !isValidHostname(""));
+    ok("rejects an over-long domain", !isValidHostname("a".repeat(254)));
+    ok("accepts an http/https url", isSafeUrl("https://test.darknode.ai/x") && isSafeUrl("example.com"));
+    ok("rejects a url with shell metacharacters", !isSafeUrl("http://x/$(id)") && !isSafeUrl("http://x;id") && !isSafeUrl("http://x`id`"));
+    ok("rejects a non-http scheme", !isSafeUrl("file:///etc/passwd") && !isSafeUrl("javascript:alert(1)"));
   }
 
   group("path jail — canonical, symlink- and dot-dot-safe (NSAFE-020)");
