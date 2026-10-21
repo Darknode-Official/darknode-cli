@@ -2746,20 +2746,24 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // square boxes; the bottom-right one is the solid brand-amber square. Each
     // box is 6 cells wide x 3 tall so it looks square (terminal cells are ~1:2).
     // #ffaa00 is the brand amber.
-    const _AMF = "\x1b[38;5;214m", _OUT = "\x1b[38;5;252m", _RS = "\x1b[0m";
-    // Welcome card: the full icon (~14x7), static. No background — transparent.
+    const _AMF = "\x1b[38;5;214m", _OUT = "\x1b[38;5;252m", _BX = "\x1b[1;38;5;231m", _RS = "\x1b[0m";
+    // Welcome card: the full icon (~13x7), static. No background — transparent.
+    // All four boxes share a BOLD bright-white rounded border (thicker-looking);
+    // the columns sit one space apart. The bottom-right box keeps the white
+    // border and holds the amber square CONTAINED inside its walls — only the
+    // inner square is amber, matching the official icon.
     const dnBigLogo = () => {
-      const g = (s) => _OUT + s + _RS;            // grey rounded outline box
-      const a = (s) => _AMF + s + _RS;            // amber box / fill
-      const GAP = "  ";                           // gap between the two columns
+      const g = (s) => _BX + s + _RS;             // bold bright-white rounded outline
+      const a = (s) => _AMF + s + _RS;            // amber fill
+      const GAP = " ";                            // columns close together
       return [
         g("╭────╮") + GAP + g("╭────╮"),
         g("│    │") + GAP + g("│    │"),
         g("╰────╯") + GAP + g("╰────╯"),
-        "              ",
-        g("╭────╮") + GAP + a("╭████╮"),
-        g("│    │") + GAP + a("│████│"),          // solid amber square, bottom-right
-        g("╰────╯") + GAP + a("╰████╯"),
+        "             ",
+        g("╭────╮") + GAP + g("╭────╮"),
+        g("│    │") + GAP + g("│") + a("████") + g("│"),  // amber square inside white box 4
+        g("╰────╯") + GAP + g("╰────╯"),
       ];
     };
     // Working animation — "charge the circuit": the amber square orbits the four
@@ -2795,7 +2799,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // The icon sits just OUTSIDE the card's right edge (a 3-col gap), beside
           // the card body — not pushed out to the terminal's far right.
           if (useColor) {
-            const big = dnBigLogo(), LW = 14, GAP = 3, topAt = 1;
+            const big = dnBigLogo(), LW = 13, GAP = 3, topAt = 1;
             for (let k = 0; k < big.length; k++) {
               const ri = topAt + k; if (ri >= cardLines.length) break;
               const curW = stripA(cardLines[ri]).length;
