@@ -2796,6 +2796,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
         L.push("");
       }
+      // Live task panel (todo_write) — a persistent checklist like Claude Code's
+      // TodoWrite, shown at the bottom of the transcript while any task is open.
+      if (AGENT_TODOS.length && AGENT_TODOS.some((t) => t.status !== "done")) {
+        const doneN = AGENT_TODOS.filter((t) => t.status === "done").length;
+        L.push(""); L.push(bold(cyan("Tasks")) + gray("  " + doneN + "/" + AGENT_TODOS.length + " done"));
+        const cap = 8;
+        AGENT_TODOS.slice(0, cap).forEach((t) => {
+          const box = t.status === "done" ? green("[x]") : t.status === "in_progress" ? yellow("[~]") : gray("[ ]");
+          const paint = t.status === "done" ? gray : t.status === "in_progress" ? bold : (s) => s;
+          const w = wrap(t.content);
+          L.push("  " + box + " " + paint(w[0] || ""));
+          for (let i = 1; i < w.length; i++) L.push("      " + paint(w[i]));
+        });
+        if (AGENT_TODOS.length > cap) L.push(gray("  … +" + (AGENT_TODOS.length - cap) + " more"));
+        L.push("");
+      }
       return L;
     };
     // ---- status + hint bars ----
