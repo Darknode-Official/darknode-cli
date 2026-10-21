@@ -710,10 +710,14 @@ group("render helpers (frameDiff + wordHi) — the trickiest pure algorithms");
 
 group("security console core (scan/hash/cve)");
 {
-  ok("parsePorts top → TOP_PORTS", parsePorts("top") === TOP_PORTS && parsePorts("") === TOP_PORTS);
+  ok("parsePorts top → TOP_PORTS contents", JSON.stringify(parsePorts("top")) === JSON.stringify(TOP_PORTS) && JSON.stringify(parsePorts("")) === JSON.stringify(TOP_PORTS));
+  ok("parsePorts top returns a COPY (mutating it can't corrupt the constant)", (() => { const p = parsePorts("top"); p.push(99999); return TOP_PORTS[TOP_PORTS.length - 1] !== 99999; })());
   ok("parsePorts range 20-25", JSON.stringify(parsePorts("20-25")) === JSON.stringify([20, 21, 22, 23, 24, 25]));
   ok("parsePorts list 80,443,8080", JSON.stringify(parsePorts("80,443,8080")) === JSON.stringify([80, 443, 8080]));
   ok("parsePorts drops out-of-range", JSON.stringify(parsePorts("0,80,70000,-1,443")) === JSON.stringify([80, 443]));
+  ok("parsePorts range clamps invalid low/high ends", JSON.stringify(parsePorts("0-3")) === JSON.stringify([1, 2, 3]));
+  ok("parsePorts huge range can't hang — clamped to 65535", (() => { const p = parsePorts("65533-999999999999"); return p.length === 3 && p[p.length - 1] === 65535; })());
+  ok("parseCve tolerates a CVE object with no descriptions / no cve", parseCve({ cve: { id: "CVE-X" } }).desc === "" && parseCve({}).id === undefined);
   ok("idHash MD5/NTLM (32 hex)", idHash("5f4dcc3b5aa765d61d8327deb882cf99").startsWith("MD5"));
   ok("idHash SHA-1 (40 hex)", idHash("a".repeat(40)).startsWith("SHA-1"));
   ok("idHash SHA-256 (64 hex)", idHash("a".repeat(64)).startsWith("SHA-256"));
@@ -782,6 +786,7 @@ group("epoch / timestamp converter");
   ok("ISO string → epoch seconds", epochConvert("2023-11-14T22:13:20Z").epochSeconds === 1700000000 && epochConvert("2023-11-14T22:13:20Z").from === "date");
   ok("provides utc + epochMs", epochConvert("1700000000").epochMs === 1700000000000 && /GMT/.test(epochConvert("1700000000").utc));
   ok("garbage → null", epochConvert("not-a-timestamp") === null);
+  ok("oversized epoch → null (not a RangeError)", epochConvert("99999999999999999") === null && epochConvert("9000000000000000") === null);
 }
 
 group("URL parser tool");
@@ -793,6 +798,7 @@ group("URL parser tool");
   ok("scheme-less host:port defaults to http", s.scheme === "http" && s.host === "example.com" && s.port === "8080" && s.params.q === "test");
   ok("plain domain", parseUrl("evil.com").host === "evil.com" && parseUrl("evil.com").scheme === "http");
   ok("empty / garbage → null", parseUrl("") === null && parseUrl("http://") === null);
+  ok("a param named __proto__ is kept, not silently dropped", (() => { const p = parseUrl("http://h/?__proto__=evil&a=1").params; return Object.prototype.hasOwnProperty.call(p, "__proto__") && p.__proto__ === "evil" && p.a === "1"; })());
 }
 
 group("base32 (RFC 4648 test vectors)");
