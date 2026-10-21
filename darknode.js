@@ -1471,7 +1471,7 @@ const NEXUS_DOCS = {
   session: { title: "Session", body:
     "  /resume      reload the last saved session (.nexus/session.json)\n  /export      write the conversation to a markdown file\n  /copy        copy the last reply to the clipboard\n  /dream       consolidate the session into NEXUS.md memory\n  /gaps        list TODO/FIXME/HACK markers (/gaps plan → checklist)\n  /status /doctor /impact   session status · health · savings receipt" },
   keys: { title: "Keyboard", body:
-    "  Enter          send        \\ then Enter   newline\n  Shift+Tab      cycle mode (normal / auto-accept / plan)\n  Ctrl+O         expand tool detail\n  Ctrl+C         stop the current turn (again to quit)\n  Up / Down      input history      Tab   complete /command or @path\n  wheel · PgUp/PgDn · Home/End   scroll" },
+    "  Enter          send        \\ then Enter   newline\n  Shift+Tab      cycle mode (normal / accept edits / plan / bypass)\n  Ctrl+O         expand tool detail\n  Ctrl+C         stop the current turn (again to quit)\n  Up / Down      input history      Tab   complete /command or @path\n  wheel · PgUp/PgDn · Home/End   scroll" },
   config: { title: "Project config (.nexus/)", body:
     "  NEXUS.md        project instructions loaded every session (given to ALL engines)\n  config.json     { engine, model }\n  mcp.json        MCP servers: { mcpServers: { name: { command, args } } }\n  hooks.json      shell hooks: UserPromptSubmit · PreToolUse · PostToolUse · Stop\n  commands/*.md   custom /commands (body = prompt, $ARGUMENTS substituted)\n  snippets.json · plan.json · index.json · session.json   (auto-managed; gitignored)" },
   env: { title: "Environment", body:
@@ -2485,10 +2485,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // compaction did nothing for claude and a chat grew unbounded (one session
     // reached 726 turns / 794K context / one context that never reset).
     let carryNote = "";
-    let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = false, hack = false; // mode: 0 normal, 1 auto-accept, 2 plan; scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
+    let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = false, hack = false; // mode: 0 normal, 1 auto-accept, 2 plan, 3 bypass (waives the destructive-command guard); scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
     let gitBranch = ""; // cached "branch" (+ "*" when the tree is dirty), shown in the status bar
     const refreshGit = async () => { try { const b = await sh(["rev-parse", "--abbrev-ref", "HEAD"]); if (b.err) { gitBranch = ""; return; } const st = await sh(["status", "--porcelain"]); const next = (b.stdout || "").trim() + ((st.stdout || "").trim() ? "*" : ""); if (next !== gitBranch) { gitBranch = next; try { render(); } catch (_) {} } } catch (_) { gitBranch = ""; } };
-    const MODES = [{ k: "normal", c: gray }, { k: "auto-accept", c: green }, { k: "plan", c: cyan }];
+    const MODES = [{ k: "normal", c: gray }, { k: "auto-accept", c: green }, { k: "plan", c: cyan }, { k: "bypass", c: red }];
     const compact = { on: false, f: 0, iv: null };
     // Persistent, off-by-default settings (~/.nexus/settings.json): every default
     // that LIMITS the user starts off; env/CLI > saved file > default. A setting
@@ -2606,7 +2606,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/ensemble", "all engines answer, then synthesize the best"], ["/settings", "all options, neatly arranged (alias /options /config)"], ["/jobs", "background commands the agent started (run_background)"], ["/loop", "autonomous goal loop: /loop [-n rounds] <goal> until GOAL-DONE"], ["/team", "multi-model workspace: architect + builder + reviewer, loops to PASS"], ["/policy", "show the enterprise security policy (org + local)"], ["/audit", "audited tool actions · /audit verify (tamper check)"], ["/bench", "speed / tokens / cost table per engine"], ["/explain", "explain the diff or a file in plain English"], ["/test", "generate & run unit tests for a file"], ["/refactor", "restructure code for clarity without changing behavior"], ["/migrate", "migrate code: /migrate <from> to <to>"], ["/pr", "AI-write a PR title+body from the diff and open it (gh)"],
       ["/index", "index the repo for local auto-context"], ["/map", "show the repo map (file+symbol outline); /map on|off"], ["/verify", "detect + run this project's tests/build"], ["/radar", "codebase complexity + hotspot map"], ["/audit", "fast rule-based review of changed code"], ["/diffexplain", "explain the current git diff"], ["/testgen", "scaffold tests for a function/file"], ["/snippet", "save / use a prompt macro"], ["/snippets", "list saved prompt macros"],
       ["/plan", "make & run an editable task checklist"], ["/git", "branch, status & recent commits"], ["/blame", "who last changed a file's lines"],
-      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "max-savings preset (lean + low effort)"], ["/lean", "ask for minimal output (saves output tokens)"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level: low|medium|high"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
+      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "max-savings preset (lean + low effort)"], ["/lean", "ask for minimal output (saves output tokens)"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
       ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "session savings (tokens & cost avoided)"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "built-in documentation (/docs <topic>)"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
       ["/tree", "show the project file tree"], ["/theme", "change the color theme"],
       ["/color", "set the accent color · /color <name|0-255|#hex> · /color reset"], ["/colors", "list accent colors"], ["/gradient", "set the logo gradient · /gradient <theme|reset>"], ["/mouse", "toggle mouse capture · /mouse off to select & copy text"],
@@ -2825,6 +2825,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const mLabel = modelLabel(shownModel()) || engine;
       parts.push(mLabel + (mLabel && ENGINES[engine] && ENGINES[engine].kind === "stream" && effort ? gray(" · ") + effortLabel(effort) : ""));
       parts.push(pc(pct + "% context"));
+      { const _ca = compactAt(); if (_ca > 0 && sess.ctxUsed != null) { const _u = Math.max(0, Math.min(100, Math.round((1 - sess.ctxUsed / _ca) * 100))); parts.push((_u <= 15 ? yellow : gray)(_u + "% until auto-compact")); } }
       if (PAID[engine]) { const isSubscription = engine === "codex" && CODEX_LOCAL.authMode ? onPlan(engine) : (onPlan(engine) || (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY)); if (isSubscription) { /* subscription: nothing to show */ } else { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); } }
       
       if (runningShells) parts.push(yellow(runningShells + " shell" + (runningShells > 1 ? "s" : "")));
@@ -2851,8 +2852,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // persistent vim-mode tag whenever /vim is on (NORMAL is attention-grabbing)
       const vtag = composer.vim ? (composer.vimMode === "normal" ? bold(yellow("-- NORMAL --")) : green("-- INSERT --")) + gray(" · ") : "";
       if (scroll > 0) return vtag + yellow(scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  pgup/pgdn scroll · end jump to latest");
-      if (mode === 1) return vtag + green("auto-accept edits on") + gray("  (shift+tab to cycle)");
-      if (mode === 2) return vtag + cyan("plan mode on") + gray("  (shift+tab to cycle)");
+      if (mode === 1) return vtag + green("⏵ accept edits on") + gray("  (shift+tab to cycle)");
+      if (mode === 2) return vtag + cyan("⏸ plan mode on") + gray("  (shift+tab to cycle)");
+      if (mode === 3) return vtag + bold(red("⏵⏵ bypass permissions on")) + gray("  (shift+tab to cycle)");
       return vtag + gray(composer.vim ? "esc: normal · i: insert · ? for shortcuts" : "? for shortcuts");
     };
     // matching slash commands for the popup menu (active when the input is a bare /command being typed)
@@ -2882,7 +2884,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       "/color": () => Object.keys(COLORS).map((n) => [n, "\x1b[" + COLORS[n] + "m█████\x1b[0m"]),
       "/gradient": () => Object.keys(THEMES).map((t) => [t, THEMES[t].grad.map((g) => "\x1b[" + g + "m█\x1b[0m").join("")]),
       "/style": () => [["default", ""], ["concise", "minimal"], ["explanatory", "detailed"], ["review", "code review"], ["tdd", "test-driven"], ["secure", "security-focused"], ["teacher", "educational"]],
-      "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"]],
+      "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"], ["xhigh", "harder problems"], ["max", "maximum thinking"]],
       "/guard": () => [["enforce", "block destructive commands"], ["warn", "warn but allow"], ["off", "no safety checks"]],
       "/marketplace": () => [["list", "installed packages"], ["install", "install from path/URL"], ["remove", "uninstall a package"], ["init", "scaffold a publishable package"]],
       "/cron": () => [["list", "show scheduled jobs"], ["add", "schedule a new job"], ["remove", "delete a job"], ["enable", "enable a job"], ["disable", "pause a job"], ["run", "run a job now"]],
@@ -2926,6 +2928,40 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let clickZones = []; // rebuilt each render: [{row,c0,c1,kind,cmd}] clickable hitboxes (1-indexed screen coords)
     let navOpen = false; // is the ⋯ status menu expanded?
     let pendingAsk = null; // the model raised ask_user{question,options}: {question,options,sel,resolve} — the loop awaits the user's pick
+    // ---- /effort interactive slider (Claude-Code-style): a Faster↔Smarter bar
+    // the user nudges with ←/→ and confirms with Enter, instead of typing a level.
+    let pendingEffort = null; // { sel } while the picker is open
+    const EFFORT_LEVELS = [
+      ["low", "Faster, less thinking — fewer tokens, good for mechanical work"],
+      ["medium", "A balanced thinking budget"],
+      ["high", "Deeper reasoning on most problems"],
+      ["xhigh", "Hard problems — more thinking, more tokens"],
+      ["max", "Maximum thinking — the hardest problems, most tokens"],
+    ];
+    const renderEffortPicker = (C, sel) => {
+      const names = EFFORT_LEVELS.map((l) => l[0]);
+      const SEP = 3; let cols = [], x = 0;
+      names.forEach((nm, i) => { if (i) x += SEP; cols.push(x + (nm.length >> 1)); x += nm.length; });
+      const barW = x;
+      let lbl = ""; names.forEach((nm, i) => { if (i) lbl += " ".repeat(SEP); lbl += (i === sel ? bold(cyan(nm)) : gray(nm)); });
+      const lead = Math.max(0, (C - barW) >> 1), pad = " ".repeat(lead);
+      const ends = barW >= 13 ? "Faster" + " ".repeat(barW - 13) + "Smarter" : "Faster";
+      let bar = ""; for (let k = 0; k < barW; k++) bar += (k === cols[sel] ? cyan("▲") : gray("─"));
+      const centerC = (plainStr, colored) => " ".repeat(Math.max(0, (C - plainStr.length) >> 1)) + (colored || plainStr);
+      const desc = EFFORT_LEVELS[sel][1];
+      const hintLine = "←/→ adjust  ·  enter confirm  ·  s session only  ·  esc cancel";
+      return [
+        " " + bold("Effort") + gray("  — how much the model thinks before it acts"),
+        "",
+        pad + gray(ends),
+        pad + bar,
+        pad + lbl,
+        "",
+        centerC(desc, gray(desc)),
+        "",
+        centerC(hintLine, gray(hintLine)),
+      ];
+    };
     let perms = { allow: [], deny: [] }; try { const p = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "permissions.json"), "utf8")); perms = { allow: p.allow || [], deny: p.deny || [] }; } catch (_) {} // permission allowlist
     const savePerms = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "permissions.json"), JSON.stringify(perms, null, 2)); } catch (_) {} };
     let curBranch = "main"; // conversation branch (session branching)
@@ -2949,12 +2985,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (menuSel < 0) menuSel = 0;
       const fixedChrome = 4; // spacer + composer box (top & bottom borders) + footer row
       const avail = Math.max(0, R - fixedChrome);
-      const menuRows = Math.min(combined.length, Math.max(0, avail - 2));
+      // cap the slash/arg menu so it never fills the whole screen (Claude Code
+      // keeps it to roughly the lower half, leaving the chat above visible).
+      const menuRows = Math.min(combined.length, 10, Math.max(1, (avail >> 1) - 1));
       const menuStart = combined.length > menuRows ? Math.max(0, Math.min(menuSel - (menuRows >> 1), combined.length - menuRows)) : 0;
       const inRows = Math.max(1, Math.min(wrapped.length, 8, Math.max(1, avail - menuRows - 1)));
       // When the model is asking a question, its card replaces the composer + menu.
       const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green }) : null;
-      const chrome = askRows ? (1 + askRows.length + 1) : (fixedChrome + menuRows + inRows); // spacer + card + footer
+      const effortRows = (!askRows && pendingEffort) ? renderEffortPicker(C, pendingEffort.sel) : null;
+      const cardRows = askRows || effortRows; // a full-width card replaces the composer + menu
+      const chrome = cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuRows + inRows); // spacer + card + footer
       const bodyRows = Math.max(0, R - chrome);
       const lines = bodyLines();
       const maxScroll = Math.max(0, lines.length - bodyRows);
@@ -2967,10 +3007,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const frame = [];
       for (let i = 0; i < bodyRows; i++) frame.push(" " + clip(view[i] || "", C - 2));
       frame.push("");
-      if (askRows) {
-        // ---- the model is asking a multiple-choice question: its card owns the
-        // bottom of the screen until the user picks (handled in the key loop).
-        for (const r of askRows) frame.push(r);
+      if (cardRows) {
+        // ---- a full-width card (the model's ask_user question, or the /effort
+        // slider) owns the bottom of the screen until the user picks (key loop).
+        for (const r of cardRows) frame.push(r);
       } else {
       // ---- composer: an open input framed as a rounded box (╭─╮ │ ╰─╯) with
       // side walls, the Claude-style look. The accent "❯" marks the first row;
@@ -3083,16 +3123,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // legacy DARKNODE_COMPACT_AT env), it compacts aggressively to save spend:
     // claude at a fixed absolute line (40K, or the env value), local at 60%.
     const COMPACT_ENV = process.env.DARKNODE_COMPACT_AT ? Number(process.env.DARKNODE_COMPACT_AT) : null;
+    // the context size (tokens) at which the conversation auto-compacts. Shared
+    // by maybeAutoCompact (the trigger) and the status bar ("% until auto-compact").
+    const compactAt = () => {
+      const aggressive = autoCompact || COMPACT_ENV != null; // env presence = opt in
+      if (PAID[engine]) return aggressive ? (COMPACT_ENV != null ? COMPACT_ENV : 40000) : Math.max(1, Math.floor(0.9 * (sess.ctxWindow || 1000000)));
+      // local must compact before the window overflows (correctness), so even off-by-default it fires at 90%
+      return Math.max(1, Math.floor((aggressive ? 0.6 : 0.9) * (sess.ctxWindow || 200000)));
+    };
     const maybeAutoCompact = () => {
       if (compact.on) return;
-      const aggressive = autoCompact || COMPACT_ENV != null; // env presence = opt in
-      if (PAID[engine]) {
-        const at = aggressive ? (COMPACT_ENV != null ? COMPACT_ENV : 40000) : Math.max(1, Math.floor(0.9 * (sess.ctxWindow || 1000000)));
-        if (sess.ctxUsed > at) doCompact(true);
-      } else {
-        const frac = aggressive ? 0.6 : 0.9; // local must compact before the window overflows (correctness), so even off-by-default it fires at 90%
-        if (sess.ctxUsed > frac * (sess.ctxWindow || 200000)) doCompact(true);
-      }
+      if (sess.ctxUsed > compactAt()) doCompact(true);
     };
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
     let cleaned = false;
@@ -3337,7 +3378,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (mode === 2 && isPlanBlocked(name)) { result = { error: "plan mode is on — file/system changes are blocked. Describe the plan instead, then switch mode with shift+tab to execute." }; blocked = true; card.status = "err"; }
             const _perm = permDecision(perms, name, a); // permission allowlist (/permissions)
             if (!blocked && _perm === "deny") { result = { error: "denied by a permission rule (/permissions) — the operator disallowed this. They can /allow it or run it directly." }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "permission rule denied " + name + (a.command ? " (" + oneline(a.command, 40) + ")" : a.path ? " (" + a.path + ")" : "") }); }
-            if (!blocked && _perm !== "allow" && isExecTool(name) && guard !== "off") { const _cmd = String(a.command || ""); const d = classifyDanger(_cmd); if (d.level === "block" && guard === "enforce") { result = { error: "BLOCKED by Darknode guard: " + d.why + " (/guard off to allow, or run it yourself with !)" }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "Darknode guard blocked a destructive command — " + d.why + ": " + oneline(_cmd, 46) }); } else if (d.level !== "ok") transcript.push({ role: "system", text: "Darknode: " + d.why + " — " + oneline(_cmd, 46) + (d.level === "block" ? " (allowed; guard is " + guard + ")" : "") }); }
+            if (!blocked && _perm !== "allow" && isExecTool(name) && guard !== "off" && mode !== 3) { const _cmd = String(a.command || ""); const d = classifyDanger(_cmd); if (d.level === "block" && guard === "enforce") { result = { error: "BLOCKED by Darknode guard: " + d.why + " (/guard off to allow, or run it yourself with !)" }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "Darknode guard blocked a destructive command — " + d.why + ": " + oneline(_cmd, 46) }); } else if (d.level !== "ok") transcript.push({ role: "system", text: "Darknode: " + d.why + " — " + oneline(_cmd, 46) + (d.level === "block" ? " (allowed; guard is " + guard + ")" : "") }); }
             // ---- enterprise policy guardrails (.nexus/policy.json) ----
             if (!blocked) {
               const act = isExecTool(name) ? { type: "run", command: a.command }
@@ -4097,7 +4138,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else transcript.push({ role: "system", text: cowork.on ? ("cowork: " + cowork.strong + " (code) + " + (cowork.weakKind === "ollama" ? "local:" : "") + cowork.weak + " (cheap work) — " + impact.delegated + " task(s) delegated so far") : "cowork off.\nusage: /cowork <strong> <weak>  —  weak = haiku|sonnet|opus|<full-id> or ollama:<local-model>\ne.g. /cowork opus haiku · /cowork opus sonnet · /cowork opus ollama:qwen2.5-coder · /cowork off" }); }
       else if (cmd === "/lean") { lean = !lean; saveSetting("lean", lean); transcript.push({ role: "system", text: "lean mode " + (lean ? "ON — saves tokens:\n  • minimal output (no preamble/recap)\n  • agent steps capped at 12 per turn\n  • tool output truncated to 8K chars\n  • read_file capped at 8K chars\n  • @file inline capped at 3K chars\n  • per-turn output budget: 8K tokens\n  • history pruned to last 4 messages\n  • claude --max-turns 8\n  toggle off with /lean" : "OFF — full power, no token limits") }); }
       else if (cmd === "/style") { if (arg && styleMap[arg] !== undefined) { style = arg; saveSetting("style", arg); transcript.push({ role: "system", text: "output style: " + bold(arg) + (arg === "default" ? "" : " — " + styleDir(arg)) + gray("  (applies to every engine)") }); } else transcript.push({ role: "system", text: "output styles (shape HOW the AI works — add your own as .nexus/styles/<name>.md):\n" + Object.keys(styleMap).map((n) => "  " + (n === style ? cyan("● " + n) : "  " + n) + gray(n === "default" ? "" : "  " + styleDir(n).slice(0, 60))).join("\n") + "\n  usage: /style <name>" }); }
-      else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(effort || "default") + ".  usage: /effort low|medium|high|max  (lower = fewer thinking tokens = cheaper)" }); }
+      else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else { const _i = EFFORT_LEVELS.findIndex((l) => l[0] === (effort || "high")); pendingEffort = { sel: _i < 0 ? 2 : _i }; render(); } }
       else if (cmd === "/hack") { hack = arg === "on" ? true : arg === "off" ? false : !hack; transcript.push({ role: "system", text: hack ? red("● HACK MODE") + " — Nexus is now an offensive-security specialist for AUTHORIZED engagements, with the full Darknode toolkit (scan · dns · cert · subs · cve · payloads · revshell · dorks · jwt · hash · totp · encode …) available via run_command. Systems you own or are explicitly in-scope to test only. " + gray("/hack off to exit") : "hack mode OFF — back to the standard coding agent" }); }
       else if (cmd === "/pentest") { const { startPentest } = require("./lib/nexus/pentest-engine"); startPentest(arg || null, { reportDir: process.cwd() }).catch(e => transcript.push({ role: "system", text: "HYDRA error: " + e.message })); }
       else if (cmd === "/ai-prompt" || cmd === "/aiprompt") {
@@ -4137,7 +4178,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const KS = [
           { title: "Send & edit", rows: [["Enter","send the message"],["Alt+Enter / Shift+Enter / Ctrl+J","insert a newline"],["Home / End","start / end of the line"],["Ctrl+A / Ctrl+E","start / end of the line"],["Ctrl+← / → · Alt+B / F","jump a word"],["Alt+Backspace · Ctrl+W","delete the word before the cursor"],["Ctrl+U / Ctrl+K","kill to start / end of line"],["Ctrl+Y","yank back what was killed"],["Ctrl+_","undo the last edit"]] },
           { title: "History", rows: [["Ctrl+P / Ctrl+N","previous / next command (your draft is kept)"],["Up / Down (while typing)","step through history"],["Ctrl+R","reverse-search history"]] },
-          { title: "Session", rows: [["Shift+Tab","cycle mode: normal / auto-accept / plan"],["Ctrl+O","expand or collapse tool detail"],["Esc","interrupt a running turn"],["Esc Esc","clear the input (idle)"],["Ctrl+C","interrupt, then clear, then exit"],["Ctrl+D","exit on an empty line"],["Ctrl+G","edit the message in $EDITOR"],["Ctrl+L","redraw the screen"]] },
+          { title: "Session", rows: [["Shift+Tab","cycle mode: normal / accept edits / plan / bypass"],["Ctrl+O","expand or collapse tool detail"],["Esc","interrupt a running turn"],["Esc Esc","clear the input (idle)"],["Ctrl+C","interrupt, then clear, then exit"],["Ctrl+D","exit on an empty line"],["Ctrl+G","edit the message in $EDITOR"],["Ctrl+L","redraw the screen"]] },
           { title: "Scroll, select & copy", rows: [["Mouse wheel","scroll the transcript"],["Up / Down (empty input)","scroll line by line"],["PgUp / PgDn","scroll a page"],["Home","jump to the oldest"],["End","jump to the latest"],["Select with the mouse","just drag to select, then copy — the mouse is yours by default"],["/mouse on","re-enable click + wheel capture (selection then needs Shift+drag)"]] },
         ];
         transcript.push({ role: "system", lines: helpLines(KS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }) });
@@ -4610,6 +4651,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const page = Math.max(1, rows() - 6);
       const isMouse = s.charCodeAt(0) === 27 && s[1] === "[" && s[2] === "<";
 
+      // ---- the /effort slider owns the keyboard while open ----
+      if (pendingEffort) {
+        if (isMouse) return;
+        if (s === "\x1b[C" || s === "\x1bOC" || s === "l") { pendingEffort.sel = Math.min(EFFORT_LEVELS.length - 1, pendingEffort.sel + 1); render(); return; }
+        if (s === "\x1b[D" || s === "\x1bOD" || s === "h") { pendingEffort.sel = Math.max(0, pendingEffort.sel - 1); render(); return; }
+        if (s === "\r" || s === "\n") { const lv = EFFORT_LEVELS[pendingEffort.sel][0]; pendingEffort = null; effort = lv; saveSetting("effort", lv); transcript.push({ role: "system", text: "effort set to " + bold(lv) + gray("  (saved — applies to the claude engine)") }); render(); return; }
+        if (s === "s" || s === "S") { const lv = EFFORT_LEVELS[pendingEffort.sel][0]; pendingEffort = null; effort = lv; transcript.push({ role: "system", text: "effort " + bold(lv) + gray("  (this session only — not saved)") }); render(); return; }
+        if (s === "\x1b" || s === "\x03") { pendingEffort = null; render(); return; }
+        return; // picker owns the keyboard
+      }
       // ---- the model's ask_user card owns the keyboard until the user picks ----
       // (sits above the busy/menu handling: the loop is paused awaiting the pick).
       if (pendingAsk) {
