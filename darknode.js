@@ -3186,26 +3186,26 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // slider) owns the bottom of the screen until the user picks (key loop).
         for (const r of cardRows) frame.push(r);
       } else {
-      // ---- composer: a bordered box with SQUARE corners (┌─┐ │ └─┘), the
-      // Claude-Code prompt-box look. The "❯" accent marks the first row; the
-      // block caret (█) is drawn inline because the hardware cursor is hidden in
-      // the alt-screen. The border turns gold while a /god-prompt is armed or
-      // running, grey otherwise.
+      // ---- composer: two full-width horizontal rules (top & bottom) that run
+      // edge to edge — no corners, no side walls — with the "❯ " input floating
+      // between them, the Claude-Code look. The rules turn gold while a
+      // /god-prompt is armed or running, grey otherwise. The block caret (█) is
+      // drawn inline because the hardware cursor is hidden in the alt-screen.
+      // Same row count as a box (top rule + inRows + bottom rule).
       const _gold = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
       const _bd = (godArmed || godActive) ? _gold : gray;
-      const _W = Math.max(2, C - 2);        // box width incl. both side walls
-      const _inner = Math.max(0, _W - 4);   // text area between the walls (one pad each side)
-      frame.push(" " + _bd("┌" + "─".repeat(_W - 2) + "┐"));
+      const _inner = Math.max(0, C - 2);    // text area (1-col left gutter, flush right)
+      frame.push(_bd("─".repeat(Math.max(1, C))));   // top rule, edge to edge
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
       for (let i = 0; i < inRows; i++) {
         let raw = shown[i] || ""; const li = _showStart + i;
         if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
-        // accent "❯ " on the first row, aligned indent after; clipped then padded so the right wall aligns.
+        // accent "❯ " on the first row, aligned indent after.
         const _body = (i === 0 ? bold(cyan("❯ ")) : "  ") + colorInput(raw);
-        frame.push(" " + _bd("│") + " " + padRightV(clip(_body, _inner), _inner) + " " + _bd("│"));
+        frame.push(" " + clip(_body, _inner));
       }
-      frame.push(" " + _bd("└" + "─".repeat(_W - 2) + "┘"));
+      frame.push(_bd("─".repeat(Math.max(1, C))));   // bottom rule, edge to edge
       // ---- completion menu: directly BELOW the input box (like Claude Code), so
       // it never pushes up into / hides the AI output above the composer.
       const _curM = modelLabel(shownModel()) || engine;
