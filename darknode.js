@@ -2490,6 +2490,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let gitBranch = ""; // cached "branch" (+ "*" when the tree is dirty), shown in the status bar
     const refreshGit = async () => { try { const b = await sh(["rev-parse", "--abbrev-ref", "HEAD"]); if (b.err) { gitBranch = ""; return; } const st = await sh(["status", "--porcelain"]); const next = (b.stdout || "").trim() + ((st.stdout || "").trim() ? "*" : ""); if (next !== gitBranch) { gitBranch = next; try { render(); } catch (_) {} } } catch (_) { gitBranch = ""; } };
     const MODES = [{ k: "normal", c: gray }, { k: "auto-accept", c: green }, { k: "plan", c: cyan }, { k: "bypass", c: red }];
+    // ---- per-engine feature compatibility ------------------------------------
+    // Nexus runs six AI backends; a few cross-engine features only apply to some.
+    // We never HIDE them (that would make Nexus look smaller) — we mark the ones
+    // the current model can't use, in red, so the surface is always honest.
+    const CAP_ENGINES = (cap) => ENGINE_ORDER.filter((e) => engineCap(e, cap)); // which engines support a capability
+    const CMD_CAP = { "/effort": "effort", "/fallback": "fallbackModel", "/cowork": "cowork", "/style": "appendSystemPrompt", "/hack": "appendSystemPrompt" };
+    const cmdOkFor = (name) => { const c = CMD_CAP[name]; return !c || engineCap(engine, c); }; // is this command usable on the current engine?
+    const CAP_DESC = [ // human labels for /compat, in display order
+      ["model", "model selection", "/model · /models"],
+      ["effort", "thinking effort", "/effort · /god-prompt"],
+      ["fallbackModel", "fallback model on rate-limit", "/fallback"],
+      ["cowork", "cheap-worker delegation", "/cowork · /cheap"],
+      ["appendSystemPrompt", "system-prompt injection (styles, hack, policy, project memory)", "/style · /hack"],
+      ["maxBudget", "hard budget cap enforced by the engine", "/budget"],
+      ["disallowedTools", "tool restriction for plan-mode enforcement", "plan mode (shift+tab)"],
+    ];
     const compact = { on: false, f: 0, iv: null };
     // Persistent, off-by-default settings (~/.nexus/settings.json): every default
     // that LIMITS the user starts off; env/CLI > saved file > default. A setting
@@ -2625,6 +2641,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/autoupdate", "auto-update on launch: /autoupdate on | check | off"],
       ["/next", "queue a prompt after the current turn (clear / rm <n> to manage)"],
       ["/btw", "side question — answered from context, never saved to history"],
+      ["/compat", "which features this model supports (nothing is hidden)"],
       ["/feature", "add/remove your own commands: /feature create <name> <what it does> · /feature remove <name>"],
       ["/dashboard", "open the localhost web UI — live pipelines, jobs & cowork agents"],
       ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
@@ -3111,7 +3128,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       frame.push(" " + _bd("╰" + "─".repeat(_W - 2) + "╯"));
       // ---- completion menu: directly BELOW the input box (like Claude Code), so
       // it never pushes up into / hides the AI output above the composer.
-      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(padRightV(nm, nmW))) : padRightV(nm, nmW)) + gray(" " + (ds || "")) + pos, C - 2)); }
+      const _curM = modelLabel(shownModel()) || engine;
+      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); frame.push(clip((sel ? cyan(" › ") : "   ") + nmShown + tail + pos, C - 2)); }
       }
       // footer: contextual hint on the left, status on the right. The status
       // menu (cost, savings & more) is the clickable "..." at the far right;
@@ -4219,6 +4237,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/lean") { lean = !lean; saveSetting("lean", lean); transcript.push({ role: "system", text: "lean mode " + (lean ? "ON — saves tokens:\n  • minimal output (no preamble/recap)\n  • agent steps capped at 12 per turn\n  • tool output truncated to 8K chars\n  • read_file capped at 8K chars\n  • @file inline capped at 3K chars\n  • per-turn output budget: 8K tokens\n  • history pruned to last 4 messages\n  • claude --max-turns 8\n  toggle off with /lean" : "OFF — full power, no token limits") }); }
       else if (cmd === "/style") { if (arg && styleMap[arg] !== undefined) { style = arg; saveSetting("style", arg); transcript.push({ role: "system", text: "output style: " + bold(arg) + (arg === "default" ? "" : " — " + styleDir(arg)) + gray("  (applies to every engine)") }); } else transcript.push({ role: "system", text: "output styles (shape HOW the AI works — add your own as .nexus/styles/<name>.md):\n" + Object.keys(styleMap).map((n) => "  " + (n === style ? cyan("● " + n) : "  " + n) + gray(n === "default" ? "" : "  " + styleDir(n).slice(0, 60))).join("\n") + "\n  usage: /style <name>" }); }
       else if (cmd === "/btw") { askBtw(argstr); }
+      else if (cmd === "/compat") {
+        const curM = modelLabel(shownModel()) || engine;
+        const lines = ["feature compatibility — current model: " + bold(curM) + gray("  (engine: " + engine + ")"), ""];
+        for (const [cap, label, feats] of CAP_DESC) {
+          const ok = engineCap(engine, cap), engs = CAP_ENGINES(cap);
+          lines.push("  " + (ok ? green("✓ ") : red("✗ ")) + (ok ? label : dim(label)) + gray("   " + feats));
+          lines.push("      " + (ok ? green("compatible") : red("not compatible")) + gray(" · works on: " + (engs.length ? engs.join(", ") : "none")));
+        }
+        lines.push("");
+        lines.push(gray("  Everything else — file tools, bash, MCP, sub-agents, plan/accept/bypass modes, /btw, /mode, /god-prompt, cost tracking — works on every engine."));
+        lines.push(gray("  Incompatible commands still appear in the / menu (marked red): they degrade safely on this model rather than break it."));
+        transcript.push({ role: "system", lines });
+      }
       else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else { const _i = EFFORT_LEVELS.findIndex((l) => l[0] === (effort || "high")); pendingEffort = { sel: _i < 0 ? 2 : _i }; render(); } }
       else if (cmd === "/hack") { hack = arg === "on" ? true : arg === "off" ? false : !hack; transcript.push({ role: "system", text: hack ? red("● HACK MODE") + " — Nexus is now an offensive-security specialist for AUTHORIZED engagements, with the full Darknode toolkit (scan · dns · cert · subs · cve · payloads · revshell · dorks · jwt · hash · totp · encode …) available via run_command. Systems you own or are explicitly in-scope to test only. " + gray("/hack off to exit") : "hack mode OFF — back to the standard coding agent" }); }
       else if (cmd === "/pentest") { const { startPentest } = require("./lib/nexus/pentest-engine"); startPentest(arg || null, { reportDir: process.cwd() }).catch(e => transcript.push({ role: "system", text: "HYDRA error: " + e.message })); }
