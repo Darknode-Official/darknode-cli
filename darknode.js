@@ -2828,6 +2828,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       { const _ca = compactAt(); if (_ca > 0 && sess.ctxUsed != null) { const _u = Math.max(0, Math.min(100, Math.round((1 - sess.ctxUsed / _ca) * 100))); parts.push((_u <= 15 ? yellow : gray)(_u + "% until auto-compact")); } }
       if (PAID[engine]) { const isSubscription = engine === "codex" && CODEX_LOCAL.authMode ? onPlan(engine) : (onPlan(engine) || (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY)); if (isSubscription) { /* subscription: nothing to show */ } else { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); } }
       
+      if (gitBranch) parts.push(gray(gitBranch));
+      if (nextQueue.length) parts.push(cyan(nextQueue.length + " queued"));
       if (runningShells) parts.push(yellow(runningShells + " shell" + (runningShells > 1 ? "s" : "")));
       if (bgJobs.running()) parts.push(cyan(bgJobs.running() + " bg"));
       if (activeAgents) parts.push(mag(activeAgents + " agent" + (activeAgents > 1 ? "s" : "")));
@@ -2965,6 +2967,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let perms = { allow: [], deny: [] }; try { const p = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "permissions.json"), "utf8")); perms = { allow: p.allow || [], deny: p.deny || [] }; } catch (_) {} // permission allowlist
     const savePerms = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "permissions.json"), JSON.stringify(perms, null, 2)); } catch (_) {} };
     let curBranch = "main"; // conversation branch (session branching)
+    let nextQueue = []; // /next queue — prompts to run after the current turn (declared here so the status bar can show the count)
     // Clickable status buttons (mouse) — one-tap access to cost/usage & more,
     // instead of only the passive metrics line. Each runs its slash command.
     const NAV_BUTTONS = [["Cost", "/status"], ["Savings", "/savings"], ["Impact", "/impact"], ["Models", "/models"], ["Settings", "/settings"], ["Help", "/help"]];
@@ -4632,7 +4635,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     refreshGit(); // populate the status-bar branch indicator
     try { Composer.cleanupDroppedTails(); } catch (_) {} // sweep paste-remainder temp files older than 24h
     let imgCounter = 0; // for [Image#N] display on pasted image paths
-    let nextQueue = []; // /next queue — prompts to run after current turn
+    // (nextQueue is declared earlier, near curBranch, so the status bar can read its length)
     process.stdin.on("data", (d) => { try {
       if (loading) { finishBoot(); return; }   // any key skips the intro
       if (pasteNotice) pasteNotice = "";        // a paste preflight notice lasts until the next key
