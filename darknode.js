@@ -5005,9 +5005,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // ---- Esc dismisses an open popup before the composer's own Esc handling ----
       if (s === "\x1b" && navOpen) { navOpen = false; render(); return; }
       if (s === "\x1b" && argMatches().length) { const sp = input.indexOf(" "); if (sp > 0) { input = input.slice(0, sp) + " "; curPos = input.length; } menuSel = 0; render(); return; }
-      // Esc on an idle empty buffer dismisses a trailing info panel (/help, /keys,
-      // /compat, /mode, /settings…) — like closing an overlay in Claude Code.
-      if (s === "\x1b" && !busy && !input.length && !slashMatches().length) { const _last = transcript[transcript.length - 1]; if (_last && _last.dismissable) { transcript.pop(); scroll = 0; render(); return; } }
+      // Esc on an idle empty buffer closes the last pop-up info panel — any
+      // trailing system panel (/mcp, /status, /doctor, /cost, /pricing, /help,
+      // /keys, /settings…), like closing an overlay in Claude Code. (Streaming
+      // output and real conversation turns are not system panels, so they stay.)
+      if (s === "\x1b" && !busy && !input.length && !slashMatches().length) { const _last = transcript[transcript.length - 1]; if (_last && (_last.dismissable || _last.role === "system")) { transcript.pop(); clearPending = false; scroll = 0; render(); return; } }
 
       // ---- slash / arg menu open: arrows + page keys drive the menu ----
       const _mm = slashMatches(); const _am = _mm.length ? [] : argMatches(); const cm = _mm.length ? _mm : _am;
