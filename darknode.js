@@ -2740,29 +2740,32 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // Darknode logo — the official 2x2 mark (four navy rounded boxes, one yellow).
     //   index 0 1   (TL TR)
     //         2 3   (BL BR)   clockwise from BR: 3 -> 2 -> 0 -> 1 -> 3
-    // Darknode logo for the terminal — a faithful copy of the official app icon:
-    // four thick, near-black boxes on a white tile, the bottom-right one holding
-    // the brand-amber square. A black border is invisible on a dark terminal, so
-    // the mark carries its own white background exactly like the real icon;
-    // heavy box-drawing supplies the thick border. #ffaa00 is the brand amber.
-    const _WB = "\x1b[48;5;231m", _INK = "\x1b[38;5;16m", _AMF = "\x1b[38;5;214m", _RS = "\x1b[0m";
-    // Welcome card: the full icon (~9x7), static. Each row is one white-tile line.
+    // Darknode logo for the terminal — the official 2x2 mark, drawn with NO
+    // background tile (a black border would be invisible on a dark terminal, so
+    // the outlines are a light grey that reads on any background). Four rounded,
+    // square boxes; the bottom-right one is the solid brand-amber square. Each
+    // box is 6 cells wide x 3 tall so it looks square (terminal cells are ~1:2).
+    // #ffaa00 is the brand amber.
+    const _AMF = "\x1b[38;5;214m", _OUT = "\x1b[38;5;252m", _RS = "\x1b[0m";
+    // Welcome card: the full icon (~14x7), static. No background — transparent.
     const dnBigLogo = () => {
-      const ink = (s) => _WB + _INK + s + _RS;
+      const g = (s) => _OUT + s + _RS;            // grey rounded outline box
+      const a = (s) => _AMF + s + _RS;            // amber box / fill
+      const GAP = "  ";                           // gap between the two columns
       return [
-        ink("┏━━┓ ┏━━┓"),
-        ink("┃  ┃ ┃  ┃"),
-        ink("┗━━┛ ┗━━┛"),
-        ink("         "),
-        ink("┏━━┓ ┏━━┓"),
-        _WB + _INK + "┃  ┃ ┃" + _AMF + "██" + _INK + "┃" + _RS, // amber square nested in box 4
-        ink("┗━━┛ ┗━━┛"),
+        g("╭────╮") + GAP + g("╭────╮"),
+        g("│    │") + GAP + g("│    │"),
+        g("╰────╯") + GAP + g("╰────╯"),
+        "              ",
+        g("╭────╮") + GAP + a("╭████╮"),
+        g("│    │") + GAP + a("│████│"),          // solid amber square, bottom-right
+        g("╰────╯") + GAP + a("╰████╯"),
       ];
     };
     // Working animation — "charge the circuit": the amber square orbits the four
     // boxes clockwise, then all four strobe amber as the charge completes, then
-    // it settles home in the bottom-right. The icon in miniature on a white
-    // badge. Two lines tall; wall-clock driven so the cadence stays steady.
+    // it settles home in the bottom-right. The icon in miniature, no background.
+    // Two lines tall; wall-clock driven so the cadence stays steady.
     //   positions 0 1 (TL TR) / 2 3 (BL BR)
     const _DN_STATES = [
       { on: [3], ms: 150 }, { on: [2], ms: 150 }, { on: [0], ms: 150 }, { on: [1], ms: 150 }, // orbit clockwise
@@ -2775,8 +2778,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       let t = Date.now() % _DN_TOTAL, i = 0;
       for (; i < _DN_STATES.length; i++) { if (t < _DN_STATES[i].ms) break; t -= _DN_STATES[i].ms; }
       const on = (_DN_STATES[i] || _DN_STATES[0]).on;
-      const cell = (n) => on.indexOf(n) >= 0 ? _AMF + "◼" : _INK + "◻"; // amber filled vs black outline
-      const line = (a, b) => _WB + cell(a) + " " + cell(b) + _RS;       // one white-badge line
+      const cell = (n) => (on.indexOf(n) >= 0 ? _AMF + "◼" : _OUT + "◻") + _RS; // amber filled vs grey outline, no bg
+      const line = (a, b) => cell(a) + " " + cell(b);                           // one line, transparent
       return { top: line(0, 1), bot: line(2, 3) };
     };
     const bodyLines = () => {
@@ -2792,7 +2795,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // The icon sits just OUTSIDE the card's right edge (a 3-col gap), beside
           // the card body — not pushed out to the terminal's far right.
           if (useColor) {
-            const big = dnBigLogo(), LW = 9, GAP = 3, topAt = 1;
+            const big = dnBigLogo(), LW = 14, GAP = 3, topAt = 1;
             for (let k = 0; k < big.length; k++) {
               const ri = topAt + k; if (ri >= cardLines.length) break;
               const curW = stripA(cardLines[ri]).length;
@@ -3160,18 +3163,24 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (menuSel < 0) menuSel = 0;
       const fixedChrome = 4; // spacer + composer box (top & bottom borders) + footer row
       const avail = Math.max(0, R - fixedChrome);
-      // cap the slash/arg menu so it never fills the whole screen (Claude Code
-      // keeps it to roughly the lower half, leaving the chat above visible).
-      const menuRows = Math.min(combined.length, 10, Math.max(1, (avail >> 1) - 1));
+      // The completion menu sits UNDER the prompt box (Claude Code layout). To keep
+      // the input from crawling as the list filters down, we RESERVE a stable
+      // region: menuReserve stays fixed (the cap) the whole time a menu is open, so
+      // the composer stays at one row; menuRows is the number of options actually
+      // drawn, and the rest of the region is padded with blank lines above the
+      // footer. Result: menu below the prompt, and nothing jerks while narrowing.
+      const menuCap = Math.min(10, Math.max(1, (avail >> 1) - 1));
+      const menuRows = Math.min(combined.length, menuCap);          // options drawn this frame
+      const menuReserve = combined.length ? menuCap : 0;            // stable region height while open
       const menuStart = combined.length > menuRows ? Math.max(0, Math.min(menuSel - (menuRows >> 1), combined.length - menuRows)) : 0;
-      const inRows = Math.max(1, Math.min(wrapped.length, 8, Math.max(1, avail - menuRows - 1)));
+      const inRows = Math.max(1, Math.min(wrapped.length, 8, Math.max(1, avail - menuReserve - 1)));
       // When the model is asking a question, its card replaces the composer + menu.
       const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green }) : null;
       const effortRows = (!askRows && pendingEffort) ? renderEffortPicker(C, pendingEffort.sel) : null;
       const btwRows = (!askRows && !effortRows && btw) ? renderBtw(C, R, btw) : null;
       let cardRows = askRows || effortRows || btwRows; // a full-width card replaces the composer + menu
       if (cardRows && cardRows.length > R - 2) cardRows = cardRows.slice(0, Math.max(1, R - 2)); // never build a card taller than the screen (would overflow the diff'd frame)
-      const chrome = cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuRows + inRows); // spacer + card + footer
+      const chrome = cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows); // spacer + composer + reserved menu + footer
       const bodyRows = Math.max(0, R - chrome);
       const lines = bodyLines();
       const maxScroll = Math.max(0, lines.length - bodyRows);
@@ -3189,13 +3198,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // slider) owns the bottom of the screen until the user picks (key loop).
         for (const r of cardRows) frame.push(r);
       } else {
-      // ---- completion menu: rendered ABOVE the composer so the prompt box stays
-      // pinned to the bottom of the screen (just over the footer). As the user
-      // types and the option list narrows, menuRows shrinks and the transcript
-      // region above absorbs the change — the input box itself never moves. This
-      // is the smooth Claude-Code behaviour: no jerk as completions filter down.
-      const _curM = modelLabel(shownModel()) || engine;
-      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); frame.push(clip((sel ? cyan(" › ") : "   ") + nmShown + tail + pos, C - 2)); }
       // ---- composer: two full-width horizontal rules (top & bottom) that run
       // edge to edge — no corners, no side walls — with the "❯ " input floating
       // between them, the Claude-Code look. The rules turn gold while a
@@ -3204,18 +3206,27 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // Same row count as a box (top rule + inRows + bottom rule).
       const _gold = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
       const _bd = (godArmed || godActive) ? _gold : gray;
-      const _inner = Math.max(0, C - 2);    // text area (1-col left gutter, flush right)
       frame.push(_bd("─".repeat(Math.max(1, C))));   // top rule, edge to edge
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
       for (let i = 0; i < inRows; i++) {
         let raw = shown[i] || ""; const li = _showStart + i;
         if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
-        // accent "❯ " on the first row, aligned indent after.
+        // accent "❯ " on the first row, aligned indent after. Flush to the left
+        // edge (no gutter) so the caret lines up with Claude Code's prompt.
         const _body = (i === 0 ? bold(cyan("❯ ")) : "  ") + colorInput(raw);
-        frame.push(" " + clip(_body, _inner));
+        frame.push(clip(_body, C));
       }
       frame.push(_bd("─".repeat(Math.max(1, C))));   // bottom rule, edge to edge
+      // ---- completion menu: directly UNDER the prompt box (Claude Code layout).
+      // menuReserve rows are reserved while a menu is open so the composer above
+      // never moves as the list filters; the drawn options fill the top of the
+      // region and the remainder is padded blank up to the footer.
+      const _curM = modelLabel(shownModel()) || engine;
+      for (let i = 0; i < menuReserve; i++) {
+        if (i >= menuRows) { frame.push(""); continue; }
+        const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); frame.push(clip((sel ? cyan(" › ") : "   ") + nmShown + tail + pos, C - 2));
+      }
       }
       // footer: contextual hint on the left, status on the right. The status
       // menu (cost, savings & more) is the clickable "..." at the far right;
