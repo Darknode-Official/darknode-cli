@@ -244,6 +244,7 @@ group("tool-arg schema validation (NSAFE-039)");
   ok("preflightArgs rejects write_file missing content", /required/.test(NT.preflightArgs("write_file", { path: "a.txt" }) || ""));
   ok("preflightArgs rejects an object for a string path", /type/.test(NT.preflightArgs("read_file", { path: { x: 1 } }) || ""));
   ok("preflightArgs tolerates a numeric git count (coerced)", NT.preflightArgs("git_tool", { op: "log", count: 20 }) === null);
+  ok("schemaFor('constructor') returns a plain default, not the inherited Object ctor", typeof NT.schemaFor("constructor") === "object" && NT.schemaFor("constructor").description === "constructor" && typeof NT.schemaFor("constructor").properties === "object");
   ok("preflightArgs returns null for an unknown tool", NT.preflightArgs("not_a_tool", { whatever: 1 }) === null);
 }
 
@@ -549,6 +550,9 @@ group("custom output styles (.nexus/styles/*.md)");
   ok("merges built-ins + custom", all.review === STYLES.review && all.pirate);
   ok("custom overrides built-in", all.concise === "Override: one sentence max.");
   ok("missing dir → just built-ins", Object.keys(allStyles(path.join(dir, "nope"))).length === Object.keys(STYLES).length);
+  fs.writeFileSync(path.join(dir, "constructor.md"), "should be ignored");
+  const loaded2 = loadStyles(dir);
+  ok("a style file named 'constructor' is skipped and the map is null-proto", !Object.prototype.hasOwnProperty.call(loaded2, "constructor") && Object.getPrototypeOf(loaded2) === null);
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -2269,6 +2273,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("gitTool surfaces not-a-repo", /not a git repository/.test(gnr.error));
     const gwrite = await GT.gitTool({ op: "commit" }, "/repo", { run: async () => ({ code: 0, output: "" }) });
     ok("gitTool refuses a write op before running", /read-only/.test(gwrite.error));
+    ok("leading-dash ref is rejected (git option injection, e.g. --output)", /invalid git argument/.test(GT.buildGitCommand("show", { ref: "--output=/tmp/pwn" }).error));
+    ok("leading-dash ref rejected on diff too", /invalid git argument/.test(GT.buildGitCommand("diff", { ref: "--output=/tmp/pwn" }).error));
+    ok("leading-dash path is rejected", /invalid git argument/.test(GT.buildGitCommand("blame", { path: "--x" }).error));
+    ok("blame separates the path with -- so it can't be read as an option", /-- 'a\.js'/.test(GT.buildGitCommand("blame", { path: "a.js" }).cmd));
   }
 
   group("lint_format (auto-fix formatters)");
@@ -2286,6 +2294,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("lintFormatTool reports a successful fix run", ran.mode === "fix" && ran.results[0].ok === true && /Ran 1 formatter/.test(ran.summary || ""));
     const none = await LF.lintFormatTool({}, "/repo", { readdir: () => ["README"], run: async () => ({ code: 0, output: "" }) });
     ok("lintFormatTool notes no manifest", none.ran === false && /no recognized project manifest/.test(none.note));
+    const esc = await LF.lintFormatTool({ path: "../../etc" }, "/repo", { readdir: () => ["package.json"], run: async () => ({ code: 0, output: "" }) });
+    ok("lintFormatTool refuses a path escaping the project root", /escapes the project directory/.test(esc.error || ""));
+    const dash = await LF.lintFormatTool({ path: "--write=/tmp/x" }, "/repo", { readdir: () => ["package.json"], run: async () => ({ code: 0, output: "" }) });
+    ok("lintFormatTool refuses a leading-dash path (formatter option injection)", /invalid path/.test(dash.error || ""));
+    const inside = await LF.lintFormatTool({ path: "src/app.js" }, "/repo", { readdir: () => ["package.json"], run: async () => ({ code: 0, output: "ok" }) });
+    ok("lintFormatTool allows an in-root path", !inside.error);
   }
 
   group("notebook_edit (.ipynb cell ops)");
