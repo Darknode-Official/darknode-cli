@@ -3189,6 +3189,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // slider) owns the bottom of the screen until the user picks (key loop).
         for (const r of cardRows) frame.push(r);
       } else {
+      // ---- completion menu: rendered ABOVE the composer so the prompt box stays
+      // pinned to the bottom of the screen (just over the footer). As the user
+      // types and the option list narrows, menuRows shrinks and the transcript
+      // region above absorbs the change — the input box itself never moves. This
+      // is the smooth Claude-Code behaviour: no jerk as completions filter down.
+      const _curM = modelLabel(shownModel()) || engine;
+      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); frame.push(clip((sel ? cyan(" › ") : "   ") + nmShown + tail + pos, C - 2)); }
       // ---- composer: two full-width horizontal rules (top & bottom) that run
       // edge to edge — no corners, no side walls — with the "❯ " input floating
       // between them, the Claude-Code look. The rules turn gold while a
@@ -3209,10 +3216,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         frame.push(" " + clip(_body, _inner));
       }
       frame.push(_bd("─".repeat(Math.max(1, C))));   // bottom rule, edge to edge
-      // ---- completion menu: directly BELOW the input box (like Claude Code), so
-      // it never pushes up into / hides the AI output above the composer.
-      const _curM = modelLabel(shownModel()) || engine;
-      for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); frame.push(clip((sel ? cyan(" › ") : "   ") + nmShown + tail + pos, C - 2)); }
       }
       // footer: contextual hint on the left, status on the right. The status
       // menu (cost, savings & more) is the clickable "..." at the far right;
@@ -4349,10 +4352,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
       else if (cmd === "/title") {
         const a2 = (argstr || "").trim();
-        if (a2.toLowerCase() === "off") { autoTitle = false; saveSetting("autoTitle", false); sessionTitle = ""; idleTitle(); transcript.push({ role: "system", text: "auto tab-naming " + red("OFF") + " — the tab stays \"Nexus\"" + gray("  ·  saved") }); }
-        else if (a2.toLowerCase() === "on") { autoTitle = true; saveSetting("autoTitle", true); titleTried = false; maybeAutoTitle(); transcript.push({ role: "system", text: "auto tab-naming " + green("ON") + " — the tab is named for this session's topic (one small off-ledger model call)" + gray("  ·  saved") }); }
-        else if (a2) { sessionTitle = titleClean(a2).slice(0, 60); autoTitle = true; titleTried = true; idleTitle(); transcript.push({ role: "system", text: "tab named: " + bold(sessionTitle) }); }
-        else { const lu = [...transcript].reverse().find((m) => m.role === "user" && m.text && m.text.trim()); if (!lu) transcript.push({ role: "system", text: "nothing to name yet — send a message first, or use /title <name>" }); else { transcript.push({ role: "system", text: gray("naming the tab…") }); genAiTitle(lu.text).then((t) => { if (t) { sessionTitle = t; titleTried = true; if (!busy) idleTitle(); transcript.push({ role: "system", text: "tab named: " + bold(t) }); } else transcript.push({ role: "system", text: "couldn't generate a name — try /title <name>" }); render(); }).catch(() => {}); } }
+        if (a2.toLowerCase() === "off") { autoTitle = false; titleManual = false; saveSetting("autoTitle", false); sessionTitle = ""; idleTitle(); transcript.push({ role: "system", text: "auto tab-naming " + red("OFF") + " — the tab stays \"Nexus\"" + gray("  ·  saved") }); }
+        else if (a2.toLowerCase() === "on") { autoTitle = true; titleManual = false; titleAt = 0; saveSetting("autoTitle", true); maybeAutoTitle(true); transcript.push({ role: "system", text: "auto tab-naming " + green("ON") + " — the tab is named for this session's topic and refreshes as it evolves (small off-ledger model calls)" + gray("  ·  saved") }); }
+        else if (a2) { sessionTitle = titleClean(a2).slice(0, 60); autoTitle = true; titleManual = true; idleTitle(); transcript.push({ role: "system", text: "tab pinned to: " + bold(sessionTitle) + gray("  ·  auto-refresh paused (/title on to resume)") }); }
+        else { if (!transcript.some((m) => m.role === "user" && m.text && m.text.trim())) transcript.push({ role: "system", text: "nothing to name yet — send a message first, or use /title <name>" }); else { titleManual = false; transcript.push({ role: "system", text: gray("naming the tab…") }); genAiTitle(sessionDigest()).then((t) => { if (t) { sessionTitle = t; titleAt = transcript.filter((m) => m.role === "user" && m.text && m.text.trim()).length; if (!busy) idleTitle(); transcript.push({ role: "system", text: "tab named: " + bold(t) }); } else transcript.push({ role: "system", text: "couldn't generate a name — try /title <name>" }); render(); }).catch(() => {}); } }
         return;
       }
       else if (cmd === "/mode") {
@@ -4654,8 +4657,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           cleanup();
           const args = [process.argv[1], "nexus", "--resume"].concat(process.argv.slice(3));
           const cp = require("child_process");
-          try { cp.spawn(process.execPath, args, { stdio: "inherit", cwd }); } catch (_) {}
-          process.exit(0);
+          // Re-exec as a child that INHERITS our stdio and stays in our process
+          // group, then wait for it and exit with its code. Spawning the child and
+          // exiting the parent immediately would orphan it into a BACKGROUND
+          // process group, so its very first terminal read fails with `read EIO`
+          // the moment the user types. Staying alive as a thin wrapper keeps the
+          // terminal's foreground process group intact for the restarted session.
+          try {
+            const child = cp.spawn(process.execPath, args, { stdio: "inherit", cwd });
+            child.on("exit", (code, sig) => process.exit(sig ? 1 : (code || 0)));
+            child.on("error", () => process.exit(1));
+          } catch (_) { process.exit(0); }
         }, 200);
       }
       else if (cmd === "/next") {
@@ -4815,13 +4827,28 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const setTitle = (txt) => { try { out.write(ESC + "]0;" + txt + "\x07" + ESC + "]2;" + txt + "\x07"); } catch (_) {} };
     // AI-named terminal tab (like Claude Code): the tab reads "Nexus" by default
     // and stays that way until the user sends a message — then a tiny, tool-free,
-    // OFF-LEDGER model call renames it for the session's topic. It never shows
-    // the folder name. The model call stays off the cost ledger (it never
-    // touches `sess`) and runs once per session (guarded by titleTried) or /title.
-    let sessionTitle = "", titleTried = false, autoTitle = S.autoTitle !== false;
-    const titleClean = (s) => String(s || "").replace(/["'`*_#>]+/g, " ").replace(/\s+/g, " ").replace(/^[\s.:\-–—]+|[\s.:\-–—]+$/g, "").trim();
-    const genAiTitle = async (topic) => {
-      const prompt = "Reply with ONLY a 3 to 7 word Title Case name for a terminal tab that describes this task. No quotes, no punctuation, no preamble — just the name.\n\nTask:\n" + String(topic || "").slice(0, 700);
+    // OFF-LEDGER model call renames it for the session's topic and refreshes the
+    // name every few turns so it tracks where the session actually goes. It never
+    // shows the folder name. The call stays off the cost ledger (never touches
+    // `sess`). A /title <name> pins a manual name (titleManual) and stops refresh.
+    let sessionTitle = "", titleAt = 0, titleManual = false, autoTitle = S.autoTitle !== false;
+    const titleClean = (s) => String(s || "").replace(/["'`*_#>]+/g, " ").replace(/^\s*(tab\s*name|title|name|session)\s*[:\-]\s*/i, "").replace(/\s+/g, " ").replace(/^[\s.:\-–—]+|[\s.:\-–—]+$/g, "").trim();
+    // A compact brief of what this session is about: the opening request plus the
+    // current focus — enough for the model to name the real subject, not guess.
+    const sessionDigest = (users) => {
+      const u = users || transcript.filter((m) => m.role === "user" && m.text && m.text.trim());
+      if (!u.length) return "";
+      const c = (s) => String(s).replace(/\s+/g, " ").trim().slice(0, 280);
+      const first = c(u[0].text), last = c(u[u.length - 1].text);
+      return "First request: " + first + (u.length > 1 && last !== first ? "\nCurrent focus: " + last : "");
+    };
+    const genAiTitle = async (digest) => {
+      const prompt =
+        "Name this coding session for a terminal tab. Reply with ONLY the name.\n" +
+        "Rules: 2 to 5 words, Title Case, specific and concrete — name the actual feature, file, tool, bug, or subject. " +
+        "Never generic words like Task, Session, Work, Coding, Help, or Project on their own. No quotes, no punctuation, no preamble.\n\n" +
+        "Examples:\n- Safari Login Bug Fix\n- Nexus Tab Naming\n- Refactor Payment Module\n- CSV Export Endpoint\n- Dark Mode Toggle\n\n" +
+        "Session:\n" + String(digest || "").slice(0, 900);
       const tctl = makeCtl();
       try {
         let raw = "";
@@ -4829,16 +4856,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else if (engine === "claude") { oneShotRan = true; raw = (await runEngineTask("claude", prompt, cwd, false, false, null, tctl, "claude-haiku-5-5")).output; } // cheapest model, off-ledger
         else return ""; // other CLI engines emit protocol JSON here — keep the "Nexus" default
         const cand = (raw || "").split("\n").map((x) => titleClean(x)).filter(Boolean);
-        const line = cand.find((x) => { const w = x.split(/\s+/).length; return w >= 2 && w <= 9 && x.length >= 4 && x.length <= 60 && !/\b(error|cannot|sorry|warning|usage|unable|invalid)\b/i.test(x); }) || "";
-        return line;
+        const bad = /\b(error|cannot|sorry|warning|usage|unable|invalid|here is|the name|i |as an|assistant)\b/i;
+        return cand.find((x) => { const w = x.split(/\s+/).length; return w >= 2 && w <= 6 && x.length >= 4 && x.length <= 48 && !bad.test(x); }) || "";
       } catch (_) { return ""; }
     };
-    const maybeAutoTitle = () => {
-      if (titleTried || !autoTitle) return;
-      const fu = transcript.find((m) => m.role === "user" && m.text && m.text.trim());
-      if (!fu) return;
-      titleTried = true;
-      genAiTitle(fu.text).then((t) => { if (t) { sessionTitle = t; if (!busy) idleTitle(); } }).catch(() => {}); // the AI renames the tab once, in the background
+    const maybeAutoTitle = (force) => {
+      if ((titleManual || !autoTitle) && !force) return;
+      const users = transcript.filter((m) => m.role === "user" && m.text && m.text.trim());
+      if (!users.length) return;
+      const n = users.length;
+      if (!force && sessionTitle && (n - titleAt) < 4) return; // refresh ~every 4 user turns as the topic evolves
+      titleAt = n;
+      genAiTitle(sessionDigest(users)).then((t) => { if (t) { sessionTitle = t; if (!busy) idleTitle(); } }).catch(() => {}); // the AI (re)names the tab in the background
     };
     const idleTitle = () => setTitle(sessionTitle || "Nexus");
     // Ctrl+G: edit the current buffer in $VISUAL/$EDITOR (fallback vi/nano/notepad).
