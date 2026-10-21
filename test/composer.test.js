@@ -464,5 +464,91 @@ group("submission byte cap + dropped-tail handling (NTUI-036)");
   } finally { fs.rmSync(HOME, { recursive: true, force: true }); }
 }
 
+group("vim modal editing (/vim)");
+{
+  const vm = (text) => { const m = new C.ComposerModel({ vim: true }); m.text = text || ""; m.cursor = 0; return m; };
+  // mode switching
+  {
+    const m = vm("");
+    eq("starts in insert mode", m.vimMode, "insert");
+    C.feed(m, "h", {}); C.feed(m, "i", {});
+    eq("typing in insert inserts text", m.text, "hi");
+    const eff = C.feed(m, "\x1b", {});
+    eq("Esc enters normal mode", m.vimMode, "normal");
+    eq("Esc effect is a render", eff.type, "render");
+    C.feed(m, "x", {}); // x in normal would delete, but cursor is at end-1 after Esc left()
+    ok("x in normal mode is not inserted as text", !m.text.includes("x"));
+  }
+  // motions h l 0 $ w b
+  {
+    const m = vm("alpha beta"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "$", {}); eq("$ goes to end of line", m.cursor, 10);
+    C.feed(m, "0", {}); eq("0 goes to start of line", m.cursor, 0);
+    C.feed(m, "w", {}); eq("w jumps to next word", m.cursor, 6);
+    C.feed(m, "l", {}); C.feed(m, "b", {}); eq("b jumps back a word", m.cursor, 6);
+    C.feed(m, "h", {}); eq("h moves left", m.cursor, 5);
+  }
+  // edits: x, D, dd, dw, cw
+  {
+    const m = vm("hello"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "x", {}); eq("x deletes the char under cursor", m.text, "ello");
+    C.feed(m, "D", {}); eq("D deletes to end of line", m.text, "");
+  }
+  {
+    const m = vm("one two three"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "d", {}); C.feed(m, "w", {}); eq("dw deletes a word", m.text, "two three");
+  }
+  {
+    const m = vm("one two"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "c", {}); C.feed(m, "w", {});
+    eq("cw changes to end of word (vim cw=ce, keeps the space)", m.text, " two");
+    eq("cw leaves insert mode active", m.vimMode, "insert");
+    C.feed(m, "X", {}); eq("then typing inserts at the word start", m.text, "X two");
+  }
+  {
+    const m = vm("line1\nline2"); m.vimMode = "normal"; m.cursor = 2; // inside line1
+    C.feed(m, "d", {}); C.feed(m, "d", {}); eq("dd deletes the whole line", m.text, "line2");
+  }
+  // insert-entry commands a / A / I / o
+  {
+    const m = vm("abc"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "A", {}); eq("A enters insert at end", m.vimMode, "insert");
+    C.feed(m, "!", {}); eq("A then typing appends", m.text, "abc!");
+  }
+  {
+    const m = vm("abc"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "o", {}); eq("o opens a line below (insert)", m.vimMode, "insert");
+    C.feed(m, "z", {}); eq("o inserts on the new line", m.text, "abc\nz");
+  }
+  // r replace, p paste, u undo
+  {
+    const m = vm("cat"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "r", {}); C.feed(m, "b", {}); eq("r replaces one char", m.text, "bat");
+  }
+  {
+    const m = vm("abc"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "x", {}); eq("x yanked the char", m.kill, "a");
+    C.feed(m, "p", {}); eq("p pastes after the cursor", m.text, "bac");
+  }
+  {
+    const m = vm("keep"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "x", {}); eq("x deleted", m.text, "eep");
+    C.feed(m, "u", {}); eq("u undoes the delete", m.text, "keep");
+  }
+  // Enter submits from normal mode
+  {
+    const m = vm("send me"); m.vimMode = "normal"; m.cursor = 0;
+    const eff = C.feed(m, "\r", {});
+    eq("Enter in normal mode submits", eff.type, "submit");
+    eq("submitted text is the buffer", eff.text, "send me");
+  }
+  // vim OFF: Esc does not enter a mode, letters type normally
+  {
+    const m = new C.ComposerModel({}); // vim off
+    C.feed(m, "a", {}); C.feed(m, "\x1b", {}); C.feed(m, "b", {});
+    eq("with vim off, letters just type (Esc is the clear machine)", m.vimMode, "insert");
+  }
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (composer + settings)");
 process.exit(fail ? 1 : 0);

@@ -2487,7 +2487,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // Per-project command history, loaded from disk (dedup + capped) and driven
     // by the pure ComposerModel. `history`/`hIdx` stay as compatibility mirrors.
     const history = Composer.loadHistory(cwd, Composer.HISTORY_CAP, NHOME); let hIdx = history.length;
-    const composer = new Composer.ComposerModel({ history });
+    const composer = new Composer.ComposerModel({ history, vim: !!S.vim });
     composer.history = history; composer.histIndex = history.length; // share the live array so submit() keeps both in sync
     let pasteNotice = ""; // one-shot paste preflight warning shown in the hint bar, cleared on the next key
     let ctl = null, costCap = S.budgetCap || 0, rate = null, warned50 = false, notify = !!S.notify, redact = !!S.redact, offline = false, guard = "enforce", lean = !!S.lean, effort = S.effort || "", fallback = "", style = S.style || "default";
@@ -2614,7 +2614,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/dashboard", "open the localhost web UI — live pipelines, jobs & cowork agents"],
       ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
       ["/cron", "scheduled pipeline runs — /cron add \"0 9 * * *\" <goal> · /cron list · /cron remove <id>"],
-      ["/expand", "toggle tool-call detail"], ["/exit", "quit Nexus"],
+      ["/expand", "toggle tool-call detail"], ["/vim", "toggle vim modal editing in the input box · /vim on|off"], ["/exit", "quit Nexus"],
     ];
     // Custom project slash commands (Claude-Code / Glitch style): each .md file in
     // .nexus/commands/ or .claude/commands/ becomes /<name>; its body is the prompt,
@@ -2817,10 +2817,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (pasteNotice) return yellow("paste: ") + pasteNotice;
       if (compact.on) { const n = 22, f = Math.min(n, compact.f); return yellow("Compacting conversation ") + gray("▓".repeat(f) + "░".repeat(n - f) + " ") + Math.round((f / n) * 100) + "%"; }
       if (slashMatches().length || argMatches().length) return gray("↑↓ select · tab complete · enter run · esc dismiss");
-      if (scroll > 0) return yellow(scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  pgup/pgdn scroll · end jump to latest");
-      if (mode === 1) return green("auto-accept edits on") + gray("  (shift+tab to cycle)");
-      if (mode === 2) return cyan("plan mode on") + gray("  (shift+tab to cycle)");
-      return gray("? for shortcuts");
+      // persistent vim-mode tag whenever /vim is on (NORMAL is attention-grabbing)
+      const vtag = composer.vim ? (composer.vimMode === "normal" ? bold(yellow("-- NORMAL --")) : green("-- INSERT --")) + gray(" · ") : "";
+      if (scroll > 0) return vtag + yellow(scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  pgup/pgdn scroll · end jump to latest");
+      if (mode === 1) return vtag + green("auto-accept edits on") + gray("  (shift+tab to cycle)");
+      if (mode === 2) return vtag + cyan("plan mode on") + gray("  (shift+tab to cycle)");
+      return vtag + gray(composer.vim ? "esc: normal · i: insert · ? for shortcuts" : "? for shortcuts");
     };
     // matching slash commands for the popup menu (active when the input is a bare /command being typed)
     // Fuzzy command matching: prefer prefix hits, then subsequence (e.g. /cmt -> /commit,
@@ -4319,6 +4321,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else if (argstr === "clear") { const n = nextQueue.length; nextQueue.length = 0; transcript.push({ role: "system", text: n ? ("cleared " + n + " queued prompt" + (n > 1 ? "s" : "")) : "queue is already empty" }); }
         else if (mrm) { const i = parseInt(mrm[1], 10) - 1; if (i >= 0 && i < nextQueue.length) { const [removed] = nextQueue.splice(i, 1); transcript.push({ role: "system", text: "removed #" + (i + 1) + ": " + removed.slice(0, 50) + (nextQueue.length ? "\n  queue: " + nextQueue.map((q, j) => (j + 1) + ". " + q.slice(0, 50)).join("\n  ") : "  (queue now empty)") }); } else transcript.push({ role: "system", text: "no queued prompt #" + mrm[1] + " — /next to list" }); }
         else { nextQueue.push(argstr); transcript.push({ role: "system", text: "queued (" + nextQueue.length + "): " + argstr.slice(0, 60) + (argstr.length > 60 ? "…" : "") }); }
+      }
+      else if (cmd === "/vim") {
+        const a = (arg || "").trim().toLowerCase();
+        const on = a === "on" ? true : a === "off" ? false : !composer.vim;
+        composer.vim = on; composer.vimMode = "insert"; composer._vimOp = ""; composer._vimReplace = false; saveSetting("vim", on);
+        transcript.push({ role: "system", text: on ? "vim mode ON — start typing (INSERT). Esc → NORMAL. Motions h l j k 0 $ w b e G · edit x D C s r<ch> p u · operators dw cw dd cc d$ · insert i a I A o O · Enter sends. /vim off to disable." : "vim mode OFF — back to standard emacs/readline editing." });
       }
       else if (cmd === "/expand") expanded = !expanded;
       else if (cmd === "/permissions" || cmd === "/perms") {
