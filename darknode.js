@@ -2740,41 +2740,44 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // Darknode logo — the official 2x2 mark (four navy rounded boxes, one yellow).
     //   index 0 1   (TL TR)
     //         2 3   (BL BR)   clockwise from BR: 3 -> 2 -> 0 -> 1 -> 3
-    const _dnNavy = (s) => "\x1b[38;5;68m" + s + "\x1b[0m";
-    const _dnYellow = (s) => "\x1b[38;5;214m" + s + "\x1b[0m"; // brand amber-gold (≈ #ffaa00), not ANSI yellow
-    const _dnDim  = (s) => "\x1b[38;5;136m" + s + "\x1b[0m"; // dimmer amber motion trail
-    // Small static mark for the welcome card: four curved, separate boxes (two
-    // rows tall each so the whole mark is compact), the bottom-right one in the
-    // brand amber — a tidy copy of the official logo that sits beside the card.
-    const dnBigLogo = (color) => {
-      const nv = color ? _dnNavy : (s) => s, yl = color ? _dnYellow : (s) => s;
+    // Darknode logo for the terminal — a faithful copy of the official app icon:
+    // four thick, near-black boxes on a white tile, the bottom-right one holding
+    // the brand-amber square. A black border is invisible on a dark terminal, so
+    // the mark carries its own white background exactly like the real icon;
+    // heavy box-drawing supplies the thick border. #ffaa00 is the brand amber.
+    const _WB = "\x1b[48;5;231m", _INK = "\x1b[38;5;16m", _AMF = "\x1b[38;5;214m", _RS = "\x1b[0m";
+    // Welcome card: the full icon (~9x7), static. Each row is one white-tile line.
+    const dnBigLogo = () => {
+      const ink = (s) => _WB + _INK + s + _RS;
       return [
-        nv("╭─╮") + " " + nv("╭─╮"),
-        nv("╰─╯") + " " + nv("╰─╯"),
-        nv("╭─╮") + " " + yl("╭─╮"),
-        nv("╰─╯") + " " + yl("╰─╯"),
+        ink("┏━━┓ ┏━━┓"),
+        ink("┃  ┃ ┃  ┃"),
+        ink("┗━━┛ ┗━━┛"),
+        ink("         "),
+        ink("┏━━┓ ┏━━┓"),
+        _WB + _INK + "┃  ┃ ┃" + _AMF + "██" + _INK + "┃" + _RS, // amber square nested in box 4
+        ink("┗━━┛ ┗━━┛"),
       ];
     };
-    // Working animation: the yellow dot starts in box 4 (BR) and teleports
-    // clockwise through every box with a deliberate pause (the "jump"), rests
-    // back home, then the WHOLE logo spins clockwise twice — fast, with a
-    // dim-gold trail so the spin reads as motion, not more jumps. Loops with no
-    // dead gap. Driven by wall-clock ms so the cadence is frame-rate-independent.
-    const _DN_STEPS = (() => {
-      const JUMP = 190, HOLD = 300, SPIN = 65, steps = [];
-      for (const c of [3, 2, 0, 1]) steps.push({ cell: c, ms: JUMP, spin: false }); // teleport clockwise
-      steps.push({ cell: 3, ms: HOLD, spin: false });                               // rest home (box 4)
-      for (const c of [2, 0, 1, 3, 2, 0, 1, 3]) steps.push({ cell: c, ms: SPIN, spin: true }); // 2 clockwise spins
-      return steps;
-    })();
-    const _DN_TOTAL = _DN_STEPS.reduce((a, s) => a + s.ms, 0);
+    // Working animation — "charge the circuit": the amber square orbits the four
+    // boxes clockwise, then all four strobe amber as the charge completes, then
+    // it settles home in the bottom-right. The icon in miniature on a white
+    // badge. Two lines tall; wall-clock driven so the cadence stays steady.
+    //   positions 0 1 (TL TR) / 2 3 (BL BR)
+    const _DN_STATES = [
+      { on: [3], ms: 150 }, { on: [2], ms: 150 }, { on: [0], ms: 150 }, { on: [1], ms: 150 }, // orbit clockwise
+      { on: [0, 1, 2, 3], ms: 95 }, { on: [], ms: 80 }, { on: [0, 1, 2, 3], ms: 95 }, { on: [], ms: 80 }, // charge strobe x2
+      { on: [3], ms: 340 }, // settle home
+    ];
+    const _DN_TOTAL = _DN_STATES.reduce((a, s) => a + s.ms, 0);
     const dnLogo = () => {
+      if (!useColor) return { top: "[] []", bot: "[] [#]" };
       let t = Date.now() % _DN_TOTAL, i = 0;
-      for (; i < _DN_STEPS.length; i++) { if (t < _DN_STEPS[i].ms) break; t -= _DN_STEPS[i].ms; }
-      const st = _DN_STEPS[i] || _DN_STEPS[0];
-      const trail = st.spin ? _DN_STEPS[(i - 1 + _DN_STEPS.length) % _DN_STEPS.length].cell : -1;
-      const cell = (n) => n === st.cell ? _dnYellow("■") : (n === trail ? _dnDim("▪") : _dnNavy("▢"));
-      return { top: cell(0) + " " + cell(1), bot: cell(2) + " " + cell(3) };
+      for (; i < _DN_STATES.length; i++) { if (t < _DN_STATES[i].ms) break; t -= _DN_STATES[i].ms; }
+      const on = (_DN_STATES[i] || _DN_STATES[0]).on;
+      const cell = (n) => on.indexOf(n) >= 0 ? _AMF + "◼" : _INK + "◻"; // amber filled vs black outline
+      const line = (a, b) => _WB + cell(a) + " " + cell(b) + _RS;       // one white-badge line
+      return { top: line(0, 1), bot: line(2, 3) };
     };
     const bodyLines = () => {
       const L = [];
@@ -2786,10 +2789,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           const _liveMcp = mcpServers.filter((s) => s && !s.error).length;
           const _wcStatus = [Math.round((sess.ctxWindow || 200000) / 1000) + "K context", "guard: " + (guard === "enforce" ? "on" : guard), _liveMcp ? _liveMcp + " MCP" : "", effort ? effortLabel(effort) : ""].filter(Boolean).join("  ·  ");
           const cardLines = welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), status: _wcStatus, paint });
-          // The logo sits just OUTSIDE the card's right edge (a 3-col gap), beside
+          // The icon sits just OUTSIDE the card's right edge (a 3-col gap), beside
           // the card body — not pushed out to the terminal's far right.
-          {
-            const big = dnBigLogo(useColor), LW = 7, GAP = 3, topAt = 2;
+          if (useColor) {
+            const big = dnBigLogo(), LW = 9, GAP = 3, topAt = 1;
             for (let k = 0; k < big.length; k++) {
               const ri = topAt + k; if (ri >= cardLines.length) break;
               const curW = stripA(cardLines[ri]).length;
