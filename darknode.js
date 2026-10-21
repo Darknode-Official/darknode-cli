@@ -2268,7 +2268,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     } catch (e) { result = "error: " + e.message; }
     if (!(typeof result === "string" && result.startsWith("error: unknown tool"))) didTool = true;
     messages.push({ role: "tool", content: String(result).slice(0, 8000) });
-    const _lg = loopGuard.note(loopGuard.signature(name, a), !/^(error:|blocked:|exit [1-9])/i.test(String(result)));
+    const _lg = loopGuard.note(loopGuard.signature(name, a), !/^(error:|blocked:|exit [1-9])/i.test(String(result)), loopGuard.hashStr(String(result)));
     if (_lg) {
       messages.push({ role: "tool", content: "[loop guard] " + _lg.message });
       if (_lg.action === "break") return { ok: true, output: log + "\n" + _lg.message };
@@ -3286,7 +3286,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (["write_file", "edit_file"].includes(name) && a.path) { stat.files.add(base(a.path)); const r = relOf(a.path); if (r) stat.paths.add(r); }
             render();
             let result, blocked = false;
-            if (mode === 2 && (["write_file", "edit_file", "multi_edit", "multiedit", "apply_patch", "patch", "run_command", "delete", "delete_file", "rm", "move", "move_file", "rename", "copy", "copy_file", "make_dir", "mkdir", "spawn_agents"].includes(name) || String(name).startsWith("mcp__"))) { result = { error: "plan mode is on — file/system changes are blocked. Describe the plan instead, then switch mode with shift+tab to execute." }; blocked = true; card.status = "err"; }
+            if (mode === 2 && (["write_file", "edit_file", "multi_edit", "multiedit", "apply_patch", "patch", "run_command", "run_background", "delete", "delete_file", "rm", "move", "move_file", "rename", "copy", "copy_file", "make_dir", "mkdir", "spawn_agents"].includes(name) || String(name).startsWith("mcp__"))) { result = { error: "plan mode is on — file/system changes are blocked. Describe the plan instead, then switch mode with shift+tab to execute." }; blocked = true; card.status = "err"; }
             const _perm = permDecision(perms, name, a); // permission allowlist (/permissions)
             if (!blocked && _perm === "deny") { result = { error: "denied by a permission rule (/permissions) — the operator disallowed this. They can /allow it or run it directly." }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "permission rule denied " + name + (a.command ? " (" + oneline(a.command, 40) + ")" : a.path ? " (" + a.path + ")" : "") }); }
             if (!blocked && _perm !== "allow" && (name === "run_command" || name === "run_background") && guard !== "off") { const d = classifyDanger(a.command); if (d.level === "block" && guard === "enforce") { result = { error: "BLOCKED by Darknode guard: " + d.why + " (/guard off to allow, or run it yourself with !)" }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "Darknode guard blocked a destructive command — " + d.why + ": " + oneline(a.command, 46) }); } else if (d.level !== "ok") transcript.push({ role: "system", text: "Darknode: " + d.why + " — " + oneline(a.command, 46) + (d.level === "block" ? " (allowed; guard is " + guard + ")" : "") }); }
@@ -3372,7 +3372,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (lean || trimOutput) elideToolHistory(oMsgs, lean ? 16000 : 40000, lean ? 3 : 6); // cap cumulative tool bytes carried within the turn (opt-in /settings trimOutput; always in lean)
             // loop guard: if the agent is stuck repeating or oscillating, warn it; if it keeps
             // going anyway, end the turn cleanly instead of burning the whole step budget.
-            const _lg = loopGuard.note(loopGuard.signature(name, a), !(result && (result.error || result.code)));
+            const _lg = loopGuard.note(loopGuard.signature(name, a), !(result && (result.error || result.code)), loopGuard.hashStr(JSON.stringify(result)));
             if (_lg) {
               transcript.push({ role: "system", text: _lg.message });
               oMsgs.push({ role: "tool", content: "[loop guard] " + _lg.message });
@@ -4281,7 +4281,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           else if (!cronMatch(cronExpr)) transcript.push({ role: "system", text: red("invalid cron expression: ") + cronExpr + gray("\n  format: min hour day month weekday (e.g. 0 9 * * * = daily at 9am)") });
           else {
             const jobs = loadCron();
-            const id = "cron-" + Date.now().toString(36);
+            let id = "cron-" + Date.now().toString(36), _n = 1;
+            while (jobs.some((j) => j.id === id)) id = "cron-" + Date.now().toString(36) + "-" + (++_n); // two /cron add in the same ms must not share an id (remove deletes by id)
             jobs.push({ id, schedule: cronExpr, goal, engine, enabled: true, created: new Date().toISOString(), lastRun: null, runs: 0 });
             saveCron(jobs);
             transcript.push({ role: "system", text: green("scheduled ") + bold(id) + "\n  schedule  " + cyan(cronExpr) + "\n  goal      " + goal + "\n  engine    " + engine + gray("\n  saved to .nexus/cron.json — runs when Nexus is active") });
@@ -4295,7 +4296,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else if (sub === "remove" || sub === "rm" || sub === "delete") {
           const id = argstr.split(/\s+/)[1];
           if (!id) transcript.push({ role: "system", text: "usage: /cron remove <id>" });
-          else { const jobs = loadCron().filter((j) => j.id !== id); saveCron(jobs); transcript.push({ role: "system", text: "removed " + id }); }
+          else { const all = loadCron(); const jobs = all.filter((j) => j.id !== id); saveCron(jobs); transcript.push({ role: "system", text: jobs.length === all.length ? "no job '" + id + "'" : "removed " + id }); }
         }
         else if (sub === "enable" || sub === "disable") {
           const id = argstr.split(/\s+/)[1]; const en = sub === "enable";
@@ -4645,8 +4646,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         case "help": handleSlash("/keys"); render(); return;             // '?' on an empty buffer
         case "home-scroll": scroll += 100000; render(); return;          // Home on empty buffer -> top
         case "end-scroll": scroll = 0; render(); return;                 // End on empty buffer -> latest
-        case "history-up": { if (!mouseOn && !input.length) { scroll += 3; render(); return; } hIdx = composer.histIndex; if (history.length) { composer.historyPrev(); flush(); hIdx = composer.histIndex; } menuSel = 0; render(); return; } // Up: scroll the transcript on an empty buffer (wheel = ?1007h arrows), else history
-        case "history-down": { if (!mouseOn && !input.length) { scroll = Math.max(0, scroll - 3); render(); return; } composer.historyNext(); flush(); hIdx = composer.histIndex; menuSel = 0; render(); return; }                                                  // Down: scroll down on an empty buffer, else history
+        case "history-up": { if (!mouseOn && !input.length) { scroll += 3; render(); return; } composer.text = input; composer.cursor = curPos; hIdx = composer.histIndex; if (history.length) { composer.historyPrev(); flush(); hIdx = composer.histIndex; } menuSel = 0; render(); return; } // Up: scroll the transcript on an empty buffer (wheel = ?1007h arrows), else history. Sync input→model first (printable keys mutate `input`, not the model) so the live draft is saved on the first Up, matching Ctrl+P.
+        case "history-down": { if (!mouseOn && !input.length) { scroll = Math.max(0, scroll - 3); render(); return; } composer.text = input; composer.cursor = curPos; composer.historyNext(); flush(); hIdx = composer.histIndex; menuSel = 0; render(); return; }                                                  // Down: scroll down on an empty buffer, else history
         case "interrupt": if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); } render(); return;
         case "exit": cleanup(); resolve(); return;                       // ctrl+d empty / 2nd ctrl+c
         case "exit-confirm": transcript.push({ role: "system", text: "Press Ctrl+C again to exit" }); render(); return;

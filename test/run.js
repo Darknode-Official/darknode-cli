@@ -1246,6 +1246,10 @@ group("cost savers — squeeze + response cache");
   const dup = "--- pinned: a.js ---\n" + body + "\n--- end a.js ---\n\nquestion\n\n--- context: a.js ---\n" + body + "\n--- end a.js ---";
   const sq = squeezeContext(dup);
   ok("squeeze dedupes identical inlined blocks + reports savings", sq.text.includes("already shown above") && sq.text.indexOf(body) === sq.text.lastIndexOf(body) && sq.saved > 0);
+  // two DISTINCT files with byte-identical bodies must NOT collapse (key is tag+body, not body alone)
+  const twoFiles = "--- context: a.js ---\n" + body + "\n--- end a.js ---\n\n--- context: b.js ---\n" + body + "\n--- end b.js ---";
+  const sq2 = squeezeContext(twoFiles);
+  ok("squeeze keeps distinct files with identical content (no false dedupe)", !sq2.text.includes("already shown above") && sq2.text.indexOf(body) !== sq2.text.lastIndexOf(body));
   ok("squeeze collapses blank runs + trailing spaces", squeezeContext("a  \n\n\n\nb").text === "a\n\nb");
   ok("squeeze leaves clean small text untouched (no savings)", squeezeContext("hello world").saved === 0);
   ok("cacheKey stable + sensitive to engine/model/prompt", cacheKey("ollama", "m", "p") === cacheKey("ollama", "m", "p") && cacheKey("ollama", "m", "p") !== cacheKey("ollama", "m2", "p") && cacheKey("ollama", "m", "p") !== cacheKey("ollama", "m", "p2"));
@@ -1653,6 +1657,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ], fakeDispatch);
     ok("batch isolates an invalid/unsafe op and still runs the valid ones", mixed.ran === 4 && mixed.results[0].output && /unknown or non-read-only/.test(mixed.results[1].error) && /unknown or non-read-only/.test(mixed.results[2].error) && mixed.results[3].output);
     ok("batch never executes a non-read-only op (write/exec rejected pre-dispatch)", !BA.OP_ALIASES.run_command && !BA.OP_ALIASES.write && !BA.OP_ALIASES.write_file);
+    // inherited object members must not resolve to a truthy alias (null-proto whitelist)
+    ok("batch op whitelist is prototype-safe (constructor/toString are unknown ops)", BA.OP_ALIASES.constructor === undefined && BA.OP_ALIASES.toString === undefined && BA.OP_ALIASES.valueOf === undefined);
+    const proto = await BA.runBatch([{ op: "constructor" }, { op: "toString" }, { op: "read", path: "a.js" }], fakeDispatch);
+    ok("batch rejects a prototype-named op instead of dispatching it", /unknown or non-read-only/.test(proto.results[0].error) && /unknown or non-read-only/.test(proto.results[1].error) && proto.results[2].output);
 
     // a dispatcher error for one op is reported inline, not thrown
     const errd = await BA.runBatch([{ op: "read", path: "missing" }, { op: "read", path: "a.js" }], fakeDispatch);
@@ -1715,6 +1723,28 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const g5 = LG.makeLoopGuard();
     g5.note("x", false); g5.note("x", false); g5.reset();
     ok("reset clears state so the counter starts over", g5.note("x", false) === null);
+
+    // outcome-aware: a genuine fix loop (same test command, DIFFERENT error each run) is
+    // progress, not a stall — it must not break the turn.
+    const g6 = LG.makeLoopGuard();
+    const st = g6.signature("run_command", { command: "npm test" });
+    const v6 = [g6.note(st, false, "err-A"), g6.note(st, false, "err-B"), g6.note(st, false, "err-C"), g6.note(st, false, "err-D")];
+    ok("changing error each run is treated as progress (no nudge/break)", v6.every((v) => v === null));
+    // but the SAME error repeated still trips the fail-stall (nudge then break).
+    const g7 = LG.makeLoopGuard();
+    const su = g7.signature("run_command", { command: "pytest" });
+    ok("same-outcome 1st failure not flagged", g7.note(su, false, "same") === null);
+    const n7 = g7.note(su, false, "same");
+    ok("same-outcome 2nd failure nudges", n7 && n7.action === "nudge" && n7.kind === "repeat-failure");
+    const b7 = g7.note(su, false, "same");
+    ok("same-outcome 3rd failure breaks", b7 && b7.action === "break");
+    // back-compat: omitting the outcome arg reproduces the old all-failures-count behaviour.
+    const g8 = LG.makeLoopGuard();
+    const sv = g8.signature("run_command", { command: "make" });
+    g8.note(sv, false); const n8 = g8.note(sv, false);
+    ok("no-outcome calls keep the original counting (nudge on 2nd failure)", n8 && n8.action === "nudge");
+    // hashStr is exposed on the instance for the call site to build an outcome signature.
+    ok("loopGuard exposes hashStr for outcome signatures", typeof g8.hashStr === "function" && g8.hashStr("a") !== g8.hashStr("b"));
   } catch (e) { ok("loop guard test threw: " + (e && e.message), false); }
 
   // stale-write guard — a full overwrite is refused if the file changed on disk since the
