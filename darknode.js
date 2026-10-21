@@ -2736,18 +2736,43 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const ensureText = () => { const b = cur(); if (!b.items) b.items = []; let last = b.items[b.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; b.items.push(last); } return last; };
     // ---- render body ----
     const spin = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    // Darknode working logo — the official 2x2 mark (four navy rounded boxes).
-    // The yellow dot starts in the 4th box (bottom-right), teleports clockwise to
-    // every box and back home, then the whole logo spins clockwise twice (the dot
-    // orbits — the four boxes are symmetric, so the orbit IS the spin). Two lines
-    // high; advanced ~every 120ms (matching Claude Code's ~8fps).
+    // Darknode logo — the official 2x2 mark (four navy rounded boxes, one yellow).
     //   index 0 1   (TL TR)
     //         2 3   (BL BR)   clockwise from BR: 3 -> 2 -> 0 -> 1 -> 3
     const _dnNavy = (s) => "\x1b[38;5;68m" + s + "\x1b[0m";
-    const DN_SEQ = [3, 2, 0, 1, 3,  2, 0, 1, 3,  2, 0, 1, 3]; // visit-each + back home, then 2 clockwise spins
-    const dnLogo = (fi) => {
-      const y = DN_SEQ[((fi % DN_SEQ.length) + DN_SEQ.length) % DN_SEQ.length];
-      const cell = (i) => i === y ? yellow("■") : _dnNavy("□");
+    const _dnDim  = (s) => "\x1b[38;5;178m" + s + "\x1b[0m"; // dim-gold motion trail
+    // Big static mark for the welcome card: four curved, separate boxes, the
+    // bottom-right one filled yellow — a faithful blow-up of the official logo.
+    const dnBigLogo = (color) => {
+      const nv = color ? _dnNavy : (s) => s, yl = color ? yellow : (s) => s;
+      return [
+        nv("╭──╮") + " " + nv("╭──╮"),
+        nv("│  │") + " " + nv("│  │"),
+        nv("╰──╯") + " " + nv("╰──╯"),
+        nv("╭──╮") + " " + yl("╭──╮"),
+        nv("│  │") + " " + yl("│██│"),
+        nv("╰──╯") + " " + yl("╰──╯"),
+      ];
+    };
+    // Working animation: the yellow dot starts in box 4 (BR) and teleports
+    // clockwise through every box with a deliberate pause (the "jump"), rests
+    // back home, then the WHOLE logo spins clockwise twice — fast, with a
+    // dim-gold trail so the spin reads as motion, not more jumps. Loops with no
+    // dead gap. Driven by wall-clock ms so the cadence is frame-rate-independent.
+    const _DN_STEPS = (() => {
+      const JUMP = 190, HOLD = 300, SPIN = 65, steps = [];
+      for (const c of [3, 2, 0, 1]) steps.push({ cell: c, ms: JUMP, spin: false }); // teleport clockwise
+      steps.push({ cell: 3, ms: HOLD, spin: false });                               // rest home (box 4)
+      for (const c of [2, 0, 1, 3, 2, 0, 1, 3]) steps.push({ cell: c, ms: SPIN, spin: true }); // 2 clockwise spins
+      return steps;
+    })();
+    const _DN_TOTAL = _DN_STEPS.reduce((a, s) => a + s.ms, 0);
+    const dnLogo = () => {
+      let t = Date.now() % _DN_TOTAL, i = 0;
+      for (; i < _DN_STEPS.length; i++) { if (t < _DN_STEPS[i].ms) break; t -= _DN_STEPS[i].ms; }
+      const st = _DN_STEPS[i] || _DN_STEPS[0];
+      const trail = st.spin ? _DN_STEPS[(i - 1 + _DN_STEPS.length) % _DN_STEPS.length].cell : -1;
+      const cell = (n) => n === st.cell ? yellow("■") : (n === trail ? _dnDim("▪") : _dnNavy("▢"));
       return { top: cell(0) + " " + cell(1), bot: cell(2) + " " + cell(3) };
     };
     const bodyLines = () => {
@@ -2759,10 +2784,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           const paint = useColor ? { brand: (t) => bold(cyan(t)), border: gray, muted: gray, faint: (t) => t } : null;
           const _liveMcp = mcpServers.filter((s) => s && !s.error).length;
           const _wcStatus = [Math.round((sess.ctxWindow || 200000) / 1000) + "K context", "guard: " + (guard === "enforce" ? "on" : guard), _liveMcp ? _liveMcp + " MCP" : "", effort ? effortLabel(effort) : ""].filter(Boolean).join("  ·  ");
-          // static Darknode logo mascot (the official 2x2 mark — yellow dot resting
-          // in the 4th box) tucked on the right of the welcome card.
-          const _mascot = useColor ? [_dnNavy("□") + " " + _dnNavy("□"), _dnNavy("□") + " " + yellow("■")] : ["□ □", "□ ■"];
-          for (const ln of welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), status: _wcStatus, paint, mascot: _mascot })) L.push(ln);
+          const cardLines = welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), status: _wcStatus, paint });
+          // The big official logo sits OUTSIDE the card, pinned to the far right and
+          // vertically centred against the card body (where the model/path/help sit).
+          if (useColor && cols() >= 78) {
+            const big = dnBigLogo(true), LW = 9, topAt = 3;
+            for (let k = 0; k < big.length; k++) {
+              const ri = topAt + k; if (ri >= cardLines.length) break;
+              const pad = (cols() - 2) - stripA(cardLines[ri]).length - LW;
+              if (pad >= 3) cardLines[ri] = cardLines[ri] + " ".repeat(pad) + big[k];
+            }
+          }
+          for (const ln of cardLines) L.push(ln);
           continue;
         }
         if (m.role === "diff") {
@@ -2836,7 +2869,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (busy && m === cur()) {
           const el = Math.round((Date.now() - busyStart) / 1000);
           const tok = sess.liveOut ? " · " + fmtK(sess.liveOut) + " tokens" : "";
-          const _lg = dnLogo(Math.floor(Date.now() / 120));
+          const _lg = dnLogo();
           const et = ENGINE_TIPS[engine] || [], tips = [];
           for (let k = 0; k < Math.max(NEXUS_TIPS.length, et.length); k++) { if (et[k]) tips.push(et[k]); if (NEXUS_TIPS[k]) tips.push(NEXUS_TIPS[k]); } // interleave so an engine-specific tip shows first
           L.push("");
@@ -3121,7 +3154,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const combined = menu.length ? menu : amenu;
       if (menuSel > combined.length - 1) menuSel = Math.max(0, combined.length - 1);
       if (menuSel < 0) menuSel = 0;
-      const fixedChrome = 4; // spacer + composer box (top & bottom borders) + footer row
+      const fixedChrome = 2; // spacer + footer row (the composer is borderless now)
       const avail = Math.max(0, R - fixedChrome);
       // cap the slash/arg menu so it never fills the whole screen (Claude Code
       // keeps it to roughly the lower half, leaving the chat above visible).
@@ -3152,27 +3185,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // slider) owns the bottom of the screen until the user picks (key loop).
         for (const r of cardRows) frame.push(r);
       } else {
-      // ---- composer: an open input framed as a rounded box (╭─╮ │ ╰─╯) with
-      // side walls, the Claude-style look. The accent "❯" marks the first row;
-      // the block caret (█) is drawn inline because the hardware cursor is
-      // hidden in the alt-screen. Same row count as before (top + inRows +
-      // bottom), so the chrome/layout math upstream is unchanged.
-      // gold border while a /god-prompt is armed or running; grey otherwise.
-      const _gold = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
-      const _bd = (godArmed || godActive) ? _gold : gray;
-      const _W = Math.max(2, C - 2);        // box width incl. both side walls
-      const _inner = Math.max(0, _W - 4);   // text area between the walls (one pad each side)
-      frame.push(" " + _bd("╭" + "─".repeat(_W - 2) + "╮"));
+      // ---- composer: a borderless prompt — just the accent "❯" and the input,
+      // flush to the left margin (no box, no side walls). The block caret (█) is
+      // drawn inline because the hardware cursor is hidden in the alt-screen.
+      // The "❯" turns gold while a /god-prompt is armed or running (the only
+      // chrome left to carry that signal), cyan otherwise.
+      const _godOn = godArmed || godActive;
+      const _prompt = _godOn ? "\x1b[1m\x1b[38;5;220m❯\x1b[0m " : bold(cyan("❯ "));
+      const _inner = Math.max(0, C - 4);    // text area (one-col left gutter + "❯ ")
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
       for (let i = 0; i < inRows; i++) {
         let raw = shown[i] || ""; const li = _showStart + i;
         if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
-        // accent "❯ " on the first row, aligned indent after; clipped then padded so the right wall aligns.
-        const _body = (i === 0 ? bold(cyan("❯ ")) : "  ") + colorInput(raw);
-        frame.push(" " + _bd("│") + " " + padRightV(clip(_body, _inner), _inner) + " " + _bd("│"));
+        const _body = (i === 0 ? _prompt : "  ") + colorInput(raw);
+        frame.push(" " + clip(_body, _inner));
       }
-      frame.push(" " + _bd("╰" + "─".repeat(_W - 2) + "╯"));
       // ---- completion menu: directly BELOW the input box (like Claude Code), so
       // it never pushes up into / hides the AI output above the composer.
       const _curM = modelLabel(shownModel()) || engine;
@@ -3369,7 +3397,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         { const cw = sess.ctxWindow || 200000; bits.push(Math.min(100, Math.round((sess.ctxUsed / cw) * 100)) + "% ctx"); }
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); try { bisectPersist(cwd, ckObj); } catch (_) {} } // persist the turn snapshot so `bisect` can search the timeline later
         const clock = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
-        block.summary = (recap.length ? recap.join(". ") + "." + gray("  ") : "") + bits.join("  ·  ") + gray("  ·  done " + clock);
+        block.summary = (recap.length ? recap.join(". ") + "." + gray(" · ") : "") + bits.join(" · ") + gray(" · done " + clock);
         // Cache read-only answers (no file/command side-effects) so an exact repeat is free.
         if (ckey && !(res && res.interrupted) && stat.files.size === 0 && stat.cmds === 0) { try { const ft = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").trim(); if (ft && ft !== "(no output)") cachePut(cwd, ckey, { text: ft, inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), readonly: true, hits: 0, ts: Date.now() }); } catch (_) {} }
         if (!(res && res.interrupted)) { try { const answerText = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").slice(0, 2000); nexusLearn(text, answerText); } catch (_) {} }
