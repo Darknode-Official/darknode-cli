@@ -2407,7 +2407,7 @@ const FORGE = ["Accomplishing", "Actioning", "Actualizing", "Baking", "Booping",
 const NEXUS_TIPS = [
   "/undo reverts the last turn's file changes — a checkpoint is taken before each turn",
   "drop a file into your message with @path (e.g. fix @src/app.js)",
-  "!cmd runs a shell command inline · #note saves a memory to .nexus/NEXUS.md",
+  "!cmd runs a shell command inline (its output is shared with the AI) · #note saves a memory to .nexus/NEXUS.md",
   "scroll back with the mouse wheel or PgUp/PgDn · End jumps to the latest",
   "shift+tab cycles mode · ctrl+o expands tool detail · ctrl+c stops a turn",
   "/budget 5 caps your spend · /compact shrinks the context when it fills up",
@@ -2531,7 +2531,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // @path inlines a file's contents into the prompt sent to the engine (display keeps the @mention)
     const inlineAts = (t) => t.replace(/(^|\s)@(\S+)/g, (m, pre, f) => { try { const c = fs.readFileSync(path.resolve(cwd, f), "utf8"); return pre + "\n\n--- " + f + " ---\n" + c.slice(0, 6000) + "\n--- end " + f + " ---\n"; } catch (_) { return m; } });
     // !cmd runs a shell command directly (Claude-Code-style passthrough); output shown inline
-    const runBang = (c) => { const dg = classifyDanger(c); if (dg.level !== "ok" && guard !== "off") transcript.push({ role: "system", text: "Darknode: this looks destructive (" + dg.why + ") — running it because you typed it directly" }); const blk = { role: "system", text: "$ " + c + "\nrunning…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); coderShell(c, cwd).then((r) => { const o = (r.output || "").replace(/[ \t\r\n]+$/, ""); blk.text = "$ " + c + "\n" + (o || "(no output)") + (r.code ? "\n[exit " + r.code + "]" : ""); busy = false; ctl = null; render(); }).catch((e) => { blk.text = "$ " + c + "\nerror: " + (e && e.message || e); busy = false; ctl = null; render(); }); };
+    // ! bash escape. Output is shown to the user AND buffered (bangLog) so the
+    // next prompt carries it into the model's context — like Claude Code's bash
+    // mode, where what you run with ! becomes something the agent can act on.
+    let bangLog = [];
+    const runBang = (c) => { const dg = classifyDanger(c); if (dg.level !== "ok" && guard !== "off") transcript.push({ role: "system", text: "Darknode: this looks destructive (" + dg.why + ") — running it because you typed it directly" }); const blk = { role: "system", text: "$ " + c + "\nrunning…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); coderShell(c, cwd).then((r) => { const o = (r.output || "").replace(/[ \t\r\n]+$/, ""); blk.text = "$ " + c + "\n" + (o || "(no output)") + (r.code ? "\n[exit " + r.code + "]" : ""); bangLog.push({ cmd: c, output: o.length > 2000 ? o.slice(0, 2000) + "\n…[truncated]" : o, code: r.code }); if (bangLog.length > 10) bangLog.splice(0, bangLog.length - 10); busy = false; ctl = null; render(); }).catch((e) => { const msg = "error: " + (e && e.message || e); blk.text = "$ " + c + "\n" + msg; bangLog.push({ cmd: c, output: msg, code: 1 }); if (bangLog.length > 10) bangLog.splice(0, bangLog.length - 10); busy = false; ctl = null; render(); }); };
     // #note appends a durable memory to .nexus/NEXUS.md
     const addMemory = (line) => { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; c += "- " + line + "\n"; fs.writeFileSync(md, c); transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + line }); } catch (e) { transcript.push({ role: "system", text: "could not save note: " + e.message }); } };
     // ---- ansi-aware width helpers ----
@@ -3083,6 +3087,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (imgAttach.length) transcript.push({ role: "system", text: "attached " + imgAttach.length + " image" + (imgAttach.length > 1 ? "s" : "") + (engine === "ollama" ? (apiConfigured() ? " → sent to the API model (needs a vision model)" : " → sent to the local model (needs a vision model, e.g. llama3.2-vision)") : " → the " + engine + " engine reads it from the path") });
       let sendText = inlineAts(preText);
       if (pinned.size) { let pre = ""; for (const f of pinned) { try { pre += "\n\n--- pinned: " + f + " ---\n" + fs.readFileSync(path.resolve(cwd, f), "utf8").slice(0, 4000) + "\n--- end " + f + " ---"; } catch (_) {} } if (pre) sendText = pre + "\n\n" + sendText; }
+      // Shell commands the user ran with ! since the last turn become context for
+      // this one (Claude-Code bash-mode parity), then the buffer is cleared.
+      if (bangLog.length) { let pre = "[Shell commands the user ran with ! since your last turn, with their output — use as context:]\n"; for (const b of bangLog) pre += "\n$ " + b.cmd + "\n" + (b.output || "(no output)") + (b.code ? "\n[exit " + b.code + "]" : "") + "\n"; sendText = pre + "\n" + sendText; bangLog = []; }
       if (index && engine === "ollama") { const rel = retrieve(text, 3); if (rel.length) { let pre = ""; for (const f of rel) { try { pre += "\n\n--- context: " + f + " ---\n" + fs.readFileSync(path.resolve(cwd, f), "utf8").slice(0, 6000) + "\n--- end " + f + " ---"; } catch (_) {} } if (pre) { sendText = pre + "\n\n" + sendText; transcript.push({ role: "system", text: "auto-context: pulled " + rel.join(", ") + " from the index" }); } } }
       // Orient the agent once per session with a ranked repo map (every engine, not just local).
       // Skipped for trivial greetings and when repo-map is toggled off (/map off).
@@ -3686,7 +3693,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low | medium | high"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max-savings preset"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
           { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
           { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/dashboard","open the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
-          { title: "Input prefixes", rows: [["/command","run a command (type / to browse)"],["@file","attach a file or image (Tab completes the path)"],["!command","run a shell command"],["#note","save a note to memory"]] },
+          { title: "Input prefixes", rows: [["/command","run a command (type / to browse)"],["@file","attach a file or image (Tab completes the path)"],["!command","run a shell command (output goes to the AI)"],["#note","save a note to memory"]] },
         ];
         transcript.push({ role: "system", lines: helpLines(HS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }).concat(["", gray("  " + allCmds().length + " commands in total — type / to search them, or /keys for shortcuts.")]) });
       }
