@@ -1489,6 +1489,8 @@ group("compliance bundle (SOC2 export)");
   ok("multi-file patch is parsed into two files", parsePatch(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@", "-a", "+b", "diff --git a/y b/y", "--- a/y", "+++ b/y", "@@", "-c", "+d"].join("\n")).length === 2);
   eq("applyHunks flexible-anchors a hunk whose context indentation differs", applyHunks("  keep\n    old\n  tail\n", [{ before: ["keep", "old"], after: ["keep", "new"] }]).content, "  keep\n  new\n  tail\n");
   eq("applyHunks preserves $ sequences in replacement", applyHunks("a\nkeep X\nb\n", [{ before: ["keep X"], after: ["new $& v"] }]).content, "a\nnew $& v\nb\n");
+  eq("applyHunks keeps CRLF line endings consistent on a CRLF file", applyHunks("pre\r\nline1\r\nline2\r\npost\r\n", [{ before: ["line1", "line2"], after: ["line1", "LINE2"] }]).content, "pre\r\nline1\r\nLINE2\r\npost\r\n");
+  eq("applyPatch on a CRLF file does not leave mixed endings", applyPatch("a\r\nkeep\r\nold\r\nb\r\n", ["--- a/f", "+++ b/f", "@@", " keep", "-old", "+new"].join("\n")).content, "a\r\nkeep\r\nnew\r\nb\r\n");
 }
 
 {

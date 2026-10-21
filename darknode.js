@@ -1651,7 +1651,7 @@ async function aiCoder(argv) {
           if (t == null) { result = "error: cannot read " + a.path; }
           else if (!t.includes(a.find)) { result = "error: find text not in file"; }
           else { const occurrences = t.split(a.find).length - 1; if (occurrences > 1 && !a.replace_all) { result = "error: matches " + occurrences + " locations — add more context"; } else if (!(await approve("edit " + a.path))) { result = "denied"; console.log("  " + red("denied ") + a.path); }
-          else { fs.writeFileSync(fp, a.replace_all ? t.split(a.find).join(a.replace == null ? "" : a.replace) : t.replace(a.find, a.replace == null ? "" : a.replace)); changed.push({ path: fp, before: t, label: "edit " + a.path }); result = "ok"; console.log("  " + green("edit ") + gray(a.path)); } }
+          else { fs.writeFileSync(fp, a.replace_all ? t.split(a.find).join(a.replace == null ? "" : a.replace) : t.replace(a.find, () => (a.replace == null ? "" : a.replace))); changed.push({ path: fp, before: t, label: "edit " + a.path }); result = "ok"; console.log("  " + green("edit ") + gray(a.path)); } }
         }
         else if (name === "run_command") {
           if (!(await approve("run: " + a.command))) { result = "denied"; console.log("  " + red("denied ") + a.command); }
