@@ -2741,18 +2741,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     //   index 0 1   (TL TR)
     //         2 3   (BL BR)   clockwise from BR: 3 -> 2 -> 0 -> 1 -> 3
     const _dnNavy = (s) => "\x1b[38;5;68m" + s + "\x1b[0m";
-    const _dnDim  = (s) => "\x1b[38;5;178m" + s + "\x1b[0m"; // dim-gold motion trail
-    // Big static mark for the welcome card: four curved, separate boxes, the
-    // bottom-right one filled yellow — a faithful blow-up of the official logo.
+    const _dnYellow = (s) => "\x1b[38;5;214m" + s + "\x1b[0m"; // brand amber-gold (≈ #ffaa00), not ANSI yellow
+    const _dnDim  = (s) => "\x1b[38;5;136m" + s + "\x1b[0m"; // dimmer amber motion trail
+    // Small static mark for the welcome card: four curved, separate boxes, the
+    // bottom-right one filled — a compact copy of the official logo.
     const dnBigLogo = (color) => {
-      const nv = color ? _dnNavy : (s) => s, yl = color ? yellow : (s) => s;
+      const nv = color ? _dnNavy : (s) => s, yl = color ? _dnYellow : (s) => s;
       return [
-        nv("╭──╮") + " " + nv("╭──╮"),
-        nv("│  │") + " " + nv("│  │"),
-        nv("╰──╯") + " " + nv("╰──╯"),
-        nv("╭──╮") + " " + yl("╭──╮"),
-        nv("│  │") + " " + yl("│██│"),
-        nv("╰──╯") + " " + yl("╰──╯"),
+        nv("╭─╮") + " " + nv("╭─╮"),
+        nv("│ │") + " " + nv("│ │"),
+        nv("╰─╯") + " " + nv("╰─╯"),
+        nv("╭─╮") + " " + yl("╭─╮"),
+        nv("│ │") + " " + yl("│█│"),
+        nv("╰─╯") + " " + yl("╰─╯"),
       ];
     };
     // Working animation: the yellow dot starts in box 4 (BR) and teleports
@@ -2773,7 +2774,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       for (; i < _DN_STEPS.length; i++) { if (t < _DN_STEPS[i].ms) break; t -= _DN_STEPS[i].ms; }
       const st = _DN_STEPS[i] || _DN_STEPS[0];
       const trail = st.spin ? _DN_STEPS[(i - 1 + _DN_STEPS.length) % _DN_STEPS.length].cell : -1;
-      const cell = (n) => n === st.cell ? yellow("■") : (n === trail ? _dnDim("▪") : _dnNavy("▢"));
+      const cell = (n) => n === st.cell ? _dnYellow("■") : (n === trail ? _dnDim("▪") : _dnNavy("▢"));
       return { top: cell(0) + " " + cell(1), bot: cell(2) + " " + cell(3) };
     };
     const bodyLines = () => {
@@ -2789,7 +2790,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // The big official logo sits OUTSIDE the card, pinned to the far right and
           // vertically centred against the card body (where the model/path/help sit).
           if (useColor && cols() >= 78) {
-            const big = dnBigLogo(true), LW = 9, topAt = 3;
+            const big = dnBigLogo(true), LW = 7, topAt = 3;
             for (let k = 0; k < big.length; k++) {
               const ri = topAt + k; if (ri >= cardLines.length) break;
               const pad = (cols() - 2) - stripA(cardLines[ri]).length - LW;
@@ -3155,7 +3156,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const combined = menu.length ? menu : amenu;
       if (menuSel > combined.length - 1) menuSel = Math.max(0, combined.length - 1);
       if (menuSel < 0) menuSel = 0;
-      const fixedChrome = 2; // spacer + footer row (the composer is borderless now)
+      const fixedChrome = 4; // spacer + composer box (top & bottom borders) + footer row
       const avail = Math.max(0, R - fixedChrome);
       // cap the slash/arg menu so it never fills the whole screen (Claude Code
       // keeps it to roughly the lower half, leaving the chat above visible).
@@ -3186,22 +3187,26 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // slider) owns the bottom of the screen until the user picks (key loop).
         for (const r of cardRows) frame.push(r);
       } else {
-      // ---- composer: a borderless prompt — just the accent "❯" and the input,
-      // flush to the left margin (no box, no side walls). The block caret (█) is
-      // drawn inline because the hardware cursor is hidden in the alt-screen.
-      // The "❯" turns gold while a /god-prompt is armed or running (the only
-      // chrome left to carry that signal), cyan otherwise.
-      const _godOn = godArmed || godActive;
-      const _prompt = _godOn ? "\x1b[1m\x1b[38;5;220m❯\x1b[0m " : bold(cyan("❯ "));
-      const _inner = Math.max(0, C - 4);    // text area (one-col left gutter + "❯ ")
+      // ---- composer: a bordered box with SQUARE corners (┌─┐ │ └─┘), the
+      // Claude-Code prompt-box look. The "❯" accent marks the first row; the
+      // block caret (█) is drawn inline because the hardware cursor is hidden in
+      // the alt-screen. The border turns gold while a /god-prompt is armed or
+      // running, grey otherwise.
+      const _gold = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
+      const _bd = (godArmed || godActive) ? _gold : gray;
+      const _W = Math.max(2, C - 2);        // box width incl. both side walls
+      const _inner = Math.max(0, _W - 4);   // text area between the walls (one pad each side)
+      frame.push(" " + _bd("┌" + "─".repeat(_W - 2) + "┐"));
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
       for (let i = 0; i < inRows; i++) {
         let raw = shown[i] || ""; const li = _showStart + i;
         if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
-        const _body = (i === 0 ? _prompt : "  ") + colorInput(raw);
-        frame.push(" " + clip(_body, _inner));
+        // accent "❯ " on the first row, aligned indent after; clipped then padded so the right wall aligns.
+        const _body = (i === 0 ? bold(cyan("❯ ")) : "  ") + colorInput(raw);
+        frame.push(" " + _bd("│") + " " + padRightV(clip(_body, _inner), _inner) + " " + _bd("│"));
       }
+      frame.push(" " + _bd("└" + "─".repeat(_W - 2) + "┘"));
       // ---- completion menu: directly BELOW the input box (like Claude Code), so
       // it never pushes up into / hides the AI output above the composer.
       const _curM = modelLabel(shownModel()) || engine;
