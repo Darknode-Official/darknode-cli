@@ -2642,6 +2642,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/next", "queue a prompt after the current turn (clear / rm <n> to manage)"],
       ["/btw", "side question — answered from context, never saved to history"],
       ["/compat", "which features this model supports (nothing is hidden)"],
+      ["/mode", "capability preset: /mode power|cost|speed|reset (model-compatible only)"],
+      ["/god-prompt", "arm max-quality mode for your NEXT message only (gold border, auto-reverts)"],
+      ["/autocompact", "auto-shrink the context when it fills up · /autocompact on|off"],
       ["/feature", "add/remove your own commands: /feature create <name> <what it does> · /feature remove <name>"],
       ["/dashboard", "open the localhost web UI — live pipelines, jobs & cowork agents"],
       ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
@@ -2733,6 +2736,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const ensureText = () => { const b = cur(); if (!b.items) b.items = []; let last = b.items[b.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; b.items.push(last); } return last; };
     // ---- render body ----
     const spin = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    // Darknode working logo: four boxes; a yellow dot hops box→box, and when it
+    // returns home (the 4th box) the whole mark spins (orange), then repeats.
+    // 8 frames, advanced ~every 130ms.
+    const _dnOrange = (s) => "\x1b[38;5;208m" + s + "\x1b[0m";
+    const darkSpin = (fi) => { const F = ((fi % 8) + 8) % 8; return F < 4 ? [0, 1, 2, 3].map((i) => i === F ? yellow("●") : gray("□")).join("") : _dnOrange(["◰", "◱", "◲", "◳"][F - 4].repeat(4)); };
     const bodyLines = () => {
       const L = [];
       for (const m of transcript) {
@@ -2806,7 +2814,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (busy && m === cur()) {
           const el = Math.round((Date.now() - busyStart) / 1000);
           const tok = sess.liveOut ? " · " + fmtK(sess.liveOut) + " tokens" : "";
-          L.push(""); L.push(cyan(spin[Math.floor(Date.now() / 90) % spin.length] + " " + busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · esc to interrupt)"));
+          L.push(""); L.push(darkSpin(Math.floor(Date.now() / 130)) + " " + cyan(busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · esc to interrupt)"));
           const et = ENGINE_TIPS[engine] || [], tips = [];
           for (let k = 0; k < Math.max(NEXUS_TIPS.length, et.length); k++) { if (et[k]) tips.push(et[k]); if (NEXUS_TIPS[k]) tips.push(NEXUS_TIPS[k]); } // interleave so an engine-specific tip shows first
           if (tips.length) L.push(gray("  ⎿  Tip: " + tips[Math.floor(el / 4) % tips.length]));
@@ -2952,6 +2960,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // ---- /effort interactive slider (Claude-Code-style): a Faster↔Smarter bar
     // the user nudges with ←/→ and confirms with Enter, instead of typing a level.
     let pendingEffort = null; // { sel } while the picker is open
+    // ---- /god-prompt: a one-shot "maximum quality" mode for the NEXT message.
+    // Arming turns the composer border gold; the settings apply for that single
+    // turn only and revert automatically when it finishes.
+    let godArmed = false, godActive = false, godSnap = null;
+    const _goldTxt = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
+    const godApply = () => {
+      godSnap = { effort, lean, minimizeCalls, stepCap, trimOutput, repoMapOn };
+      if (engineCap(engine, "effort")) effort = "max"; // only the quality levers; nothing that trades quality for cost/speed
+      lean = false; minimizeCalls = false; stepCap = false; trimOutput = false; repoMapOn = true;
+    };
+    const godRestore = () => { if (!godSnap) return; ({ effort, lean, minimizeCalls, stepCap, trimOutput, repoMapOn } = godSnap); godSnap = null; };
     const EFFORT_LEVELS = [
       ["low", "Faster, less thinking — fewer tokens, good for mechanical work"],
       ["medium", "A balanced thinking budget"],
@@ -3064,6 +3083,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const NAV_BUTTONS = [["Cost", "/status"], ["Savings", "/savings"], ["Impact", "/impact"], ["Models", "/models"], ["Settings", "/settings"], ["Help", "/help"]];
     let modelPick = []; // last catalog shown by /model, so /model <number> can pick from it
     const render = () => {
+      if (godActive && !busy) { godRestore(); godActive = false; } // /god-prompt reverts once its one turn finishes
       const C = cols(), R = rows(), iw = Math.max(4, C - 3);
       if (curPos > input.length) curPos = input.length;
       if (curPos < 0) curPos = 0;
@@ -3112,7 +3132,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // the block caret (█) is drawn inline because the hardware cursor is
       // hidden in the alt-screen. Same row count as before (top + inRows +
       // bottom), so the chrome/layout math upstream is unchanged.
-      const _bd = gray;
+      // gold border while a /god-prompt is armed or running; grey otherwise. The
+      // input rows sit on a subtle grey highlight block (the Claude-Code look) —
+      // the background is re-asserted after any reset so colorInput's coloured
+      // tokens don't punch holes in the highlight.
+      const _gold = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
+      const _bd = (godArmed || godActive) ? _gold : gray;
+      const _hl = (s) => "\x1b[48;5;236m" + String(s).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + "\x1b[0m";
       const _W = Math.max(2, C - 2);        // box width incl. both side walls
       const _inner = Math.max(0, _W - 4);   // text area between the walls (one pad each side)
       frame.push(" " + _bd("╭" + "─".repeat(_W - 2) + "╮"));
@@ -3123,7 +3149,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
         // accent "❯ " on the first row, aligned indent after; clipped then padded so the right wall aligns.
         const _body = (i === 0 ? bold(cyan("❯ ")) : "  ") + colorInput(raw);
-        frame.push(" " + _bd("│") + " " + padRightV(clip(_body, _inner), _inner) + " " + _bd("│"));
+        frame.push(" " + _bd("│") + _hl(" " + padRightV(clip(_body, _inner), _inner) + " ") + _bd("│"));
       }
       frame.push(" " + _bd("╰" + "─".repeat(_W - 2) + "╯"));
       // ---- completion menu: directly BELOW the input box (like Claude Code), so
@@ -3247,6 +3273,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const isSubEngine = onPlan(engine);
       if (costCap && sess.cost >= costCap && !isSubEngine) { transcript.push({ role: "system", text: "budget reached ($" + sess.cost.toFixed(4) + " ≥ cap $" + costCap.toFixed(2) + ") — raise it with /budget <amount> to continue" }); render(); return; }
       if (hooks) { const hr = runHooks(hooks, "UserPromptSubmit", { NEXUS_ENGINE: engine, NEXUS_PROMPT: text }, cwd); if (hr.block) { transcript.push({ role: "user", text }); transcript.push({ role: "system", text: "blocked by UserPromptSubmit hook" + (hr.out ? ": " + hr.out : "") }); render(); return; } }
+      if (godArmed) { godApply(); godArmed = false; godActive = true; } // /god-prompt: max-quality settings for just this turn; render() reverts them when it finishes
       if (history[history.length - 1] !== text) { history.push(text); if (history.length > Composer.HISTORY_CAP) history.splice(0, history.length - Composer.HISTORY_CAP); Composer.appendHistory(text, cwd, NHOME); } // per-project history, dedup consecutive, capped, persisted
       hIdx = history.length; composer.histIndex = history.length; composer.draft = ""; scroll = 0;
       transcript.push({ role: "user", text });
@@ -3298,7 +3325,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const relOf = (p) => { try { return path.relative(cwd, path.resolve(cwd, p)); } catch (_) { return null; } };
       const ckTree = nexusCheckpoint(cwd); // every engine can now modify files, so always checkpoint (null if not a git repo)
       let ckObj = null; if (ckTree) { ckObj = { tree: ckTree, label: oneline(text, 40), ts: Date.now() }; checkpoints.push(ckObj); }
-      busy = true; busyStart = Date.now(); busyWord = FORGE[Math.floor(Math.random() * FORGE.length)]; sess.liveOut = 0; setTitle("nexus — working");
+      busy = true; busyStart = Date.now(); busyWord = FORGE[Math.floor(Math.random() * FORGE.length)]; sess.liveOut = 0; setTitle("● " + busyWord + " · " + (base(cwd) || "nexus"));
       ctl = makeCtl(); // local engine checks .stopped; claude overrides .kill with a process kill
       startTick(); render();
       const finish = (res) => {
@@ -3890,7 +3917,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/dashboard","open the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
           { title: "Input prefixes", rows: [["/command","run a command (type / to browse)"],["@file","attach a file or image (Tab completes the path)"],["!command","run a shell command (output goes to the AI)"],["#note","save a note to memory"]] },
         ];
-        transcript.push({ role: "system", lines: helpLines(HS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }).concat(["", gray("  " + allCmds().length + " commands in total — type / to search them, or /keys for shortcuts.")]) });
+        transcript.push({ role: "system", dismissable: true, lines: helpLines(HS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }).concat(["", gray("  " + allCmds().length + " commands in total — type / to search them, or /keys for shortcuts."), gray("  (Esc closes this)")]) });
       }
 
       else if (cmd === "/commands") { const ks = Object.keys(customCmds); transcript.push({ role: "system", text: ks.length ? ("custom commands (from .nexus/commands or .claude/commands):\n" + ks.map((k) => "  " + k + "  " + customCmds[k].desc.replace(/ \(custom\)$/, "")).join("\n")) : "no custom commands yet — add a file like .nexus/commands/review.md, then use /review" }); }
@@ -4248,7 +4275,50 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         lines.push("");
         lines.push(gray("  Everything else — file tools, bash, MCP, sub-agents, plan/accept/bypass modes, /btw, /mode, /god-prompt, cost tracking — works on every engine."));
         lines.push(gray("  Incompatible commands still appear in the / menu (marked red): they degrade safely on this model rather than break it."));
-        transcript.push({ role: "system", lines });
+        transcript.push({ role: "system", lines, dismissable: true });
+      }
+      else if (cmd === "/god-prompt" || cmd === "/god") {
+        if (godArmed) { godArmed = false; transcript.push({ role: "system", text: "god-prompt disarmed — your next message runs with the current settings." }); }
+        else { godArmed = true; transcript.push({ role: "system", text: _goldTxt("● GOD-PROMPT ARMED") + " — your " + bold("next message only") + " runs at maximum quality: " + (engineCap(engine, "effort") ? "effort " + bold("max") + ", " : "") + "every cost/speed limiter off, repo map on. The input border is gold until you send; everything reverts automatically once that one turn finishes. " + gray("Send /god-prompt again to disarm.") }); }
+        render(); return;
+      }
+      else if (cmd === "/autocompact") {
+        const a2 = (arg || "").trim().toLowerCase();
+        if (a2 === "on" || a2 === "off") { autoCompact = a2 === "on"; saveSetting("autoCompact", autoCompact); }
+        else if (a2 && a2 !== "status") { transcript.push({ role: "system", text: "usage: /autocompact on|off — auto-shrink the conversation when the context fills up (off by default; it drops detail to save spend)" }); return; }
+        const _ca = compactAt(); const pct = (_ca > 0 && sess.ctxUsed != null) ? Math.max(0, Math.min(100, Math.round((1 - sess.ctxUsed / _ca) * 100))) : null;
+        transcript.push({ role: "system", text: "auto-compact " + (autoCompact ? green("ON") : red("OFF")) + (autoCompact ? " — the context is summarized automatically as it fills, to keep spend down (it drops older detail; /compact does it on demand instead)." : " — the context is only compacted to avoid a hard overflow; use /compact when you want to shrink it yourself.") + (pct != null ? "\n  " + pct + "% of headroom until the next auto-compact." : "") + gray("\n  saved · /autocompact on|off") });
+        return;
+      }
+      else if (cmd === "/mode") {
+        const a2 = (arg || "").trim().toLowerCase();
+        const effOk = engineCap(engine, "effort");
+        const PRESETS = {
+          power: { desc: "maximum capability — most powerful settings this model supports", eff: effOk ? "max" : null, lean: false, minimizeCalls: false, stepCap: false, trimOutput: false, map: true, autoCompact: false },
+          cost:  { desc: "lowest spend — trims tokens hard", eff: effOk ? "low" : null, lean: true, minimizeCalls: true, stepCap: true, trimOutput: true, map: false, autoCompact: true },
+          speed: { desc: "fastest turns — less thinking, fewer tool round-trips", eff: effOk ? "low" : null, lean: true, minimizeCalls: true, stepCap: true, trimOutput: false, map: true, autoCompact: false },
+          reset: { desc: "back to defaults — no limiters, model-default effort", eff: "", lean: false, minimizeCalls: false, stepCap: false, trimOutput: false, map: true, autoCompact: false },
+        };
+        if (!PRESETS[a2]) {
+          const lines = ["capability modes — flip several settings at once (only levers this model supports):", ""];
+          for (const k of ["power", "cost", "speed", "reset"]) lines.push("  " + bold("/mode " + k) + gray("   " + PRESETS[k].desc));
+          lines.push("");
+          lines.push(gray("  effort changes apply to the claude engine only" + (effOk ? "" : " — this model ignores effort, so those presets skip it")));
+          transcript.push({ role: "system", lines, dismissable: true }); return;
+        }
+        const p = PRESETS[a2];
+        if (p.eff !== null) { effort = p.eff; saveSetting("effort", p.eff); }
+        lean = p.lean; saveSetting("lean", p.lean);
+        minimizeCalls = p.minimizeCalls; saveSetting("minimizeCalls", p.minimizeCalls);
+        stepCap = p.stepCap; saveSetting("stepCap", p.stepCap);
+        trimOutput = p.trimOutput; saveSetting("trimOutput", p.trimOutput);
+        repoMapOn = p.map; saveSetting("map", p.map); if (p.map) repoMapSent = false;
+        autoCompact = p.autoCompact; saveSetting("autoCompact", p.autoCompact);
+        const bits = [];
+        if (p.eff !== null) bits.push("effort " + (p.eff || "default"));
+        bits.push("lean " + (p.lean ? "on" : "off"), "minimize-calls " + (p.minimizeCalls ? "on" : "off"), "step-cap " + (p.stepCap ? "on" : "off"), "trim-output " + (p.trimOutput ? "on" : "off"), "repo-map " + (p.map ? "on" : "off"), "auto-compact " + (p.autoCompact ? "on" : "off"));
+        transcript.push({ role: "system", text: bold("/mode " + a2) + " — " + p.desc + " (saved)\n  " + gray(bits.join(" · ")) });
+        return;
       }
       else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else { const _i = EFFORT_LEVELS.findIndex((l) => l[0] === (effort || "high")); pendingEffort = { sel: _i < 0 ? 2 : _i }; render(); } }
       else if (cmd === "/hack") { hack = arg === "on" ? true : arg === "off" ? false : !hack; transcript.push({ role: "system", text: hack ? red("● HACK MODE") + " — Nexus is now an offensive-security specialist for AUTHORIZED engagements, with the full Darknode toolkit (scan · dns · cert · subs · cve · payloads · revshell · dorks · jwt · hash · totp · encode …) available via run_command. Systems you own or are explicitly in-scope to test only. " + gray("/hack off to exit") : "hack mode OFF — back to the standard coding agent" }); }
@@ -4293,7 +4363,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           { title: "Session", rows: [["Shift+Tab","cycle mode: normal / accept edits / plan / bypass"],["Ctrl+O","expand or collapse tool detail"],["Esc","interrupt a running turn"],["Esc Esc","clear the input (idle)"],["Ctrl+C","interrupt, then clear, then exit"],["Ctrl+D","exit on an empty line"],["Ctrl+G","edit the message in $EDITOR"],["Ctrl+L","redraw the screen"]] },
           { title: "Scroll, select & copy", rows: [["Mouse wheel","scroll the transcript"],["Up / Down (empty input)","scroll line by line"],["PgUp / PgDn","scroll a page"],["Home","jump to the oldest"],["End","jump to the latest"],["Select with the mouse","just drag to select, then copy — the mouse is yours by default"],["/mouse on","re-enable click + wheel capture (selection then needs Shift+drag)"]] },
         ];
-        transcript.push({ role: "system", lines: helpLines(KS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }) });
+        transcript.push({ role: "system", dismissable: true, lines: helpLines(KS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }).concat(["", gray("  (Esc closes this)")]) });
       }
 
       else if (cmd === "/cache") { const a2 = (arg || "").toLowerCase(); if (a2 === "off") { cacheOn = false; saveSetting("cache", false); transcript.push({ role: "system", text: "response cache OFF — every turn runs fresh. (saved)" }); } else if (a2 === "on") { cacheOn = true; saveSetting("cache", true); transcript.push({ role: "system", text: "response cache ON — an exact repeat of a read-only answer is served free. (saved)" }); } else if (a2 === "clear") { cacheClear(cwd); transcript.push({ role: "system", text: "response cache cleared (.nexus/cache)." }); } else { const s = cacheStats(cwd); transcript.push({ role: "system", text: "response cache " + (cacheOn ? green("ON") : red("OFF")) + "  ·  " + s.entries + " entr" + (s.entries === 1 ? "y" : "ies") + " · " + s.hits + " hit(s) · saved ~" + fmtK(s.savedTok) + " tokens" + (s.savedCost ? " ($" + s.savedCost.toFixed(4) + ")" : "") + "\n  serves an EXACT repeat of a read-only answer for free; changed context re-runs automatically.\n  /cache on · /cache off · /cache clear" }); } render(); }
@@ -4674,7 +4744,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const setMouse = (on) => { mouseOn = on; try { out.write(on ? ESC + "[?1000h" + ESC + "[?1006h" : ESC + "[?1000l" + ESC + "[?1006l"); } catch (_) {} };
     // Terminal title via OSC 0 — "nexus — <cwd basename>" when idle, "nexus — working" while a turn runs.
     // The shell's own title is saved on entry and restored on exit by the "title" term mode (XTPUSH/POPTITLE), not blanked.
-    const setTitle = (txt) => { try { out.write(ESC + "]0;" + txt + "\x07"); } catch (_) {} };
+    // Set both the icon/tab name (OSC 0) and the window title (OSC 2). Some
+    // terminals (and VS Code's integrated terminal) only pick up one of the two,
+    // so writing both keeps the tab from being stuck on a stale "nexus — <repo>".
+    const setTitle = (txt) => { try { out.write(ESC + "]0;" + txt + "\x07" + ESC + "]2;" + txt + "\x07"); } catch (_) {} };
     const idleTitle = () => setTitle("nexus — " + (base(cwd) || cwd));
     // Ctrl+G: edit the current buffer in $VISUAL/$EDITOR (fallback vi/nano/notepad).
     // Leaves the alt-screen + raw mode so the editor has the real terminal, then
@@ -4825,6 +4898,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // ---- Esc dismisses an open popup before the composer's own Esc handling ----
       if (s === "\x1b" && navOpen) { navOpen = false; render(); return; }
       if (s === "\x1b" && argMatches().length) { const sp = input.indexOf(" "); if (sp > 0) { input = input.slice(0, sp) + " "; curPos = input.length; } menuSel = 0; render(); return; }
+      // Esc on an idle empty buffer dismisses a trailing info panel (/help, /keys,
+      // /compat, /mode, /settings…) — like closing an overlay in Claude Code.
+      if (s === "\x1b" && !busy && !input.length && !slashMatches().length) { const _last = transcript[transcript.length - 1]; if (_last && _last.dismissable) { transcript.pop(); scroll = 0; render(); return; } }
 
       // ---- slash / arg menu open: arrows + page keys drive the menu ----
       const _mm = slashMatches(); const _am = _mm.length ? [] : argMatches(); const cm = _mm.length ? _mm : _am;
