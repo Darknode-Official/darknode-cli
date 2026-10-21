@@ -2456,6 +2456,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
   eq("ollama model passes through", modelLabel("qwen2.5-coder"), "qwen2.5-coder");
   eq("gpt-4o passes through", modelLabel("gpt-4o"), "gpt-4o");
   eq("empty id -> empty", modelLabel(""), "");
+  // a reserved-word model id must not resolve an inherited ENG member → native-fn in the header
+  ok("modelLabel('constructor') is not a native function string", !/native code/.test(String(modelLabel("constructor"))));
+  ok("modelLabel('__proto__') is not a native function string", !/native code/.test(String(modelLabel("__proto__"))));
   eq("effort max -> 'max effort'", effortLabel("max"), "max effort");
   eq("effort low -> 'low effort'", effortLabel("low"), "low effort");
   eq("no effort -> '' (omit, don't invent)", effortLabel(""), "");
@@ -2554,6 +2557,28 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       } catch (_) { /* symlinks may be unavailable (e.g. Windows without privilege) */ }
       if (!symRan) ok("symlink escape test skipped (symlinks unavailable)", process.platform === "win32");
     } finally { fs.rmSync(jroot, { recursive: true, force: true }); }
+  }
+
+  group("nexus engines — prototype-key / malformed-input safety (external fields)");
+  {
+    const ap = require("../lib/nexus/attack-planner");
+    const rg = require("../lib/nexus/report-generator");
+    const npx = require("../lib/nexus/nmap-parser");
+    const noThrow = (fn) => { try { fn(); return true; } catch (_) { return false; } };
+    // attack-planner: a service named "constructor" must not resolve the inherited Object fn
+    ok("findServicePlaybook('constructor') -> null", ap.findServicePlaybook("constructor") === null);
+    ok("suggestNextStep with a 'constructor' service does not crash", noThrow(() =>
+      ap.suggestNextStep({ accessLevel: "none", vulnerabilities: [{ service: "constructor", confirmed: true, severity: "high" }] })));
+    ok("suggestNextStep severity sort tolerates '__proto__' severity", noThrow(() =>
+      ap.suggestNextStep({ accessLevel: "none", vulnerabilities: [{ service: "ssh", confirmed: true, severity: "__proto__" }, { service: "ftp", confirmed: true, severity: "high" }] })));
+    // report-generator: a "constructor" severity must not poison the numeric risk score
+    {
+      const r = rg.calculateOverallRisk([{ severity: "constructor" }, { severity: "high" }]);
+      ok("calculateOverallRisk yields a finite score for a reserved-word severity", !r || r.score == null || Number.isFinite(r.score));
+    }
+    // nmap-parser: a present-but-non-numeric timestamp attribute must not throw RangeError
+    ok("parseNmapXML tolerates a non-numeric start/finish time", noThrow(() =>
+      npx.parseNmapXML("<nmaprun start=\"x\" scanner=\"nmap\"><runstats><finished time=\"y\"/></runstats></nmaprun>")));
   }
 
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
