@@ -2926,26 +2926,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const frame = [];
       for (let i = 0; i < bodyRows; i++) frame.push(" " + clip(view[i] || "", C - 2));
       frame.push("");
-      // ---- composer: a framed input box. Rounded box-drawing borders tint to the
-      // accent while you're typing or a command menu is open (a quiet focus cue),
-      // and stay muted otherwise. Each content row is padded to the exact interior
-      // width so the right border stays plumb across lines; the block caret (█) is
-      // drawn inline because the hardware cursor is hidden in the alt-screen.
+      // ---- composer: an open input, framed by a single thin horizontal rule
+      // above and below (no side walls, no rounded corners) — the Claude-style
+      // "> ____" look. The accent ">" marks the first row; the block caret (█)
+      // is drawn inline because the hardware cursor is hidden in the alt-screen.
       const _bd = gray;
-      const _innerW = Math.max(0, C - 2); // the span between the two │ borders (one-space gutter each side)
-      frame.push(_bd("╭" + "─".repeat(_innerW) + "╮"));
+      const _rule = " " + _bd("─".repeat(Math.max(0, C - 2)));
+      frame.push(_rule);
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
       for (let i = 0; i < inRows; i++) {
         let raw = shown[i] || ""; const li = _showStart + i;
         if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
-        // one-space gutter + caret/indent + highlighted input, clipped then padded
-        // to the exact interior width so the right border stays plumb at every width
-        let interior = clip(" " + (i === 0 ? bold("> ") : "  ") + colorInput(raw), _innerW);
-        interior += " ".repeat(Math.max(0, _innerW - stripA(interior).length));
-        frame.push(_bd("│") + interior + _bd("│"));
+        // accent "> " on the first row, aligned indent after; clipped to width.
+        frame.push(" " + clip((i === 0 ? bold(cyan("> ")) : "  ") + colorInput(raw), C - 2));
       }
-      frame.push(_bd("╰" + "─".repeat(_innerW) + "╯"));
+      frame.push(_rule);
       // ---- completion menu: directly BELOW the input box (like Claude Code), so
       // it never pushes up into / hides the AI output above the composer.
       for (let i = 0; i < menuRows; i++) { const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); frame.push(clip((sel ? cyan(" › ") : "   ") + (sel ? bold(cyan(padRightV(nm, nmW))) : padRightV(nm, nmW)) + gray(" " + (ds || "")) + pos, C - 2)); }
