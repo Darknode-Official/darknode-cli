@@ -3160,8 +3160,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (stat.files.size) { bits.push(stat.files.size + " file" + (stat.files.size > 1 ? "s" : "")); recap.push((res && res.interrupted ? "Touched" : "Wrote") + " " + [...stat.files].slice(0, 4).join(", ") + (stat.files.size > 4 ? " +" + (stat.files.size - 4) + " more" : "")); }
         if (stat.cmds) { bits.push(stat.cmds + " cmd" + (stat.cmds > 1 ? "s" : "")); recap.push("Ran " + stat.cmds + " command" + (stat.cmds > 1 ? "s" : "")); }
         bits.push("↑" + fmtK(din) + " ↓" + fmtK(dout) + " tok");
+        if (+dt > 0 && dout > 0) bits.push(fmtK(Math.round(dout / +dt)) + " tok/s");
         if (PAID[engine] && dcost > 0) bits.push("$" + dcost.toFixed(4));
         bits.push(dt + "s");
+        { const cw = sess.ctxWindow || 200000; bits.push(Math.min(100, Math.round((sess.ctxUsed / cw) * 100)) + "% ctx"); }
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); try { bisectPersist(cwd, ckObj); } catch (_) {} } // persist the turn snapshot so `bisect` can search the timeline later
         const clock = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
         block.summary = (recap.length ? recap.join(". ") + "." + gray("  ") : "") + bits.join("  ·  ") + gray("  ·  done " + clock);
@@ -3173,6 +3175,24 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         try { saveSession(); } catch (_) {}
         if (hooks) try { runHooks(hooks, "Stop", { NEXUS_ENGINE: engine }, cwd); } catch (_) {}
         if (notify && (Date.now() - stat.t0) > 15000) { out.write("\x07"); osNotify("Nexus", "turn finished (" + ((Date.now() - stat.t0) / 1000 | 0) + "s)"); }
+        // Claude-style interrupt: drop the transient "interrupting…" note, and if the
+        // turn was stopped before it produced any real output, pull the prompt back
+        // into the composer (editable, ready to resend) and remove the empty exchange
+        // from the transcript instead of leaving it parked in the chat.
+        if (res && res.interrupted) {
+          while (transcript.length && transcript[transcript.length - 1].role === "system" && /^interrupting current turn/.test(transcript[transcript.length - 1].text || "")) transcript.pop();
+          const producedReal = stat.files.size > 0 || stat.cmds > 0
+            || block.items.some((i) => i.type === "tool")
+            || block.items.some((i) => i.type === "text" && i.full && i.full.trim() && !/^\((interrupted|no output)\)$/.test(i.full.trim()));
+          if (!producedReal && !input.trim()) {
+            const bi = transcript.lastIndexOf(block);
+            if (bi >= 0) {
+              transcript.splice(bi, 1);
+              if (bi - 1 >= 0 && transcript[bi - 1] && transcript[bi - 1].role === "user" && transcript[bi - 1].text === text) transcript.splice(bi - 1, 1);
+            }
+            input = text; curPos = input.length; composer.text = input; composer.cursor = curPos; composer.draft = ""; hIdx = history.length; composer.histIndex = history.length;
+          }
+        }
         maybeAutoCompact(); idleTitle(); render(); refreshGit();
         if (nextQueue.length && !busy) { const nxt = nextQueue.shift(); setTimeout(() => { if (!busy) { if (nxt.startsWith("/")) { let cmd = nxt; if (!/\s/.test(nxt)) { const mm = fuzzyCmds(nxt); if (mm.length) cmd = mm[0][0]; } handleSlash(cmd); render(); } else if (nxt[0] === "!" && nxt.length > 1) { runBang(nxt.slice(1).trim()); render(); } else if (nxt[0] === "#" && nxt.length > 1) { addMemory(nxt.slice(1).trim()); render(); } else { submit(nxt); } } }, 300); }
       };
