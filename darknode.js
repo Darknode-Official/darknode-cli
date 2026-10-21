@@ -2736,11 +2736,20 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const ensureText = () => { const b = cur(); if (!b.items) b.items = []; let last = b.items[b.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; b.items.push(last); } return last; };
     // ---- render body ----
     const spin = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    // Darknode working logo: four boxes; a yellow dot hops box→box, and when it
-    // returns home (the 4th box) the whole mark spins (orange), then repeats.
-    // 8 frames, advanced ~every 130ms.
-    const _dnOrange = (s) => "\x1b[38;5;208m" + s + "\x1b[0m";
-    const darkSpin = (fi) => { const F = ((fi % 8) + 8) % 8; return F < 4 ? [0, 1, 2, 3].map((i) => i === F ? yellow("●") : gray("□")).join("") : _dnOrange(["◰", "◱", "◲", "◳"][F - 4].repeat(4)); };
+    // Darknode working logo — the official 2x2 mark (four navy rounded boxes).
+    // The yellow dot starts in the 4th box (bottom-right), teleports clockwise to
+    // every box and back home, then the whole logo spins clockwise twice (the dot
+    // orbits — the four boxes are symmetric, so the orbit IS the spin). Two lines
+    // high; advanced ~every 120ms (matching Claude Code's ~8fps).
+    //   index 0 1   (TL TR)
+    //         2 3   (BL BR)   clockwise from BR: 3 -> 2 -> 0 -> 1 -> 3
+    const _dnNavy = (s) => "\x1b[38;5;68m" + s + "\x1b[0m";
+    const DN_SEQ = [3, 2, 0, 1, 3,  2, 0, 1, 3,  2, 0, 1, 3]; // visit-each + back home, then 2 clockwise spins
+    const dnLogo = (fi) => {
+      const y = DN_SEQ[((fi % DN_SEQ.length) + DN_SEQ.length) % DN_SEQ.length];
+      const cell = (i) => i === y ? yellow("■") : _dnNavy("□");
+      return { top: cell(0) + " " + cell(1), bot: cell(2) + " " + cell(3) };
+    };
     const bodyLines = () => {
       const L = [];
       for (const m of transcript) {
@@ -2750,7 +2759,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           const paint = useColor ? { brand: (t) => bold(cyan(t)), border: gray, muted: gray, faint: (t) => t } : null;
           const _liveMcp = mcpServers.filter((s) => s && !s.error).length;
           const _wcStatus = [Math.round((sess.ctxWindow || 200000) / 1000) + "K context", "guard: " + (guard === "enforce" ? "on" : guard), _liveMcp ? _liveMcp + " MCP" : "", effort ? effortLabel(effort) : ""].filter(Boolean).join("  ·  ");
-          for (const ln of welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), status: _wcStatus, paint })) L.push(ln);
+          // static Darknode logo mascot (the official 2x2 mark — yellow dot resting
+          // in the 4th box) tucked on the right of the welcome card.
+          const _mascot = useColor ? [_dnNavy("□") + " " + _dnNavy("□"), _dnNavy("□") + " " + yellow("■")] : ["□ □", "□ ■"];
+          for (const ln of welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), status: _wcStatus, paint, mascot: _mascot })) L.push(ln);
           continue;
         }
         if (m.role === "diff") {
@@ -2778,7 +2790,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
         if (m.role === "plan") { const done = plan.filter((t) => t.done).length; L.push(bold(cyan("plan")) + gray("  " + done + "/" + plan.length + " done  ·  /plan run to execute")); if (!plan.length) L.push("  " + gray("(empty)")); for (let i = 0; i < plan.length; i++) { const t = plan[i]; const box = t.running ? yellow("[~]") : t.done ? green("[x]") : gray("[ ]"); for (const ln of wrap((i + 1) + ". " + t.text)) L.push("  " + box + " " + colorMd(ln, false)); } L.push(""); continue; }
         if (m.role === "system") { if (m.lines) for (const ln of m.lines) L.push("  " + ln); else for (const ln of wrap(m.text)) L.push("  " + ln); L.push(""); continue; }
-        if (m.role === "user") { const w = wrap(m.text); L.push(cyan("❯ ") + bold(w[0] || "")); for (let i = 1; i < w.length; i++) L.push("  " + bold(w[i])); L.push(""); continue; }
+        if (m.role === "user") {
+          // the submitted prompt sits on a full-width grey block (the Claude-Code
+          // look): a 236 background that spans to the right margin, re-asserted
+          // after every reset so the coloured ❯/bold tokens don't punch holes.
+          const w = wrap(m.text);
+          const _uw = Math.max(0, cols() - 4); // inner width of the grey block
+          const chatHl = (c) => "\x1b[48;5;236m " + String(c).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + " ".repeat(Math.max(0, _uw - stripA(c).length)) + " \x1b[0m";
+          L.push(chatHl(cyan("❯ ") + bold(w[0] || "")));
+          for (let i = 1; i < w.length; i++) L.push(chatHl("  " + bold(w[i])));
+          L.push(""); continue;
+        }
         // nexus turn: ordered items. Each text block opens with a plain bullet,
         // each tool call with a status dot and a one-line result summary below it.
         { let prevType = "";
@@ -2814,10 +2836,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (busy && m === cur()) {
           const el = Math.round((Date.now() - busyStart) / 1000);
           const tok = sess.liveOut ? " · " + fmtK(sess.liveOut) + " tokens" : "";
-          L.push(""); L.push(darkSpin(Math.floor(Date.now() / 130)) + " " + cyan(busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · esc to interrupt)"));
+          const _lg = dnLogo(Math.floor(Date.now() / 120));
           const et = ENGINE_TIPS[engine] || [], tips = [];
           for (let k = 0; k < Math.max(NEXUS_TIPS.length, et.length); k++) { if (et[k]) tips.push(et[k]); if (NEXUS_TIPS[k]) tips.push(NEXUS_TIPS[k]); } // interleave so an engine-specific tip shows first
-          if (tips.length) L.push(gray("  ⎿  Tip: " + tips[Math.floor(el / 4) % tips.length]));
+          L.push("");
+          L.push(_lg.top + "   " + cyan(busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · esc to interrupt)"));
+          L.push(_lg.bot + (tips.length ? "   " + gray("⎿ Tip: " + tips[Math.floor(el / 4) % tips.length]) : ""));
         } else if (m.summary) {
           L.push(gray("  ⎿  " + m.summary));
         }
@@ -3108,7 +3132,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green }) : null;
       const effortRows = (!askRows && pendingEffort) ? renderEffortPicker(C, pendingEffort.sel) : null;
       const btwRows = (!askRows && !effortRows && btw) ? renderBtw(C, R, btw) : null;
-      const cardRows = askRows || effortRows || btwRows; // a full-width card replaces the composer + menu
+      let cardRows = askRows || effortRows || btwRows; // a full-width card replaces the composer + menu
+      if (cardRows && cardRows.length > R - 2) cardRows = cardRows.slice(0, Math.max(1, R - 2)); // never build a card taller than the screen (would overflow the diff'd frame)
       const chrome = cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuRows + inRows); // spacer + card + footer
       const bodyRows = Math.max(0, R - chrome);
       const lines = bodyLines();
@@ -3132,13 +3157,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // the block caret (█) is drawn inline because the hardware cursor is
       // hidden in the alt-screen. Same row count as before (top + inRows +
       // bottom), so the chrome/layout math upstream is unchanged.
-      // gold border while a /god-prompt is armed or running; grey otherwise. The
-      // input rows sit on a subtle grey highlight block (the Claude-Code look) —
-      // the background is re-asserted after any reset so colorInput's coloured
-      // tokens don't punch holes in the highlight.
+      // gold border while a /god-prompt is armed or running; grey otherwise.
       const _gold = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
       const _bd = (godArmed || godActive) ? _gold : gray;
-      const _hl = (s) => "\x1b[48;5;236m" + String(s).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + "\x1b[0m";
       const _W = Math.max(2, C - 2);        // box width incl. both side walls
       const _inner = Math.max(0, _W - 4);   // text area between the walls (one pad each side)
       frame.push(" " + _bd("╭" + "─".repeat(_W - 2) + "╮"));
@@ -3149,7 +3170,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
         // accent "❯ " on the first row, aligned indent after; clipped then padded so the right wall aligns.
         const _body = (i === 0 ? bold(cyan("❯ ")) : "  ") + colorInput(raw);
-        frame.push(" " + _bd("│") + _hl(" " + padRightV(clip(_body, _inner), _inner) + " ") + _bd("│"));
+        frame.push(" " + _bd("│") + " " + padRightV(clip(_body, _inner), _inner) + " " + _bd("│"));
       }
       frame.push(" " + _bd("╰" + "─".repeat(_W - 2) + "╯"));
       // ---- completion menu: directly BELOW the input box (like Claude Code), so
@@ -4748,7 +4769,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // terminals (and VS Code's integrated terminal) only pick up one of the two,
     // so writing both keeps the tab from being stuck on a stale "nexus — <repo>".
     const setTitle = (txt) => { try { out.write(ESC + "]0;" + txt + "\x07" + ESC + "]2;" + txt + "\x07"); } catch (_) {} };
-    const idleTitle = () => setTitle("nexus — " + (base(cwd) || cwd));
+    const idleTitle = () => setTitle("Nexus · " + (base(cwd) || cwd));
     // Ctrl+G: edit the current buffer in $VISUAL/$EDITOR (fallback vi/nano/notepad).
     // Leaves the alt-screen + raw mode so the editor has the real terminal, then
     // restores the TUI (raw mode, alt-screen, bracketed paste, mouse) and loads
