@@ -4731,8 +4731,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         transcript.push({ role: "system", text: "saving session and restarting…" }); render();
         setTimeout(() => {
           cleanup();
-          const args = [process.argv[1], "nexus", "--resume"].concat(process.argv.slice(3));
           const cp = require("child_process");
+          // Rebuild a minimal, launch-mode-agnostic command instead of replaying
+          // process.argv: that replay differs across the `darknode`/`nexus` bins,
+          // npm symlinks and the pkg binary (where argv[1] is a virtual /snapshot
+          // path the child rejects as an unknown command), and any stray task text
+          // in it would turn the restart into a one-shot run instead of the TUI.
+          // Carry the CURRENT engine so a mid-session /engine switch survives.
+          const sub = ["nexus", "--resume", "-e", engine];
+          const args = process.pkg ? sub : [process.argv[1]].concat(sub); // pkg binary: the exe is already the entry
           // Re-exec as a child that INHERITS our stdio and stays in our process
           // group, then wait for it and exit with its code. Spawning the child and
           // exiting the parent immediately would orphan it into a BACKGROUND
