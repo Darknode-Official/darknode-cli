@@ -3166,7 +3166,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // since last paint (frameDiff). During streaming just the status timer + the
       // one growing text line differ, so we write ~2 rows instead of the whole screen.
       const frame = [];
-      for (let i = 0; i < bodyRows; i++) frame.push(" " + clip(view[i] || "", C - 2));
+      // ---- scroll rail: a faint vertical track down the far-right column (C)
+      // with a brighter thumb showing where the viewport sits in a long
+      // transcript. Drawn only when the content overflows the body, so a short
+      // conversation stays clean. The body rows already clip to C-2 and start at
+      // column 2, leaving column C free for the rail.
+      const _overflow = bodyRows > 0 && lines.length > bodyRows;
+      let _thumbTop = -1, _thumbH = 0;
+      if (_overflow) {
+        _thumbH = Math.max(1, Math.round((bodyRows * bodyRows) / lines.length));
+        _thumbTop = Math.round((bodyRows - _thumbH) * (start / Math.max(1, lines.length - bodyRows)));
+      }
+      for (let i = 0; i < bodyRows; i++) {
+        const _row = " " + clip(view[i] || "", C - 2);
+        if (_overflow) frame.push(padRightV(_row, C - 1) + (i >= _thumbTop && i < _thumbTop + _thumbH ? gray("┃") : dim(gray("│"))));
+        else frame.push(_row);
+      }
       frame.push("");
       if (cardRows) {
         // ---- a full-width card (the model's ask_user question, or the /effort
