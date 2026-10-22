@@ -1521,6 +1521,33 @@ group("compliance bundle (SOC2 export)");
 }
 
 {
+  group("code-intel (find_references)");
+  const { findReferences, classifyLine } = require("../lib/nexus/code-intel");
+  const files = [
+    { path: "src/util.js", content: "export function parse(x){ return x }\nconst y = parse(1)\n" },
+    { path: "src/app.js", content: "import { parse } from './util'\nconsole.log(parse(2))\nconst parsed = parse(3)\n// parse comment mentions parse\n" },
+    { path: "src/other.js", content: "function parseDate(){}\nconst parser = 1\n" },
+  ];
+  const r = findReferences(files, "parse");
+  eq("counts only whole-word usages (not parseDate/parser)", r.total, 6);
+  eq("groups across 2 files", r.files, 2);
+  ok("most-referenced file first", r.references[0].path === "src/app.js" && r.references[0].count === 4);
+  ok("flags the definition line", r.definitions === 1);
+  ok("flags the import line", r.imports >= 1);
+  eq("classifyLine: declaration", classifyLine("export function parse(x){}", "parse"), "def");
+  eq("classifyLine: import", classifyLine("import { parse } from './util'", "parse"), "import");
+  eq("classifyLine: usage", classifyLine("  return parse(1)", "parse"), "usage");
+  ok("rejects non-identifier input", !!findReferences(files, "parse(").error);
+  ok("member access a.parse still counts as a usage", findReferences([{ path: "a.js", content: "obj.parse()\n" }], "parse").total === 1);
+  ok("does not match substrings", findReferences([{ path: "a.js", content: "parseInt(x)\nparser()\n" }], "parse").total === 0);
+  ok("empty symbol errors", !!findReferences(files, "").error);
+  ok("miss returns a note, zero total", (() => { const z = findReferences(files, "nonexistentSym"); return z.total === 0 && !!z.note; })());
+  ok("context lines are returned when asked", (() => { const c = findReferences([{ path: "a.js", content: "a\nparse()\nb\n" }], "parse", { context: 1 }); return c.references[0].hits[0].before[0] === "a" && c.references[0].hits[0].after[0] === "b"; })());
+  ok("$ identifiers are escaped, not treated as regex", findReferences([{ path: "a.js", content: "const $el = 1\n$el.focus()\n" }], "$el").total === 2);
+  ok("per-file cap truncates", (() => { const big = Array.from({ length: 200 }, () => "x()").join("\n"); const t = findReferences([{ path: "b.js", content: big.replace(/x\(\)/g, "ping()") }], "ping", { maxPerFile: 10 }); return t.truncated && t.references[0].hits.length === 10; })());
+}
+
+{
   const { applyEdits, applyEditsFlexible, locateFlexible, parsePatch, applyHunks, applyPatch } = require("../lib/nexus/edit");
   // atomic multi-edit
   eq("multi-edit applies in order", applyEdits("a b c", [{ find: "a", replace: "x" }, { find: "c", replace: "z" }]).content, "x b z");
