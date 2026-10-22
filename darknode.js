@@ -3275,7 +3275,21 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // Same row count as a box (top rule + inRows + bottom rule).
       const _gold = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
       const _bd = (godArmed || godActive) ? _gold : gray;
-      frame.push(_bd("─".repeat(Math.max(1, C))));   // top rule, edge to edge
+      // top rule, edge to edge — with the session topic title right-aligned
+      // INTO the rule when there's one (Claude Code look): "───… Title ─".
+      // Falls back to a plain full-width rule when there's no title or the
+      // terminal is too narrow to seat it.
+      {
+        const _t0 = (sessionTitle || "").trim();
+        let _rule = "─".repeat(Math.max(1, C));
+        if (_t0) {
+          const _room = C - 3 - 6;                                      // reserve ≥6 dashes + " x ─"
+          const _t = _t0.length > _room ? _t0.slice(0, Math.max(0, _room - 1)) + "…" : _t0;
+          const _fill = C - _t.length - 3;                             // dashes + " "+title+" " + "─"
+          if (_t.length >= 4 && _fill >= 6) _rule = "─".repeat(_fill) + " " + _t + " ─";
+        }
+        frame.push(_bd(_rule));
+      }
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
       for (let i = 0; i < inRows; i++) {
