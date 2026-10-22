@@ -1,0 +1,83 @@
+name: Build CLI (Linux + Windows)
+
+# Builds the standalone Darknode / Nexus CLI binaries for Linux and Windows with pkg
+# on an Ubuntu runner (no code-signing needed for these targets — that is only the
+# macOS story, handled by build-mac-cli.yml) and publishes them to the same release
+# the website serves downloads from.
+#
+# The website (darknode-web public/js/getapp.js) links these exact filenames from the
+# newest darknode-app release (/releases/latest/download/<file>):
+#   • Darknode-cli-linux         (node18-linux-x64)
+#   • Darknode-cli-windows.exe   (node18-win-x64)
+# The macOS binaries (Darknode-cli-macos-arm64 / -x64) are published alongside them by
+# build-mac-cli.yml, into the same darknode-app release.
+#
+# Repo secrets:
+#   RELEASE_TOKEN   PAT with repo access to Darknode-Official/darknode-app (to publish)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install deps + test
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+
+      - name: Build Linux + Windows binaries (pkg)
+        run: |
+          npx pkg . --targets node18-linux-x64,node18-win-x64 --out-path dist
+          echo "pkg produced:"; ls -la dist/
+          # pkg may name the files darknode-cli-linux-x64 / -win-x64.exe or drop the arch
+          # when each OS appears once — rename by OS token, not by exact name.
+          for f in dist/darknode-cli-*; do
+            case "$f" in
+              *win*|*.exe) mv -f "$f" dist/Darknode-cli-windows.exe ;;
+              *linux*)     mv -f "$f" dist/Darknode-cli-linux ;;
+            esac
+          done
+          echo "renamed to:"; ls -la dist/Darknode-cli-*
+          test -f dist/Darknode-cli-linux && test -f dist/Darknode-cli-windows.exe
+
+      - name: Smoke-test the Linux binary
+        run: |
+          chmod +x dist/Darknode-cli-linux
+          ./dist/Darknode-cli-linux --version
+          ./dist/Darknode-cli-linux uuid
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: darknode-cli-linux-windows
+          path: |
+            dist/Darknode-cli-linux
+            dist/Darknode-cli-windows.exe
+          if-no-files-found: error
+
+      - name: Publish to the downloads release (darknode-app)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::No RELEASE_TOKEN secret — binaries are on this run's artifacts only, not published."
+            exit 0
+          fi
+          # Attach to the newest darknode-app release, the same one getapp.js reads from.
+          TAG="$(gh release view --repo Darknode-Official/darknode-app --json tagName -q .tagName 2>/dev/null)"
+          if [ -z "$TAG" ]; then
+            echo "::warning::No published darknode-app release to attach to — binaries are on this run's artifacts only."
+            exit 0
+          fi
+          gh release upload "$TAG" dist/Darknode-cli-linux dist/Darknode-cli-windows.exe \
+            --repo Darknode-Official/darknode-app --clobber
+          echo "Published Linux + Windows CLI binaries to the darknode-app '$TAG' release."
