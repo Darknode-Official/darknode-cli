@@ -15,7 +15,10 @@ const crypto = require("crypto");
 const readline = require("readline");
 const os = require("os");
 const dnsp = require("dns").promises;
-const VERSION = "2.46.2";
+// Read the version from package.json so the banner / --version / /health can never drift from the
+// published version again; fall back to a literal for a bundled standalone binary where the JSON
+// may not be require-able.
+let VERSION = "2.46.3"; try { VERSION = require("./package.json").version || VERSION; } catch (_) {}
 
 // ---- backward compat: accept old SENTINEL_* env vars as DARKNODE_* ----
 for (const k of Object.keys(process.env)) { if (k.startsWith("SENTINEL_") && !process.env["DARKNODE_" + k.slice(9)]) process.env["DARKNODE_" + k.slice(9)] = process.env[k]; }

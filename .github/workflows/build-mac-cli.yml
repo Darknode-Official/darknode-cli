@@ -16,7 +16,7 @@ name: Build macOS CLI (signed)
 #   APPLE_ID                   Apple ID email (for notarization)
 #   APPLE_APP_SPECIFIC_PASSWORD  app-specific password for that Apple ID
 #   APPLE_TEAM_ID              your Apple Developer Team ID
-#   RELEASE_TOKEN              PAT with repo access to Darknode-Official/darknode-web (to publish)
+#   RELEASE_TOKEN              PAT with repo access to Darknode-Official/darknode-app (to publish)
 on:
   workflow_dispatch:
   push:
@@ -100,7 +100,7 @@ jobs:
           path: dist/Darknode-cli-macos-*
           if-no-files-found: error
 
-      - name: Publish to the downloads release (darknode-web)
+      - name: Publish to the downloads release (darknode-app)
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
@@ -108,6 +108,14 @@ jobs:
             echo "::warning::No RELEASE_TOKEN secret — signed binaries are on this run's artifacts only, not published."
             exit 0
           fi
-          gh release upload darknode dist/Darknode-cli-macos-x64 dist/Darknode-cli-macos-arm64 \
-            --repo Darknode-Official/darknode-web --clobber
-          echo "Published signed macOS CLI binaries to the darknode-web 'darknode' release."
+          # The website (public/js/getapp.js) serves the CLI binaries from the newest
+          # darknode-app release (/releases/latest/download/<file>), in the same release
+          # as the desktop-app installers — so publish there, not to darknode-web.
+          TAG="$(gh release view --repo Darknode-Official/darknode-app --json tagName -q .tagName 2>/dev/null)"
+          if [ -z "$TAG" ]; then
+            echo "::warning::No published darknode-app release to attach to — binaries are on this run's artifacts only."
+            exit 0
+          fi
+          gh release upload "$TAG" dist/Darknode-cli-macos-x64 dist/Darknode-cli-macos-arm64 \
+            --repo Darknode-Official/darknode-app --clobber
+          echo "Published signed macOS CLI binaries to the darknode-app '$TAG' release."
