@@ -2767,16 +2767,27 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const line = (a, b) => cell(a) + " " + cell(b);                           // one line, transparent
       return { top: line(0, 1), bot: line(2, 3) };
     };
+    // One welcome tip chosen once per session (stable across every render so the
+    // card never flickers), rotated by start time for a little variety.
+    const _welcomeTip = NEXUS_TIPS[Math.floor(Date.now() / 1000) % NEXUS_TIPS.length];
     const bodyLines = () => {
       const L = [];
       for (const m of transcript) {
         if (m.role === "art") {
-          // Welcome card: product + version, the active model and engine, where
-          // we are, and the three starter hints. One accent, no gradients.
-          const paint = useColor ? { brand: (t) => bold(cyan(t)), border: gray, muted: gray, faint: (t) => t } : null;
+          // Welcome card: product + tagline + version, a labelled session summary
+          // (model/engine/project/context), and a two-column quick-start grid that
+          // also surfaces the customization commands (/settings, /theme). One
+          // accent colour, no gradients.
+          const paint = useColor ? { brand: (t) => bold(cyan(t)), border: gray, muted: gray, faint: (t) => t, accent: (t) => bold(cyan(t)), label: (t) => gray(t), key: (t) => bold(cyan(t)) } : null;
           const _liveMcp = mcpServers.filter((s) => s && !s.error).length;
-          const _wcStatus = [Math.round((sess.ctxWindow || 200000) / 1000) + "K context", "guard: " + (guard === "enforce" ? "on" : guard), _liveMcp ? _liveMcp + " MCP" : "", effort ? effortLabel(effort) : ""].filter(Boolean).join("  ·  ");
-          const cardLines = welcomeCard({ version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine, cwd, branch: gitBranch, home: os.homedir(), cols: cols(), status: _wcStatus, paint });
+          const cardLines = welcomeCard({
+            version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine,
+            cwd, branch: gitBranch, home: os.homedir(), cols: cols(), paint,
+            effort: (ENGINES[engine] && ENGINES[engine].kind === "stream" && effort) ? effortLabel(effort) : "",
+            contextLabel: Math.round((sess.ctxWindow || 200000) / 1000) + "K",
+            guard: guard === "enforce" ? "on" : guard,
+            mcp: _liveMcp, tip: _welcomeTip,
+          });
           for (const ln of cardLines) L.push(ln);
           continue;
         }
