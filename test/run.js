@@ -1548,6 +1548,41 @@ group("compliance bundle (SOC2 export)");
 }
 
 {
+  group("code-intel (module_graph + outline)");
+  const { parseImports, resolveSpec, buildImportGraph, moduleGraph } = require("../lib/nexus/code-intel");
+  // parseImports across languages
+  eq("js: import/require/dynamic specifiers", parseImports("a.js", "import x from './b'\nconst y = require('lodash')\nawait import('./c')\n"), ["./b", "lodash", "./c"]);
+  eq("py: from + import", parseImports("a.py", "from .util import q\nimport os, sys\n"), [".util", "os", "sys"]);
+  eq("go: single + block", parseImports("a.go", "import \"fmt\"\nimport (\n  \"os\"\n  \"./local\"\n)\n"), ["fmt", "os", "./local"]);
+  // resolution against a known file set
+  const fset = new Set(["src/a.js", "src/b.js", "src/sub/index.js", "pkg/util.py"]);
+  eq("js relative resolves with extension", resolveSpec("./b", "src/a.js", fset), "src/b.js");
+  eq("js relative resolves to index", resolveSpec("./sub", "src/a.js", fset), "src/sub/index.js");
+  eq("js bare specifier is external (null)", resolveSpec("react", "src/a.js", fset), null);
+  eq("py absolute resolves to module file", resolveSpec("pkg.util", "src/a.py", fset), "pkg/util.py");
+  // graph over a tiny project
+  const files = [
+    { path: "src/app.js", content: "import { parse } from './util'\nimport './helper'\n" },
+    { path: "src/helper.js", content: "import { parse } from './util'\n" },
+    { path: "src/util.js", content: "import fs from 'fs'\nexport const parse = 1\n" },
+    { path: "src/orphan.js", content: "console.log('nobody imports me')\n" },
+  ];
+  const whole = moduleGraph(files);
+  eq("summary counts files", whole.files, 4);
+  ok("util is the most-imported", whole.mostImported[0].path === "src/util.js" && whole.mostImported[0].importedBy === 2);
+  ok("orphan + app are entry points (no importers)", whole.entryPoints.files.includes("src/orphan.js") && whole.entryPoints.files.includes("src/app.js"));
+  const t = moduleGraph(files, "src/util.js");
+  eq("target: external import listed", t.importsExternal, ["fs"]);
+  ok("target: importedBy are app + helper", t.importedBy.length === 2 && t.fanIn === 2);
+  const a2 = moduleGraph(files, "src/app.js");
+  ok("target: internal imports resolved", a2.importsInternal.includes("src/util.js") && a2.importsInternal.includes("src/helper.js") && a2.fanOut === 2);
+  ok("unknown target errors", !!moduleGraph(files, "nope.js").error);
+  // buildImportGraph exposes both directions
+  const g = buildImportGraph(files);
+  ok("importedBy index is populated", g.importedBy["src/util.js"].length === 2);
+}
+
+{
   const { applyEdits, applyEditsFlexible, locateFlexible, parsePatch, applyHunks, applyPatch } = require("../lib/nexus/edit");
   // atomic multi-edit
   eq("multi-edit applies in order", applyEdits("a b c", [{ find: "a", replace: "x" }, { find: "c", replace: "z" }]).content, "x b z");
