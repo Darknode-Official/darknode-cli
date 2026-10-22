@@ -3230,7 +3230,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const btwRows = (!askRows && !effortRows && btw) ? renderBtw(C, R, btw) : null;
       let cardRows = askRows || effortRows || btwRows; // a full-width card replaces the composer + menu
       if (cardRows && cardRows.length > R - 2) cardRows = cardRows.slice(0, Math.max(1, R - 2)); // never build a card taller than the screen (would overflow the diff'd frame)
-      const chrome = cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows); // spacer + composer + reserved menu + footer
+      // breathing room below the footer so the composer floats off the terminal
+      // floor (matches Claude Code, which leaves a margin under its prompt).
+      // clamped away on short terminals so it never eats the transcript.
+      const bottomMargin = Math.min(5, Math.max(0, R - 16));
+      const chrome = (cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows)) + bottomMargin; // spacer + composer + reserved menu + footer + bottom margin
       const bodyRows = Math.max(0, R - chrome);
       const lines = bodyLines();
       const maxScroll = Math.max(0, lines.length - bodyRows);
@@ -3310,6 +3314,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           clickZones.push({ row, c0: C - 4, c1: C - 1, kind: "toggle" });
         }
       }
+      for (let i = 0; i < bottomMargin; i++) frame.push(""); // float the footer up off the terminal floor
       const b = frameDiff(lastLines, frame, ESC);
       lastLines = frame;
       if (b) out.write(b);
