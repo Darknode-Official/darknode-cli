@@ -2848,8 +2848,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           }
           L.push(""); continue;
         }
-        if (m.role === "plan") { const done = plan.filter((t) => t.done).length; L.push(bold(cyan("plan")) + gray("  " + done + "/" + plan.length + " done  ·  /plan run to execute")); if (!plan.length) L.push("  " + gray("(empty)")); for (let i = 0; i < plan.length; i++) { const t = plan[i]; const box = t.running ? yellow("[~]") : t.done ? green("[x]") : gray("[ ]"); for (const ln of wrap((i + 1) + ". " + t.text)) L.push("  " + box + " " + colorMd(ln, false)); } L.push(""); continue; }
-        if (m.role === "system") { if (m.lines) for (const ln of m.lines) L.push("  " + ln); else for (const ln of wrap(m.text)) L.push("  " + ln); L.push(""); continue; }
+        if (m.role === "plan") { const done = plan.filter((t) => t.done).length; L.push(bold(cyan("plan")) + gray("  " + done + "/" + plan.length + " done  ·  /plan run to execute")); if (!plan.length) L.push(gray("│ ") + gray("(empty)")); for (let i = 0; i < plan.length; i++) { const t = plan[i]; const box = t.running ? yellow("[~]") : t.done ? green("[x]") : gray("[ ]"); const _pw = wrap((i + 1) + ". " + t.text); for (let j = 0; j < _pw.length; j++) L.push(gray("│ ") + (j === 0 ? box + " " : "    ") + colorMd(_pw[j], false)); } L.push(""); continue; }
+        // A multi-line info panel (/mcp, /status, /doctor, /cost, /context, help …) is framed with
+        // a left rail so it reads as a card, cohesive with the welcome card and the scroll rail; a
+        // short one-line notice stays an indented dim line. The rail is the same 2 columns the old
+        // indent used, so wrap/clip widths are unchanged.
+        if (m.role === "system") { if (m.lines) for (const ln of m.lines) L.push(gray("│ ") + ln); else for (const ln of wrap(m.text)) L.push("  " + ln); L.push(""); continue; }
         if (m.role === "user") {
           // the submitted prompt sits on a full-width grey block (the Claude-Code
           // look): a 236 background that spans to the right margin, re-asserted
@@ -2886,7 +2890,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (it.detail && (done || expanded)) {
               const dl = wrap(stripA(it.detail)).filter((x) => x.trim());
               const n = expanded ? 8 : 1;
-              dl.slice(0, n).forEach((x, k) => L.push(gray((k ? "     " : "  ⎿  ") + x)));
+              dl.slice(0, n).forEach((x, k) => L.push((k ? "     " : "  " + cyan("⎿") + "  ") + gray(x)));
               if (dl.length > n) L.push(gray("     … +" + (dl.length - n) + " line" + (dl.length - n > 1 ? "s" : "") + " (ctrl+o to expand)"));
             }
             prevType = "tool";
@@ -2903,7 +2907,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           L.push(_lg.top + "   " + cyan(busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · esc to interrupt)"));
           L.push(_lg.bot + (tips.length ? "   " + gray("⎿ Tip: " + tips[Math.floor(el / 4) % tips.length]) : ""));
         } else if (m.summary) {
-          L.push(gray("  ⎿  " + m.summary));
+          L.push("  " + cyan("⎿") + "  " + gray(m.summary));
         }
         L.push("");
       }
@@ -2917,10 +2921,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           const box = t.status === "done" ? green("[x]") : t.status === "in_progress" ? yellow("[~]") : gray("[ ]");
           const paint = t.status === "done" ? gray : t.status === "in_progress" ? bold : (s) => s;
           const w = wrap(t.content);
-          L.push("  " + box + " " + paint(w[0] || ""));
-          for (let i = 1; i < w.length; i++) L.push("      " + paint(w[i]));
+          L.push(gray("│ ") + box + " " + paint(w[0] || ""));
+          for (let i = 1; i < w.length; i++) L.push(gray("│ ") + "    " + paint(w[i]));
         });
-        if (AGENT_TODOS.length > cap) L.push(gray("  … +" + (AGENT_TODOS.length - cap) + " more"));
+        if (AGENT_TODOS.length > cap) L.push(gray("│ ") + gray("… +" + (AGENT_TODOS.length - cap) + " more"));
         L.push("");
       }
       return L;
