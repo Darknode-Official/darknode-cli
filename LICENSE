@@ -1,17 +1,33 @@
-Source-Available License (No Use)
+Darknode Free-to-Use License
 
 Copyright (c) 2026 Darknode-Official. All rights reserved.
 
-This source code is made available for EDUCATIONAL AND REFERENCE
-PURPOSES ONLY. You may read, study, and learn from this code.
+This software ("Nexus" / darknode-cli) is made available free of charge.
 
-You may NOT:
-- Use, copy, modify, merge, publish, distribute, sublicense, or sell
-  copies of this software or any portion of it.
-- Use this software or any derivative of it in any product, service,
-  or project, whether commercial or non-commercial.
-- Deploy, host, or run this software in any environment.
+YOU MAY:
+- Download and install the software (including from the npm registry).
+- Run and use the software for any purpose, personal or commercial,
+  free of charge.
 
-This software is provided "as is" without warranty of any kind.
+YOU MAY NOT, without prior written permission from the copyright holder:
+- Redistribute, republish, mirror, or re-upload the software or any
+  portion of it (including to another package registry or repository).
+- Modify, adapt, translate, or create derivative works of the software.
+- Reverse engineer, decompile, or disassemble the software, except to
+  the limited extent that applicable law expressly permits despite this
+  restriction.
+- Sell, rent, lease, sublicense, or otherwise commercialize the software
+  or access to it as a product or service.
+- Remove or alter any copyright, trademark, or attribution notices.
 
-For licensing inquiries, contact the repository owner.
+The software is provided "AS IS", without warranty of any kind, express
+or implied, including but not limited to the warranties of
+merchantability, fitness for a particular purpose, and noninfringement.
+In no event shall the authors or copyright holders be liable for any
+claim, damages, or other liability, whether in an action of contract,
+tort, or otherwise, arising from, out of, or in connection with the
+software or the use or other dealings in the software.
+
+This license grants no rights to any Darknode-Official name, logo, or
+trademark. For any use beyond what is permitted above, contact the
+repository owner.

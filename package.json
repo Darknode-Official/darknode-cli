@@ -39,7 +39,7 @@
     "terminal"
   ],
   "author": "Darknode",
-  "license": "UNLICENSED",
+  "license": "SEE LICENSE IN LICENSE",
   "files": [
     "darknode.js",
     "darknode-legacy.js",

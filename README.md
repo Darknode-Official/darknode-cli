@@ -49,12 +49,20 @@ darknode-cli/
 ## Installation
 
 ```bash
-# from source (Node 18+)
+# from npm (Node 18+) — installs the `darknode` and `nexus` commands
+npm install -g darknode-cli
+
+# or run it without installing
+npx darknode-cli nexus
+
+# from source
 git clone https://github.com/Darknode-Official/darknode-cli
 cd darknode-cli && npm install && node darknode.js
 
 # or grab a standalone binary from Releases and put it on PATH
 ```
+
+Free to download and use (see [LICENSE](LICENSE)).
 
 ## Usage
 
