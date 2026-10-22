@@ -42,7 +42,7 @@ const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint
 const { frameDiff, wordHi } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
-const { bootHeader, welcomeCard, footerLine, helpLines, padRight: padRightV, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
+const { bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
@@ -2526,6 +2526,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = false, hack = false; // mode: 0 normal, 1 auto-accept, 2 plan, 3 bypass (waives the destructive-command guard); scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
     let gitBranch = ""; // cached "branch" (+ "*" when the tree is dirty), shown in the status bar
     const refreshGit = async () => { try { const b = await sh(["rev-parse", "--abbrev-ref", "HEAD"]); if (b.err) { gitBranch = ""; return; } const st = await sh(["status", "--porcelain"]); const next = (b.stdout || "").trim() + ((st.stdout || "").trim() ? "*" : ""); if (next !== gitBranch) { gitBranch = next; try { render(); } catch (_) {} } } catch (_) { gitBranch = ""; } };
+    // One-shot project pulse (last commit, commit count, tracked file count) for
+    // the idle home screen. Lazy + memoized so it runs once, not every frame.
+    let idleInfo = null, idleInfoBusy = false;
+    const loadIdleInfo = () => {
+      if (idleInfo || idleInfoBusy) return; idleInfoBusy = true;
+      (async () => {
+        const info = {};
+        try { const l = await sh(["log", "-1", "--pretty=%s"], { cwd }); if (!l.err) { const s = (l.stdout || "").trim(); if (s) info.last = s; } } catch (_) {}
+        try { const c = await sh(["rev-list", "--count", "HEAD"], { cwd }); if (!c.err) { const n = parseInt((c.stdout || "").trim(), 10); if (n) info.commits = n; } } catch (_) {}
+        try { const f = await sh(["ls-files"], { cwd }); if (!f.err) info.files = (f.stdout || "").split("\n").filter(Boolean).length; } catch (_) {}
+        idleInfo = info; try { render(); } catch (_) {}
+      })();
+    };
     const MODES = [{ k: "normal", c: gray }, { k: "auto-accept", c: green }, { k: "plan", c: cyan }, { k: "bypass", c: red }];
     // ---- per-engine feature compatibility ------------------------------------
     // Nexus runs six AI backends; a few cross-engine features only apply to some.
@@ -2913,6 +2926,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           L.push("  " + cyan("⎿") + "  " + gray(m.summary));
         }
         L.push("");
+      }
+      // Idle home: while the chat is still empty (only the welcome card), fill the
+      // screen below it with a gradient NEXUS wordmark, a few real starter prompts
+      // and a live project pulse — so a fresh session reads as a product, not a void.
+      if (transcript.length === 1 && transcript[0].role === "art" && !busy) {
+        loadIdleInfo();
+        const paint = useColor ? { brand: (t) => bold(cyan(t)), accent: (t) => bold(cyan(t)), muted: gray, faint: (t) => dim(gray(t)), key: (t) => bold(cyan(t)) } : null;
+        const grad = useColor ? (line) => { let o = ""; for (let c = 0; c < line.length; c++) { const ch = line[c]; if (ch === " ") { o += " "; continue; } const code = GRAD[Math.min(GRAD.length - 1, Math.floor((c / Math.max(1, line.length)) * GRAD.length))]; o += "\x1b[" + code + "m" + ch + "\x1b[0m"; } return o; } : null;
+        const project = gitBranch ? { name: base(cwd), branch: gitBranch.replace(/\*$/, ""), dirty: /\*$/.test(gitBranch), files: idleInfo ? idleInfo.files : undefined, commits: idleInfo ? idleInfo.commits : undefined, last: idleInfo ? idleInfo.last : undefined } : null;
+        for (const ln of idleHome({ cols: cols(), paint, grad, project })) L.push(ln);
       }
       // Live task panel (todo_write) — a persistent checklist like Claude Code's
       // TodoWrite, shown at the bottom of the transcript while any task is open.
