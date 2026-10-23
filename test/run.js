@@ -2581,7 +2581,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
 
   group("api-server input validation (shell-out routes reject injection)");
   {
-    const { isValidHostname, isSafeUrl } = require("../lib/nexus/api-server");
+    const { isValidHostname, isSafeUrl } = require("../lib/nexus/url-guard");
     ok("accepts a plain hostname", isValidHostname("example.com") && isValidHostname("sub.test.darknode.ai"));
     ok("rejects a domain with a command separator", !isValidHostname("x; id #") && !isValidHostname("x$(id)") && !isValidHostname("a|b"));
     ok("rejects whitespace / backticks / pipes in a domain", !isValidHostname("a b") && !isValidHostname("a`id`") && !isValidHostname(""));
