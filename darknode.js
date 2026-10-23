@@ -2653,7 +2653,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const setAccent = (code) => { A.cyan = "\x1b[" + code + "m"; };
     try { const st = readGlobal("state.json", {}) || {}; if (st.accent) setAccent(st.accent); if (Array.isArray(st.gradient) && st.gradient.length) GRAD = st.gradient; } catch (_) {}
     const CMDS = [
-      ["/help", "commands, input prefixes & keys"], ["/clear", "start a fresh chat"], ["/compact", "summarize & shrink the context"],
+      ["/help", "commands, input prefixes & keys"], ["/clear", "start a fresh chat"], ["/chat-clear", "clear the screen, keep the conversation memory"], ["/compact", "summarize & shrink the context"],
       ["/trust", "trust this workspace's .nexus MCP servers + hooks"],
       ["/connect", "connect an AI: local model · Claude (API) · any provider"],
       ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
@@ -4062,7 +4062,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
       if (cmd === "/help") {
         const HS = [
-          { title: "Session", rows: [["/clear","start a new conversation"],["/compact","summarize the conversation to free up context"],["/resume","reload the last saved session"],["/export","save the conversation to a markdown file"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/title","name the terminal tab for this topic (/title [text|on|off])"],["/exit","quit Nexus"]] },
+          { title: "Session", rows: [["/clear","start a new conversation"],["/chat-clear","clear the screen but keep the conversation in memory"],["/compact","summarize the conversation to free up context"],["/resume","reload the last saved session"],["/export","save the conversation to a markdown file"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/title","name the terminal tab for this topic (/title [text|on|off])"],["/exit","quit Nexus"]] },
           { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low | medium | high"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max-savings preset"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
           { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
           { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/dashboard","open the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
@@ -4207,6 +4207,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const hasContent = oMsgs.length > 1 || transcript.some((m) => m.role === "user" || m.role === "assistant");
         if (hasContent && !clearWasPending) { clearPending = true; transcript.push({ role: "system", text: yellow("Clear the whole conversation?") + gray("  press " + cmd + " again to confirm · any other input keeps it") }); }
         else { clearPending = false; transcript.length = 0; transcript.push({ role: "art" }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); }
+      }
+      else if (cmd === "/chat-clear" || cmd === "/screen-clear") {
+        // Wipe only the on-screen transcript. The model keeps the full
+        // conversation memory — oMsgs for local/API engines, the continued
+        // session (cont + claudeSid) for cloud — so the next message still
+        // remembers everything. Context meter and caches are left untouched.
+        transcript.length = 0; transcript.push({ role: "art" });
+        transcript.push({ role: "system", text: "screen cleared — the conversation is still in memory" + gray("  · next message continues it · /clear to wipe memory too") });
+        scroll = 0;
       }
       else if (cmd === "/compact") doCompact(false);
       else if (cmd === "/context") transcript.push({ role: "system", text: "context: " + fmtK(sess.ctxUsed) + " / " + fmtK(sess.ctxWindow) + " tokens (" + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "%)  ·  window " + fmtK(sess.ctxWindow) });
