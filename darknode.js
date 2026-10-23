@@ -2796,26 +2796,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // square boxes; the bottom-right one is the solid brand-amber square. Each
     // box is 6 cells wide x 3 tall so it looks square (terminal cells are ~1:2).
     // #ffaa00 is the brand amber.
-    const _AMF = "\x1b[38;5;214m", _OUT = "\x1b[38;5;252m", _RS = "\x1b[0m";
-    // Working animation — "charge the circuit": the amber square orbits the four
-    // boxes clockwise, then all four strobe amber as the charge completes, then
-    // it settles home in the bottom-right. The icon in miniature, no background.
-    // Two lines tall; wall-clock driven so the cadence stays steady.
-    //   positions 0 1 (TL TR) / 2 3 (BL BR)
-    const _DN_STATES = [
-      { on: [3], ms: 150 }, { on: [2], ms: 150 }, { on: [0], ms: 150 }, { on: [1], ms: 150 }, // orbit clockwise
-      { on: [0, 1, 2, 3], ms: 95 }, { on: [], ms: 80 }, { on: [0, 1, 2, 3], ms: 95 }, { on: [], ms: 80 }, // charge strobe x2
-      { on: [3], ms: 340 }, // settle home
+    // Working animation — a single star that "breathes": it blooms from a dot to
+    // a full sparkle and back while pulsing through brand-amber shades, the
+    // Claude-Code look. One glyph, wall-clock driven so the cadence stays steady
+    // and frameDiff rewrites only the one cell that changes each tick.
+    const _WORK = [
+      { g: "·", c: 136 }, { g: "✢", c: 172 }, { g: "✳", c: 208 }, { g: "✻", c: 214 },
+      { g: "✽", c: 220 }, { g: "✻", c: 214 }, { g: "✳", c: 208 }, { g: "✢", c: 172 },
     ];
-    const _DN_TOTAL = _DN_STATES.reduce((a, s) => a + s.ms, 0);
-    const dnLogo = () => {
-      if (!useColor) return { top: "[] []", bot: "[] [#]" };
-      let t = Date.now() % _DN_TOTAL, i = 0;
-      for (; i < _DN_STATES.length; i++) { if (t < _DN_STATES[i].ms) break; t -= _DN_STATES[i].ms; }
-      const on = (_DN_STATES[i] || _DN_STATES[0]).on;
-      const cell = (n) => (on.indexOf(n) >= 0 ? _AMF + "◼" : _OUT + "▢") + _RS; // amber filled vs rounded-corner outline, no bg
-      const line = (a, b) => cell(a) + " " + cell(b);                           // one line, transparent
-      return { top: line(0, 1), bot: line(2, 3) };
+    const workGlyph = () => {
+      const f = _WORK[Math.floor(Date.now() / 110) % _WORK.length];
+      return useColor ? "\x1b[38;5;" + f.c + "m" + f.g + "\x1b[0m" : f.g;
     };
     // One welcome tip chosen once per session (stable across every render so the
     // card never flickers), rotated by start time for a little variety.
@@ -2916,12 +2907,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (busy && m === cur()) {
           const el = Math.round((Date.now() - busyStart) / 1000);
           const tok = sess.liveOut ? " · " + fmtK(sess.liveOut) + " tokens" : "";
-          const _lg = dnLogo();
           const et = ENGINE_TIPS[engine] || [], tips = [];
           for (let k = 0; k < Math.max(NEXUS_TIPS.length, et.length); k++) { if (et[k]) tips.push(et[k]); if (NEXUS_TIPS[k]) tips.push(NEXUS_TIPS[k]); } // interleave so an engine-specific tip shows first
           L.push("");
-          L.push(_lg.top + "   " + cyan(busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · esc to interrupt)"));
-          L.push(_lg.bot + (tips.length ? "   " + gray("⎿ Tip: " + tips[Math.floor(el / 4) % tips.length]) : ""));
+          L.push(workGlyph() + " " + cyan(busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · esc to interrupt)"));
+          if (tips.length) L.push("  " + gray("⎿ Tip: " + tips[Math.floor(el / 4) % tips.length]));
         } else if (m.summary) {
           L.push("  " + cyan("⎿") + "  " + gray(m.summary));
         }
@@ -3240,7 +3230,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const maxScroll = Math.max(0, lines.length - bodyRows);
       if (scroll > maxScroll) scroll = maxScroll;
       const start = Math.max(0, lines.length - bodyRows - scroll);
-      const view = lines.slice(start, start + bodyRows);
+      let view = lines.slice(start, start + bodyRows);
+      // Anchor a short transcript to the BOTTOM — the conversation and the live
+      // working status sit just above the composer (Claude Code look) instead of
+      // the top with a void beneath. The idle welcome/home screen is the one
+      // exception: it fills from the top. Pad the top with blank rows.
+      const _idleHome = transcript.length === 1 && transcript[0].role === "art" && !busy;
+      if (!_idleHome && view.length < bodyRows) view = new Array(bodyRows - view.length).fill("").concat(view);
       // Build the frame as an array of rows, then write ONLY the rows that changed
       // since last paint (frameDiff). During streaming just the status timer + the
       // one growing text line differ, so we write ~2 rows instead of the whole screen.
