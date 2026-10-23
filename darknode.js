@@ -1583,7 +1583,7 @@ async function aiCoder(argv) {
   let delegated = false;
   const changed = [];  // session change log for /undo and /diff: {path, before|null, label}
   const relp = (p) => path.relative(cwd, p) || p;
-  // ---- permission gate (Glitch-style): confirm risky actions unless auto-approve ----
+  // ---- permission gate: confirm risky actions unless auto-approve ----
   async function approve(label) {
     if (autoApprove) return true;
     const ans = (await ask(cyan("  approve ") + label + gray("  [y]es / [n]o / [a]lways: "))).trim().toLowerCase();
@@ -2253,7 +2253,7 @@ function formatToolLines(name, res) {
 // Rough Claude price table ($ per 1M tokens: input, output). Used only to ESTIMATE
 // whether delegating a task to a cheaper model saves more than the delegation overhead.
 const { priceOf, costOf, usageBuckets, pricingTable, PRICING_SOURCE, PRICING_CHECKED, isMechanical, shouldDelegate } = require("./lib/nexus/pricing"); // cost model (lib/pricing.js)
-// Darknode preflight — classify a shell command's destructive intent (inspired by Glitch's
+// Darknode preflight — classify a shell command's destructive intent (inspired by common
 // Darknode guard: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
 const { oneline, extractJson, completePath } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
 async function planGoal(engine, model, goal, memory) {
@@ -2479,6 +2479,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       term.register("mouse", "", ESC + "[?1000l" + ESC + "[?1006l"); // enabled on demand by setMouse
       term.register("bracketed-paste", ESC + "[?2004h", ESC + "[?2004l");
       term.register("hide-cursor", ESC + "[?25l", ESC + "[?25h");
+      // Ask for a blinking block cursor (DECSCUSR 1) so the composer caret blinks on
+      // terminals whose default cursor doesn't; restored to the terminal default (0) on exit.
+      term.register("blink-cursor", ESC + "[1 q", ESC + "[0 q");
       term.register("title", ESC + "[22;2t", ESC + "[23;2t"); // save the shell's window title on entry (XTPUSHTITLE) and restore it on exit/crash (XTPOPTITLE), rather than blanking the tab
       // modifyOtherKeys level 1: lets supporting terminals report otherwise-
       // ambiguous combos (notably Shift+Enter) as CSI sequences the composer
@@ -2573,6 +2576,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let ctl = null, costCap = S.budgetCap || 0, rate = null, warned50 = false, notify = !!S.notify, redact = !!S.redact, offline = false, guard = "enforce", lean = !!S.lean, effort = S.effort || "", fallback = "", style = S.style || "default";
     // Off-by-default governance toggles (opt in via /settings or their own command).
     let minimizeCalls = !!S.minimizeCalls, stepCap = !!S.stepCap, trimOutput = !!S.trimOutput, autoCompact = !!S.autoCompact;
+    // auto-compact threshold override: 0 = "auto" (Nexus picks the point), >0 = a
+    // manual token amount the user set via /autocompact <amount>. Only applies when
+    // autoCompact is on; clamped below the real window for local-engine safety.
+    let autoCompactAt = Math.max(0, Math.floor(Number(S.autoCompactAt) || 0));
     let tightEdits = S.tightEdits !== false; // surgical minimal edits — lossless (verified: edit.js errors on ambiguous finds, never mis-applies), so default ON
     let clearPending = false; // /clear asks once before wiping a non-empty conversation (reset by any other input)
     if (S.mode != null && typeof S.mode === "number" && S.mode >= 0 && S.mode <= 2) mode = S.mode; // restore last mode (shift+tab)
@@ -2695,7 +2702,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/compat", "which features this model supports (nothing is hidden)"],
       ["/mode", "capability preset: /mode power|cost|speed|reset (model-compatible only)"],
       ["/god-prompt", "arm max-quality mode for your NEXT message only (gold border, auto-reverts)"],
-      ["/autocompact", "auto-shrink the context when it fills up · /autocompact on|off"],
+      ["/autocompact", "auto-shrink the context when it fills up · /autocompact auto|off|<amount>"],
       ["/title", "name the terminal tab for this session's topic · /title [text|on|off]"],
       ["/feature", "add/remove your own commands: /feature create <name> <what it does> · /feature remove <name>"],
       ["/open", "launch the live web dashboard in your browser"],
@@ -2704,7 +2711,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/cron", "scheduled pipeline runs — /cron add \"0 9 * * *\" <goal> · /cron list · /cron remove <id>"],
       ["/expand", "toggle tool-call detail"], ["/vim", "toggle vim modal editing in the input box · /vim on|off"], ["/terminal-setup", "make Shift+Enter insert a newline (per-terminal setup) · /terminal-setup off"], ["/exit", "quit Nexus"],
     ];
-    // Custom project slash commands (Claude-Code / Glitch style): each .md file in
+    // Custom project slash commands (Claude-Code style): each .md file in
     // .nexus/commands/ or .claude/commands/ becomes /<name>; its body is the prompt,
     // with $ARGUMENTS / $1 $2… substituted from what you type after the command.
     const customCmds = {};
@@ -2872,8 +2879,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // look): a 236 background that spans to the right margin, re-asserted
           // after every reset so the coloured ❯/bold tokens don't punch holes.
           const w = wrap(m.text);
-          const _uw = Math.max(0, cols() - 4); // inner width of the grey block
-          const chatHl = (c) => "\x1b[48;5;236m " + String(c).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + " ".repeat(Math.max(0, _uw - stripA(c).length)) + " \x1b[0m";
+          const _uw = Math.max(0, cols() - 3); // inner width of the grey block (flush-left ❯, Claude-Code look)
+          const chatHl = (c) => "\x1b[48;5;236m" + String(c).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + " ".repeat(Math.max(0, _uw - stripA(c).length)) + " \x1b[0m";
           L.push(chatHl(cyan("❯ ") + bold(w[0] || "")));
           for (let i = 1; i < w.length; i++) L.push(chatHl("  " + bold(w[i])));
           L.push(""); continue;
@@ -3242,10 +3249,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // the top with a void beneath. The idle welcome/home screen is the one
       // exception: it fills from the top. Pad the top with blank rows.
       const _idleHome = transcript.length === 1 && transcript[0].role === "art" && !busy;
-      if (!_idleHome && view.length < bodyRows) view = new Array(bodyRows - view.length).fill("").concat(view);
+      // Keep the welcome card pinned to the top until a real turn begins. A bare
+      // command like /open or /help only appends a system notice, so without this
+      // the short transcript would bottom-anchor and shove the card down beneath a
+      // tall void. Stay top-anchored while the transcript is still just the card +
+      // notices; the moment a user/nexus turn exists we bottom-anchor as before.
+      const _topAnchor = _idleHome || (!busy && transcript.every((m) => m.role === "art" || m.role === "system"));
+      if (!_topAnchor && view.length < bodyRows) view = new Array(bodyRows - view.length).fill("").concat(view);
       // Build the frame as an array of rows, then write ONLY the rows that changed
       // since last paint (frameDiff). During streaming just the status timer + the
       // one growing text line differ, so we write ~2 rows instead of the whole screen.
+      let _caretRC = null;        // composer caret cell {r,c}, 1-indexed — drives the native (blinking) terminal cursor
       const frame = [];
       // ---- scroll rail: a faint vertical track down the far-right column (C)
       // with a brighter thumb showing where the viewport sits in a long
@@ -3295,8 +3309,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const _showStart = Math.max(0, wrapped.length - inRows);
       const shown = wrapped.slice(_showStart);
       for (let i = 0; i < inRows; i++) {
-        let raw = shown[i] || ""; const li = _showStart + i;
-        if (li === _cLine) raw = raw.slice(0, _cCol) + "█" + raw.slice(_cCol);
+        const raw = shown[i] || ""; const li = _showStart + i;
+        // Record the caret's screen cell and let the terminal draw its own cursor
+        // there (it blinks natively, at zero CPU) instead of a static █ block.
+        // Column = flush-left body + 2-col "❯ "/"  " prefix + caret offset.
+        if (li === _cLine) _caretRC = { r: frame.length + 1, c: Math.min(C, 3 + _cCol) };
         // accent "❯ " on the first row, aligned indent after. Flush to the left
         // edge (no gutter) so the caret lines up with Claude Code's prompt.
         const _body = (i === 0 ? bold(cyan("❯ ")) : "  ") + colorInput(raw);
@@ -3333,7 +3350,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       for (let i = 0; i < bottomMargin; i++) frame.push(""); // float the footer up off the terminal floor
       const b = frameDiff(lastLines, frame, ESC);
       lastLines = frame;
-      if (b) out.write(b);
+      // Park the real terminal cursor on the composer caret so it blinks natively.
+      // Hidden (?25l) while the changed rows repaint to avoid flicker, then shown
+      // (?25h) at the caret. When a full-width card (ask/effort) replaces the
+      // composer there is no caret, so it stays hidden. Reposition even when no
+      // rows changed (b empty) so arrow/Home/End key moves are reflected.
+      let _w = b ? (ESC + "[?25l" + b) : "";
+      if (_caretRC && !cardRows) _w += ESC + "[" + _caretRC.r + ";" + _caretRC.c + "H" + ESC + "[?25h";
+      else if (b) _w += ESC + "[?25l";
+      if (_w) out.write(_w);
     };
     // ---- model-driven question: pause the agent loop, show the Claude-style
     // multiple-choice card, and resolve with the user's pick (or {cancelled}
@@ -3405,6 +3430,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // the context size (tokens) at which the conversation auto-compacts. Shared
     // by maybeAutoCompact (the trigger) and the status bar ("% until auto-compact").
     const compactAt = () => {
+      // Manual amount (/autocompact <amount>): honor it, but never above the window's
+      // 90% so a local engine can't overflow before it fires.
+      if (autoCompact && autoCompactAt > 0) {
+        const win = sess.ctxWindow || (PAID[engine] ? 1000000 : 200000);
+        return Math.max(1, Math.min(autoCompactAt, Math.floor(0.9 * win)));
+      }
       const aggressive = autoCompact || COMPACT_ENV != null; // env presence = opt in
       if (PAID[engine]) return aggressive ? (COMPACT_ENV != null ? COMPACT_ENV : 40000) : Math.max(1, Math.floor(0.9 * (sess.ctxWindow || 1000000)));
       // local must compact before the window overflows (correctness), so even off-by-default it fires at 90%
@@ -4039,11 +4070,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           .catch((e) => { if (blk) { blk.text = red("could not start the dashboard: " + (e && e.message || e)); render(); } });
       } catch (e) { if (blk) { blk.text = red("dashboard module failed to load: " + (e && e.message || e)); render(); } }
     };
-    const _pipeCache = { ts: 0, data: null }; // throttle the (blocking) glitch observe shell-out
+    const _pipeCache = { ts: 0, data: null }; // throttle the (blocking) pipeline-engine observe shell-out
     const pipeInfo = () => {
       try {
         const P = require("./lib/nexus/pipelines");
-        if (!P.hasGlitch || !P.hasGlitch()) return { engine: false };
+        if (!P.hasEngine || !P.hasEngine()) return { engine: false };
         if (Date.now() - _pipeCache.ts > 15000) {
           _pipeCache.ts = Date.now();
           let text = ""; try { text = (P.observePipelines(cwd) || "").toString().trim(); } catch (_) {}
@@ -4475,11 +4506,26 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         render(); return;
       }
       else if (cmd === "/autocompact") {
+        // Three modes: auto (Nexus picks the point), off (overflow-safety only), or a
+        // manual token amount (e.g. /autocompact 40k). "on" is kept as an alias for auto.
         const a2 = (arg || "").trim().toLowerCase();
-        if (a2 === "on" || a2 === "off") { autoCompact = a2 === "on"; saveSetting("autoCompact", autoCompact); }
-        else if (a2 && a2 !== "status") { transcript.push({ role: "system", text: "usage: /autocompact on|off — auto-shrink the conversation when the context fills up (off by default; it drops detail to save spend)" }); return; }
+        const parseAmt = (s) => { const m = /^(\d+(?:\.\d+)?)\s*(k|m)?$/.exec(s.replace(/[_,]/g, "")); if (!m) return null; return Math.round(parseFloat(m[1]) * (m[2] === "m" ? 1000000 : m[2] === "k" ? 1000 : 1)); };
+        if (a2 === "off") { autoCompact = false; autoCompactAt = 0; saveSetting("autoCompact", false); saveSetting("autoCompactAt", 0); }
+        else if (a2 === "auto" || a2 === "on") { autoCompact = true; autoCompactAt = 0; saveSetting("autoCompact", true); saveSetting("autoCompactAt", 0); }
+        else if (a2 && a2 !== "status") {
+          const amt = parseAmt(a2);
+          if (amt == null || amt < 1000) { transcript.push({ role: "system", text: "usage: /autocompact auto|off|<amount> — auto-shrink the context as it fills.\n  " + cyan("auto") + gray("  Nexus picks the point") + "\n  " + cyan("off") + gray("   compact only to avoid a hard overflow") + "\n  " + cyan("<amount>") + gray("  compact at that many tokens, e.g. /autocompact 40k (min 1k)") }); return; }
+          autoCompact = true; autoCompactAt = amt; saveSetting("autoCompact", true); saveSetting("autoCompactAt", amt);
+        }
         const _ca = compactAt(); const pct = (_ca > 0 && sess.ctxUsed != null) ? Math.max(0, Math.min(100, Math.round((1 - sess.ctxUsed / _ca) * 100))) : null;
-        transcript.push({ role: "system", text: "auto-compact " + (autoCompact ? green("ON") : red("OFF")) + (autoCompact ? " — the context is summarized automatically as it fills, to keep spend down (it drops older detail; /compact does it on demand instead)." : " — the context is only compacted to avoid a hard overflow; use /compact when you want to shrink it yourself.") + (pct != null ? "\n  " + pct + "% of headroom until the next auto-compact." : "") + gray("\n  saved · /autocompact on|off") });
+        const mode = !autoCompact ? "off" : (autoCompactAt > 0 ? "manual" : "auto");
+        const head = mode === "off" ? red("OFF") : (mode === "manual" ? green("ON") + gray(" · manual " + fmtK(_ca) + " tokens") : green("ON") + gray(" · auto"));
+        const why = mode === "off"
+          ? " — the context is only compacted to avoid a hard overflow; use /compact to shrink it yourself."
+          : (mode === "manual"
+            ? " — the context is summarized once it reaches about " + fmtK(_ca) + " tokens (it drops older detail; /compact does it on demand)."
+            : " — the context is summarized automatically as it fills, to keep spend down (it drops older detail; /compact does it on demand).");
+        transcript.push({ role: "system", text: "auto-compact " + head + why + (pct != null ? "\n  " + pct + "% of headroom until the next auto-compact." : "") + gray("\n  saved · /autocompact auto|off|<amount>") });
         return;
       }
       else if (cmd === "/title") {
@@ -4513,7 +4559,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         stepCap = p.stepCap; saveSetting("stepCap", p.stepCap);
         trimOutput = p.trimOutput; saveSetting("trimOutput", p.trimOutput);
         repoMapOn = p.map; saveSetting("map", p.map); if (p.map) repoMapSent = false;
-        autoCompact = p.autoCompact; saveSetting("autoCompact", p.autoCompact);
+        autoCompact = p.autoCompact; autoCompactAt = 0; saveSetting("autoCompact", p.autoCompact); saveSetting("autoCompactAt", 0);
         const bits = [];
         if (p.eff !== null) bits.push("effort " + (p.eff || "default"));
         bits.push("lean " + (p.lean ? "on" : "off"), "minimize-calls " + (p.minimizeCalls ? "on" : "off"), "step-cap " + (p.stepCap ? "on" : "off"), "trim-output " + (p.trimOutput ? "on" : "off"), "repo-map " + (p.map ? "on" : "off"), "auto-compact " + (p.autoCompact ? "on" : "off"));
@@ -4551,9 +4597,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // lossy knobs, so /cheap can never degrade output. (Lossless: /cache,
         // surgical edits. Always-on lossless savers run regardless.)
         cacheOn = true; tightEdits = true;
-        lean = false; effort = ""; minimizeCalls = false; stepCap = false; trimOutput = false; autoCompact = false;
+        lean = false; effort = ""; minimizeCalls = false; stepCap = false; trimOutput = false; autoCompact = false; autoCompactAt = 0;
         saveSetting("cache", true); saveSetting("tightEdits", true);
-        saveSetting("lean", false); saveSetting("effort", ""); saveSetting("minimizeCalls", false); saveSetting("stepCap", false); saveSetting("trimOutput", false); saveSetting("autoCompact", false);
+        saveSetting("lean", false); saveSetting("effort", ""); saveSetting("minimizeCalls", false); saveSetting("stepCap", false); saveSetting("trimOutput", false); saveSetting("autoCompact", false); saveSetting("autoCompactAt", 0);
         transcript.push({ role: "system", text: "cheap mode " + green("ON") + " — every token saver that keeps full quality:\n  " + green("•") + " surgical edits (change only what differs, never rewrite whole lines)\n  " + green("•") + " exact-repeat cache (free re-answers for unchanged read-only turns)\n  " + green("•") + " context de-dup, re-read supersession & unchanged-file skip (always on)\n  " + green("•") + " Claude prompt-caching (automatic on the claude engine)\n  " + gray("quality-reducing knobs (lean, low effort, minimizeCalls, stepCap, trimOutput, autoCompact) were turned OFF.") + "\n  " + gray("want deeper cuts (with a small quality trade-off)? /cowork " + (cowork.on ? cowork.strong : "opus") + " ollama:<local-model>, or /lean.") }); }
       else if (cmd === "/estimate") { if (!argstr) transcript.push({ role: "system", text: "usage: /estimate <prompt> — rough token/cost estimate before you send it" }); else if (!PAID[engine]) transcript.push({ role: "system", text: "local engine — free (no token charges)" }); else { const inTok = Math.ceil(argstr.length / 4) + sess.ctxUsed; const outEst = lean ? 400 : 900; const mdl = cowork.on ? cowork.strong : sess.model; const pr = priceOf(mdl); const cost = (inTok / 1e6) * pr.in + (outEst / 1e6) * pr.out; transcript.push({ role: "system", text: "estimate on " + mdl + ": ~" + fmtK(inTok) + " input (your prompt + ~" + fmtK(sess.ctxUsed) + " current context) + ~" + outEst + " output  →  ~$" + cost.toFixed(4) + " (rough; " + (lean ? "lean on" : "add /lean to cut output") + ")" }); } }
       else if (cmd === "/models") {

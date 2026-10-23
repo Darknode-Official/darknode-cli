@@ -571,7 +571,7 @@ group("output styles (Claude-Code idea)");
   ok("names include review/tdd/secure", ["review", "tdd", "secure"].every((n) => styleNames().includes(n)));
 }
 
-group("agent memory / remember (Glitch idea) — dedup");
+group("agent memory / remember — dedup");
 {
   let r = mergeMemory("# Nexus\n", "Use the shared Table component at src/Table.tsx");
   ok("adds a new fact", r.added === true && /## Remembered/.test(r.md) && /Table component/.test(r.md));
@@ -602,7 +602,7 @@ group("custom output styles (.nexus/styles/*.md)");
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-group("discover tool (Glitch idea)");
+group("discover tool");
 {
   const r = discoverTools("search files", TOOL_CATALOG).map((t) => t.name);
   ok("query matches search + find", r.includes("search") && r.includes("find"));

@@ -1407,7 +1407,7 @@ async function aiCoder(argv) {
   let delegated = false;
   const changed = [];  // session change log for /undo and /diff: {path, before|null, label}
   const relp = (p) => path.relative(cwd, p) || p;
-  // ---- permission gate (Glitch-style): confirm risky actions unless auto-approve ----
+  // ---- permission gate: confirm risky actions unless auto-approve ----
   async function approve(label) {
     if (autoApprove) return true;
     const ans = (await ask(cyan("  approve ") + label + gray("  [y]es / [n]o / [a]lways: "))).trim().toLowerCase();
@@ -1884,7 +1884,7 @@ async function deviceTool(name, a, cwd) {
 // Rough Claude price table ($ per 1M tokens: input, output). Used only to ESTIMATE
 // whether delegating a task to a cheaper model saves more than the delegation overhead.
 const { priceOf, isMechanical, shouldDelegate } = require("./lib/nexus/pricing"); // cost model (lib/pricing.js)
-// Darknode preflight — classify a shell command's destructive intent (inspired by Glitch's
+// Darknode preflight — classify a shell command's destructive intent (inspired by common
 // Darknode, improved: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
 const { oneline, extractJson } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
 async function planGoal(engine, model, goal, memory) {
@@ -2181,7 +2181,7 @@ function nexusTui(engine, cwd, nexusMd) {
       ["/login", "sign in with Google or GitHub (Firebase)"], ["/logout", "sign out of Nexus"], ["/whoami", "show the signed-in account"], ["/setup", "install Ollama + pull a local model"],
       ["/expand", "toggle tool-call detail"], ["/exit", "quit Nexus"],
     ];
-    // Custom project slash commands (Claude-Code / Glitch style): each .md file in
+    // Custom project slash commands (Claude-Code style): each .md file in
     // .nexus/commands/ or .claude/commands/ becomes /<name>; its body is the prompt,
     // with $ARGUMENTS / $1 $2… substituted from what you type after the command.
     const customCmds = {};

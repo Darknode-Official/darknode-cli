@@ -12,7 +12,7 @@ starts decomposing the monolith into a tested `lib/` layer.
   **tamper-evident hash-chained audit trail** (`darknode audit verify` for CI).
 - **Multi-model `/team`** workspace: architect -> builder -> independent reviewer,
   looping until PASS.
-- **From Claude Code & Glitch**: output styles (+ custom), `remember`, `discover`,
+- **Agent conveniences**: output styles (+ custom), `remember`, `discover`,
   background bash (`run_background`/`check_background`), a neat `/settings` panel.
 - **Architecture**: 11 pure `lib/` modules + a framework-free suite (`npm test`,
   102 assertions) + CI across Node 18/20/22. See `ARCHITECTURE.md`.

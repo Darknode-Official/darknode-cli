@@ -24,7 +24,7 @@ All notable changes to Darknode / Nexus. Format loosely follows
   detect any edit, deletion, or reordering (non-zero exit for CI gates).
 - `darknode policy` / `darknode audit` usable outside the TUI for CI and compliance.
 
-### Added — from Claude Code & Glitch
+### Added
 - Output styles (`/style`), including custom `.nexus/styles/*.md`.
 - Agent `remember` tool (durable NEXUS.md notes with dedup) and `discover` tool
   (keyword search over the agent's own toolset).
