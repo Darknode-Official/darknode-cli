@@ -3897,7 +3897,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           onThinking: (t) => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; block.items.push(last); } last.full += t; bumpLive(t); renderSoon(); },
           onText: (t) => { textItem().full += t; bumpLive(t); renderSoon(); },
           onDelta: (t) => { bumpLive(t); renderSoon(); }, // mid-message delta: advance the live token estimate only (the whole text/thinking still lands via onText/onThinking)
-          onLiveTokens: (n) => { estOut = n; sess.liveOut = confOut + estOut; renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate
+          onLiveTokens: (n) => { estOut = Math.max(estOut, n); sess.liveOut = confOut + estOut; renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate (never let it yank the counter backwards if the estimate ran ahead)
           onTool: (tu) => {
             const _item = { type: "tool", id: tu.id, name: tu.name, input: tu.input, label: toolLabel(tu.name, tu.input), detail: JSON.stringify(tu.input).slice(0, 400), status: "run", start: Date.now() };
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
