@@ -2578,6 +2578,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const ident = resolveOperator({ cwd }); // operator/team for chargeback attribution + audit provenance
     const oMsgs = nexusMd ? [{ role: "system", content: "Nexus coding assistant.\n" + nexusMd }] : [{ role: "system", content: "Nexus coding assistant." }];
     let input = "", curPos = 0, busy = false, cont = false, busyStart = 0, busyWord = "", tick = null, activeBlock = null; // activeBlock: the nexus block currently streaming (the typewriter targets it even if an async note moved the transcript tail)
+    let _escHold = false, _escTimer = null, _escFlushing = false; // reassemble an escape/report sequence a terminal split across stdin reads (ESC alone, body next)
     // Carried across a compaction of the claude engine. Claude's context lives
     // server-side and is resumed with --continue; to actually shrink it we must
     // DROP --continue (cont=false) and re-seed the next prompt with a summary,
@@ -3744,7 +3745,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (sess.ctxUsed > compactAt()) doCompact(true);
     };
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
-    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (_rsT) { clearTimeout(_rsT); _rsT = null; } if (_drainT) { clearTimeout(_drainT); _drainT = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
+    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (_rsT) { clearTimeout(_rsT); _rsT = null; } if (_drainT) { clearTimeout(_drainT); _drainT = null; } if (_escTimer) { clearTimeout(_escTimer); _escTimer = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
     tuiActive = true;
     const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { term.teardown(); } catch (_) {} try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
@@ -5610,6 +5611,21 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (loading) { finishBoot(); return; }   // any key skips the intro
       if (pasteNotice) pasteNotice = "";        // a paste preflight notice lasts until the next key
       let s = String(d);
+      // Reassemble an escape sequence a terminal split across reads. A report or
+      // arrow can arrive as a lone ESC in one chunk and its body ("[12;40R", "[I",
+      // "OP", "[A"…) in the next; the body starts with '[' or 'O', NOT ESC, so the
+      // printable guard below would insert it into the composer as stray text —
+      // parking the caret past the end and making backspace look dead (it's
+      // deleting the junk first). Hold a lone trailing ESC one beat and glue the
+      // next chunk onto it; if nothing follows, deliver it as a real Esc.
+      if (_escHold) {
+        _escHold = false; if (_escTimer) { clearTimeout(_escTimer); _escTimer = null; }
+        if (s.charCodeAt(0) !== 27) s = "\x1b" + s;              // ESC + body → whole sequence
+        else { try { _escFlushing = true; process.stdin.emit("data", "\x1b"); } finally { _escFlushing = false; } } // held ESC was standalone; deliver it, then process this new chunk
+      } else if (s === "\x1b" && !_escFlushing) {
+        _escHold = true; _escTimer = setTimeout(() => { _escHold = false; _escTimer = null; try { _escFlushing = true; process.stdin.emit("data", "\x1b"); } finally { _escFlushing = false; } }, 40);
+        return;
+      }
       // A wheel notch in alt-screen scroll mode (?1007) arrives as a burst of arrow
       // keys in ONE chunk, often in SS3 form (ESC O A). Replay a burst key by key
       // and fold SS3 arrows to CSI so every handler below sees a single "\x1b[A".
@@ -5627,6 +5643,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // every handler below matches a single exact sequence.
       const _seqs = s.match(/\x1b(?:\[[0-9;]*[A-Za-z~]|O[A-Z])/g);
       if (_seqs && _seqs.length > 1 && _seqs.join("") === s && !/\[<|\[200~|\[201~/.test(s)) { for (const k of _seqs) process.stdin.emit("data", k); return; }
+      // A run of single-byte control keys can batch into one read too — notably a
+      // held Backspace (0x7f) or keystrokes buffered during a slow restart, which
+      // arrive as "\x7f\x7f…". Each handler matches ONE exact byte, and the
+      // printable guard treats DEL (0x7f) as text, so a batched run would get
+      // inserted as stray chars instead of editing — the caret jumps right and
+      // nothing deletes. Replay such a run one byte at a time.
+      if (s.length > 1 && /^[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]+$/.test(s)) { for (const ch of s) process.stdin.emit("data", ch); return; } // (exclude \t \n \r so real newlines/paste still flow through, and ESC so Alt+key combos like Alt+Backspace stay intact)
       // Application-cursor mode (DECCKM, often left on by another program) sends
       // arrows/Home/End as SS3 (ESC O x): fold all of them to the CSI form.
       if (/^\x1bO[ABCDHF]$/.test(s)) s = "\x1b[" + s[2];
