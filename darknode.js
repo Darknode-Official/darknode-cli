@@ -2677,6 +2677,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const clip = (s, n) => { if (n <= 0) return ""; let o = "", v = 0, hasColor = false; for (const part of String(s).split(/(\x1b\[[0-9;]*m)/)) { if (/^\x1b/.test(part)) { o += part; hasColor = true; continue; } for (const ch of part) { if (v >= n) return o + (hasColor ? "\x1b[0m" : ""); o += ch; v++; } } return o; };
     const fmtK = (n) => n >= 100000 ? (n / 1000).toFixed(0) + "k" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : "" + (n | 0);
     const fmtElapsed = (sec) => { if (sec < 60) return sec + "s"; if (sec < 3600) return Math.floor(sec / 60) + "m " + (sec % 60) + "s"; if (sec < 86400) return Math.floor(sec / 3600) + "h " + Math.floor((sec % 3600) / 60) + "m"; return Math.floor(sec / 86400) + "d " + Math.floor((sec % 86400) / 3600) + "h"; };
+    const fmtDur = (sec) => sec < 60 ? sec.toFixed(1) + "s" : fmtElapsed(Math.round(sec)); // a measured duration: keep the decimal under a minute, roll into m/h above it
     const base = (pth) => String(pth || "").split("/").pop() || String(pth || "");
     // ---- NEXUS logo (gradient) + slash-command menu ----
     // Each theme = a 6-stop logo/boot gradient + an accent hue that recolors the
@@ -3018,7 +3019,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (prevType) L.push("");
             const dot = it.status === "run" || it.status === "wait" ? cyan(spin[Math.floor(Date.now() / 90) % spin.length]) : it.status === "err" ? red("●") : green("●");
             const rawSec = it.end ? (it.end - it.start) / 1000 : (Date.now() - it.start) / 1000;
-            const secs = rawSec < 0.1 ? "<0.1s" : rawSec < 60 ? rawSec.toFixed(1) + "s" : fmtElapsed(Math.round(rawSec));
+            const secs = rawSec < 0.1 ? "<0.1s" : fmtDur(rawSec);
             const _lp = it.label.indexOf("(");
             L.push(dot + " " + (_lp > 0 && /\)$/.test(stripA(it.label)) ? bold(it.label.slice(0, _lp)) + it.label.slice(_lp) : bold(it.label)) + gray("  " + secs));
             const done = it.status === "ok" || it.status === "err";
@@ -3408,9 +3409,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // One queue-drain timer for every path that ends work (a turn, a ! command,
     // /race, /plan…, a compaction). render() fires it on the busy→idle edge, so
     // a queued prompt can never be stranded by a code path that forgets to.
-    let _wasBusy = false, _drainT = null;
-    const scheduleDrain = (ms) => { if (_drainT) return; _drainT = setTimeout(() => { _drainT = null; drainNext(); }, ms); };
+    let _wasBusy = false, _drainT = null, cleaned = false;
+    const scheduleDrain = (ms) => { if (cleaned || _drainT) return; _drainT = setTimeout(() => { _drainT = null; drainNext(); }, ms); };
     const render = () => {
+      if (cleaned) return; // after teardown: never touch the terminal again (a pending timer could still fire)
       if (_wasBusy && !busy && nextQueue.length) scheduleDrain(300);
       _wasBusy = busy;
       if (godActive && !busy) { godRestore(); godActive = false; } // /god-prompt reverts once its one turn finishes
@@ -3726,8 +3728,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (sess.ctxUsed > compactAt()) doCompact(true);
     };
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
-    let cleaned = false;
-    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
+    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (_rsT) { clearTimeout(_rsT); _rsT = null; } if (_drainT) { clearTimeout(_drainT); _drainT = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
     tuiActive = true;
     const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { term.teardown(); } catch (_) {} try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
@@ -3824,7 +3825,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         bits.push("↑" + fmtK(din) + " ↓" + fmtK(dout) + " tok");
         if (+dt > 0 && dout > 0) bits.push(fmtK(Math.round(dout / +dt)) + " tok/s");
         if (PAID[engine] && dcost > 0) bits.push("$" + dcost.toFixed(4));
-        bits.push(+dt < 60 ? dt + "s" : fmtElapsed(Math.round(+dt)));
+        bits.push(fmtDur(+dt));
         { const cw = sess.ctxWindow || 200000; bits.push(Math.min(100, Math.round((sess.ctxUsed / cw) * 100)) + "% ctx"); }
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); try { bisectPersist(cwd, ckObj); } catch (_) {} } // persist the turn snapshot so `bisect` can search the timeline later
         const clock = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
@@ -4114,7 +4115,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           for (const c of cards) if (c.status === "run") { c.status = "ok"; c.end = Date.now(); }
           sess.outTok += Math.ceil(outs.join("").length / 4); sess.ctxUsed = sess.inTok + sess.outTok;
           activeAgents = 0; busy = false; ctl = null;
-          block.summary = tasks.length + " agents  ·  ↑" + fmtK(sess.inTok - in0) + " ↓" + fmtK(sess.outTok - out0) + " tok  ·  " + ((Date.now() - t0) / 1000).toFixed(1) + "s";
+          block.summary = tasks.length + " agents  ·  ↑" + fmtK(sess.inTok - in0) + " ↓" + fmtK(sess.outTok - out0) + " tok  ·  " + fmtDur((Date.now() - t0) / 1000);
           try { saveSession(); } catch (_) {} render();
         }).catch(() => { activeAgents = 0; busy = false; ctl = null; render(); });
     };
@@ -4141,8 +4142,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       };
       Promise.all(race.map(racer)).then((res) => {
         res.sort((a, b) => a.ms - b.ms);
-        ensureText().full = res.map((r, i) => "### " + (i === 0 ? "fastest — " : "") + r.e + "  (" + (r.ms / 1000).toFixed(1) + "s)\n" + (r.out || "(no output)")).join("\n\n");
-        busy = false; ctl = null; block.summary = race.length + " engines raced  ·  " + ((Date.now() - t0) / 1000).toFixed(1) + "s"; try { saveSession(); } catch (_) {} render();
+        ensureText().full = res.map((r, i) => "### " + (i === 0 ? "fastest — " : "") + r.e + "  (" + fmtDur(r.ms / 1000) + ")\n" + (r.out || "(no output)")).join("\n\n");
+        busy = false; ctl = null; block.summary = race.length + " engines raced  ·  " + fmtDur((Date.now() - t0) / 1000); try { saveSession(); } catch (_) {} render();
       }).catch(() => { busy = false; ctl = null; render(); });
     };
     // /review — have a DIFFERENT engine critique Nexus's last answer (cross-engine second opinion)
@@ -4204,7 +4205,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           let best; try { best = await engineAnswer(se, sp); } catch (_) { best = res[0] && res[0].o; }
           synth.status = "ok"; synth.end = Date.now();
           ensureText().full = "best-of-" + res.length + " (synthesized by " + se + "):\n\n" + (best || "(no output)").trim();
-          busy = false; ctl = null; block.summary = res.length + " engines + synthesis  ·  " + ((Date.now() - t0) / 1000).toFixed(1) + "s"; try { saveSession(); } catch (_) {} render();
+          busy = false; ctl = null; block.summary = res.length + " engines + synthesis  ·  " + fmtDur((Date.now() - t0) / 1000); try { saveSession(); } catch (_) {} render();
         }).catch(() => { busy = false; ctl = null; render(); });
     };
     // /bench — run a prompt on each engine and report a speed / tokens / cost table (real cost for claude)
@@ -4225,9 +4226,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           const fastest = res[0] && res[0].e;
           const pad = (s, n) => (s + " ".repeat(n)).slice(0, n);
           let tbl = pad("engine", 10) + pad("time", 9) + pad("in", 8) + pad("out", 8) + "cost\n";
-          for (const r of res) tbl += pad(r.e + (r.e === fastest ? " *" : ""), 10) + pad((r.ms / 1000).toFixed(1) + "s", 9) + pad((r.real ? "" : "~") + fmtK(r.inTok), 8) + pad((r.real ? "" : "~") + fmtK(r.outTok), 8) + (r.real ? (r.cost ? "$" + r.cost.toFixed(4) : "-") : "free") + "\n";
+          for (const r of res) tbl += pad(r.e + (r.e === fastest ? " *" : ""), 10) + pad(fmtDur(r.ms / 1000), 9) + pad((r.real ? "" : "~") + fmtK(r.inTok), 8) + pad((r.real ? "" : "~") + fmtK(r.outTok), 8) + (r.real ? (r.cost ? "$" + r.cost.toFixed(4) : "-") : "free") + "\n";
           ensureText().full = "benchmark (* = fastest; ~ = estimated; claude tokens/cost are real):\n\n" + tbl;
-          busy = false; ctl = null; block.summary = res.length + " engines benchmarked  ·  " + ((Date.now() - t0) / 1000).toFixed(1) + "s"; try { saveSession(); } catch (_) {} render();
+          busy = false; ctl = null; block.summary = res.length + " engines benchmarked  ·  " + fmtDur((Date.now() - t0) / 1000); try { saveSession(); } catch (_) {} render();
         }).catch(() => { busy = false; ctl = null; render(); });
     };
     // /plan — generate an editable, executable task checklist
@@ -4288,7 +4289,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
         for (const it of block.items) if (it.status === "run") { it.status = "ok"; it.end = Date.now(); }
         const t = ensureText(); t.full += (passed ? "\n\nAll green." : "\n\nStill failing after " + attempts + " attempt(s) — review the output above.");
-        busy = false; ctl = null; block.summary = "watch  ·  " + attempts + " attempt(s)  ·  " + ((Date.now() - t0) / 1000).toFixed(1) + "s" + (ck ? "  ·  undo #" + checkpoints.length : "");
+        busy = false; ctl = null; block.summary = "watch  ·  " + attempts + " attempt(s)  ·  " + fmtDur((Date.now() - t0) / 1000) + (ck ? "  ·  undo #" + checkpoints.length : "");
         try { saveSession(); } catch (_) {} maybeAutoCompact(); render();
       })();
     };
