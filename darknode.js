@@ -2813,6 +2813,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const paintCode = (c) => (/(^|\s)(node|npm|npx|git|python3?|pip3?|bash|sh|cd|ls|cat|make|cargo|go|docker|curl|grep|sed|rm|mkdir|chmod|sudo)\b/.test(c) || /\s--?\w/.test(c)) ? blue(c) : mag(c);
     const colorMd = (line, inCode) => { if (inCode) return blue(line); const hm = line.match(/^(#{1,6})\s+(.*)/); if (hm) { const lvl = hm[1].length; const txt = hm[2].replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); return (lvl <= 2 ? bold(cyan("▍ ")) : "  ") + bold(cyan(txt)); } let s = line.replace(/\*\*([^*]+)\*\*/g, (_, c) => "\x1b[1m" + c.replace(/`([^`]+)`/g, (__, ic) => "\x1b[0m" + paintCode(ic) + "\x1b[1m") + "\x1b[0m").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); s = s.replace(/^(\s*)\d+\.\s/, (_, sp) => sp + cyan("• ")); return s.replace(/^(\s*[-*]\s)/, (_, b) => cyan(b.replace(/[-*]/, "•"))); };
     const wrap = (text) => { const width = Math.max(1, cols() - 4); const res = []; let inCode = false; for (const para of String(text).replace(/\r/g, "").split("\n")) { if (/^```/.test(para.trim())) inCode = !inCode; let s = para; if (!s.length) { res.push(""); continue; } while (s.length > width) { let w = width; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); if (!inCode) { let brk = s.lastIndexOf(" ", w); if (brk < width * 0.4) brk = -1; if (brk > 0) { res.push(s.slice(0, brk)); s = s.slice(brk + 1); continue; } } res.push(s.slice(0, w)); s = s.slice(w); } res.push(s); } return res; };
+    // Rendered like Claude Code: gray ※, bold "recap:", italic body, then the disable hint.
+    const recapLines = (t) => { const it = (x) => "\x1b[3m" + gray(x) + "\x1b[23m"; return wrap("recap: " + t + " (disable recaps in /config)").map((ln, j) => j ? "  " + it(ln) : gray("※") + " " + bold(gray("recap:")) + it(ln.slice(6))); };
     // ---- tool-card labels (Claude-Code style) ----
     // ---- edit diff: a unified +/- preview for Write/Edit/MultiEdit, the way
     // Claude Code shows an Update card (line counts + red/green lines) instead of
@@ -2973,7 +2975,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           if (expanded && m.summary) for (const ln of wrap(m.summary)) L.push("  " + gray(ln));
           L.push(""); continue;
         }
-        if (m.role === "recap") { const rw = wrap("recap: " + m.text); for (let j = 0; j < rw.length; j++) L.push(j === 0 ? cyan("※") + " " + gray(rw[j]) : "  " + gray(rw[j])); L.push(""); continue; }
+        if (m.role === "recap") { recapLines(m.text).forEach((x) => L.push(x)); L.push(""); continue; }
         if (m.role === "system") { if (m.lines) for (const ln of m.lines) L.push(gray("│ ") + ln); else for (const ln of wrap(m.text)) L.push("  " + ln); L.push(""); continue; }
         if (m.role === "user") {
           // the submitted prompt sits on a full-width grey block (the Claude-Code
@@ -3076,7 +3078,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         } else if (m.summary) {
           L.push("  " + cyan("⎿") + "  " + gray(m.summary));
         }
-        if (m.recap && !(busy && m === cur())) { const rw = wrap("recap: " + m.recap); for (let j = 0; j < rw.length; j++) L.push(j === 0 ? cyan("※") + " " + gray(rw[j]) : "  " + gray(rw[j])); }
+        if (m.recap && !(busy && m === cur())) recapLines(m.recap).forEach((x) => L.push(x));
         L.push("");
       }
       // Idle home: while the chat is still empty (only the welcome card), fill the
@@ -4728,7 +4730,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/guard") { if (["enforce", "warn", "off"].includes(arg)) { guard = arg; transcript.push({ role: "system", text: "Darknode guard set to " + arg + (arg === "enforce" ? " — destructive agent commands (rm -rf, git reset --hard, dd, mkfs, pipe-to-shell, fork bombs, …) are blocked" : arg === "warn" ? " — destructive commands are flagged but allowed" : " — destructive-command checks disabled") }); } else transcript.push({ role: "system", text: "Darknode guard is " + guard + ".  usage: /guard enforce|warn|off  — preflights the local agent's shell commands for destructive intent" }); }
       else if (cmd === "/settings" || cmd === "/options" || cmd === "/config") {
         // Toggle an off-by-default governance setting inline: /settings <key> [on|off|<value>]
-        const GOV = { budget: "budgetCap", budgetcap: "budgetCap", autocompact: "autoCompact", minimizecalls: "minimizeCalls", minimize: "minimizeCalls", stepcap: "stepCap", trimoutput: "trimOutput", trim: "trimOutput", cache: "cache", map: "map", lean: "lean" };
+        const GOV = { budget: "budgetCap", budgetcap: "budgetCap", autocompact: "autoCompact", minimizecalls: "minimizeCalls", minimize: "minimizeCalls", stepcap: "stepCap", trimoutput: "trimOutput", trim: "trimOutput", cache: "cache", map: "map", lean: "lean", recap: "recap", recaps: "recap" };
         const parts = (argstr || "").trim().split(/\s+/).filter(Boolean);
         if (parts.length) {
           const key = GOV[parts[0].toLowerCase()];
@@ -4736,8 +4738,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           else {
             let nv; const raw = (parts[1] || "").toLowerCase();
             if (key === "budgetCap") { const n = parseFloat(parts[1]); nv = (raw === "off" || n === 0 || isNaN(n)) ? 0 : n; costCap = nv; }
-            else { nv = raw === "on" ? true : raw === "off" ? false : !settingsStore.get(key); }
-            if (key === "autoCompact") autoCompact = nv; else if (key === "minimizeCalls") minimizeCalls = nv; else if (key === "stepCap") stepCap = nv; else if (key === "trimOutput") trimOutput = nv; else if (key === "cache") cacheOn = nv; else if (key === "map") { repoMapOn = nv; if (nv) repoMapSent = false; } else if (key === "lean") lean = nv;
+            else { nv = raw === "on" ? true : raw === "off" ? false : key === "recap" ? !autoRecap : !settingsStore.get(key); }
+            if (key === "recap") autoRecap = nv; else if (key === "autoCompact") autoCompact = nv; else if (key === "minimizeCalls") minimizeCalls = nv; else if (key === "stepCap") stepCap = nv; else if (key === "trimOutput") trimOutput = nv; else if (key === "cache") cacheOn = nv; else if (key === "map") { repoMapOn = nv; if (nv) repoMapSent = false; } else if (key === "lean") lean = nv;
             saveSetting(key, nv);
             transcript.push({ role: "system", text: key + " = " + (key === "budgetCap" ? (nv ? "$" + Number(nv).toFixed(2) : "off (unlimited)") : (nv ? "ON" : "off")) + gray("  — saved to ~/.nexus/settings.json") });
           }
@@ -5385,13 +5387,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // what got done and what's next. Engines without a quiet one-shot path get
     // an extractive recap from the reply itself. /recap [on|off] toggles.
     let autoRecap = S.recap !== false;
-    const recapClean = (s) => String(s || "").replace(/\x1b\[[0-9;]*m/g, "").replace(/[*`#>]+/g, "").replace(/^\s*(recap|summary)\s*[:\-]\s*/i, "").replace(/\s+/g, " ").trim();
+    const recapClean = (s) => String(s || "").replace(/\x1b\[[0-9;]*m/g, "").replace(/[*`#>]+/g, "").replace(/^\s*(recap|summary)\s*[:\-]\s*/i, "").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/).filter((x) => !/\?["')]*$/.test(x)).join(" "); // a recap only reports - drop any question
     const extractRecap = (reply) => { const paras = String(reply || "").replace(/\x1b\[[0-9;]*m/g, "").split(/\n\s*\n/).map((x) => x.trim()).filter((x) => x && !/^[|`\-*#]/.test(x)); const p = paras[0] || ""; const m = p.match(/^.{20,240}?[.!?](\s|$)/); return recapClean(m ? m[0] : p.slice(0, 200)); };
     const genRecap = async (brief) => {
       const prompt =
         "Write a recap of this finished coding task for the developer, who may have stepped away. Reply with ONLY the recap.\n" +
-        "Rules: 1 or 2 short sentences, under 40 words, plain text, past tense. Say what was actually done (name the files, feature, or fix), " +
-        "then the open next step or anything that needs their decision, if there is one. No preamble, no markdown, no praise.\n\n" + String(brief || "").slice(0, 3000);
+        "Rules: address the developer as \"you\". Start with what they asked for (\"You wanted ...\"), then what is now done and where (name the files, feature, or fix), " +
+        "then \"Next, ...\" stating the open next step, if there is one. Strictly a recap: never ask a question or request permission. 1 to 3 short sentences, under 50 words, plain text, no preamble, no markdown, no praise.\n\n" + String(brief || "").slice(0, 3000);
       const rctl = makeCtl();
       try {
         let raw = "";
