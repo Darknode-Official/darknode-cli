@@ -47,7 +47,7 @@ const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint
 const { frameDiff, wordHi, wordFlags } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
-const { toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
+const { toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
@@ -2820,7 +2820,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // ---- inline markdown / command coloring ----
     const paintCode = (c) => (/(^|\s)(node|npm|npx|git|python3?|pip3?|bash|sh|cd|ls|cat|make|cargo|go|docker|curl|grep|sed|rm|mkdir|chmod|sudo)\b/.test(c) || /\s--?\w/.test(c)) ? blue(c) : mag(c);
     const colorMd = (line, inCode) => { if (inCode) return blue(line); const hm = line.match(/^(#{1,6})\s+(.*)/); if (hm) { const lvl = hm[1].length; const txt = hm[2].replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); return (lvl <= 2 ? bold(cyan("▍ ")) : "  ") + bold(cyan(txt)); } let s = line.replace(/\*\*([^*]+)\*\*/g, (_, c) => "\x1b[1m" + c.replace(/`([^`]+)`/g, (__, ic) => "\x1b[0m" + paintCode(ic) + "\x1b[1m") + "\x1b[0m").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); s = s.replace(/^(\s*)\d+\.\s/, (_, sp) => sp + cyan("• ")); return s.replace(/^(\s*[-*]\s)/, (_, b) => cyan(b.replace(/[-*]/, "•"))); };
-    const wrap = (text) => { const width = Math.max(1, cols() - 4); const res = []; let inCode = false; for (const para of String(text).replace(/\r/g, "").split("\n")) { if (/^```/.test(para.trim())) inCode = !inCode; let s = para; if (!s.length) { res.push(""); continue; } while (s.length > width) { let w = width; const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); if (!inCode) { let brk = s.lastIndexOf(" ", w); if (brk < width * 0.4) brk = -1; if (brk > 0) { res.push(s.slice(0, brk)); s = s.slice(brk + 1); continue; } } res.push(s.slice(0, w)); s = s.slice(w); } res.push(s); } return res; };
+    const wrap = (text) => ansiWrap(text, Math.max(1, cols() - 4)); // ANSI-aware: measures visible width, never slices a color escape, carries color across lines
     // Rendered like Claude Code: gray ※, bold "recap:", italic body, then the disable hint.
     const recapLines = (t) => { const it = (x) => "\x1b[3m" + gray(x) + "\x1b[23m"; return wrap("recap: " + t + " (disable recaps in /config)").map((ln, j) => j ? "  " + it(ln) : gray("※") + " " + bold(gray("recap:")) + it(ln.slice(6))); };
     // ---- tool-card labels (Claude-Code style) ----
