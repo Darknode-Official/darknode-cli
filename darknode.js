@@ -41,10 +41,10 @@ const cyan = (s) => p(A.cyan, s), green = (s) => p(A.green, s), red = (s) => p(A
 // on a deep green (+) / deep red (-) row. Truecolor when the terminal advertises it,
 // nearest xterm-256 otherwise.
 const _tc = /truecolor|24bit/i.test(process.env.COLORTERM || "");
-// Diff colors: additions green, removals red, mirrored so the green is exactly
-// as saturated as the red (the old addition green was dark enough to read as
-// teal/blue on some displays).
-const CC_DIFF = _tc ? { add: "\x1b[48;2;41;122;54m\x1b[38;2;255;255;255m", del: "\x1b[48;2;122;41;54m\x1b[38;2;255;255;255m", addWord: "\x1b[48;2;89;179;107m\x1b[38;2;255;255;255m", delWord: "\x1b[48;2;179;89;107m\x1b[38;2;255;255;255m" } : { add: "\x1b[48;5;28m\x1b[97m", del: "\x1b[48;5;88m\x1b[97m", addWord: "\x1b[48;5;34m\x1b[97m", delWord: "\x1b[48;5;131m\x1b[97m" };
+// Diff colors matching Claude Code: additions on a dark navy-blue, removals on a
+// hard (true, un-pinked) red; the changed-word highlight is a brighter shade of
+// the same hue. White text throughout.
+const CC_DIFF = _tc ? { add: "\x1b[48;2;24;52;71m\x1b[38;2;255;255;255m", del: "\x1b[48;2;120;28;30m\x1b[38;2;255;255;255m", addWord: "\x1b[48;2;38;92;128m\x1b[38;2;255;255;255m", delWord: "\x1b[48;2;175;45;48m\x1b[38;2;255;255;255m" } : { add: "\x1b[48;5;17m\x1b[97m", del: "\x1b[48;5;52m\x1b[97m", addWord: "\x1b[48;5;25m\x1b[97m", delWord: "\x1b[48;5;124m\x1b[97m" };
 const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint: dim, info: blue, special: mag, strong: bold };
 
 const { frameDiff, wordHi, wordFlags } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
@@ -3380,6 +3380,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let curBranch = "main"; // conversation branch (session branching)
     const imgPaths = new Map(); // [Image#N] -> the image file it stands for (dropped path or Ctrl+V capture), resolved at submit
     let nextQueue = []; // /next queue — prompts to run after the current turn (declared here so the status bar can show the count)
+    let curTurnFromQueue = false, _nextFromQueue = false; // is the running turn itself a drained queued prompt? (so a second Ctrl+X can't abort the queue the first press launched)
     // Clickable status buttons (mouse) — one-tap access to cost/usage & more,
     // instead of only the passive metrics line. Each runs its slash command.
     const NAV_BUTTONS = [["Cost", "/status"], ["Savings", "/savings"], ["Impact", "/impact"], ["Models", "/models"], ["Settings", "/settings"], ["Help", "/help"]];
@@ -3683,7 +3684,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (nxt.startsWith("/")) { let cmd = nxt; if (!/\s/.test(nxt)) { const mm = fuzzyCmds(nxt); if (mm.length) cmd = mm[0][0]; } handleSlash(cmd); render(); }
       else if (nxt[0] === "!" && nxt.length > 1) { runBang(nxt.slice(1).trim()); render(); }
       else if (nxt[0] === "#" && nxt.length > 1) { addMemory(nxt.slice(1).trim()); render(); }
-      else { submit(nxt); return; }
+      else { _nextFromQueue = true; submit(nxt); return; }
       // A command, ! or # entry finishes without a turn, so nothing else would
       // wake the queue: keep draining (drainNext itself waits if the command
       // started a turn or a compaction, which re-drain when they finish).
@@ -3804,7 +3805,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const relOf = (p) => { try { return path.relative(cwd, path.resolve(cwd, p)); } catch (_) { return null; } };
       const ckTree = nexusCheckpoint(cwd); // every engine can now modify files, so always checkpoint (null if not a git repo)
       let ckObj = null; if (ckTree) { ckObj = { tree: ckTree, label: oneline(text, 40), ts: Date.now() }; checkpoints.push(ckObj); }
-      busy = true; busyStart = Date.now(); busyWord = FORGE[Math.floor(Math.random() * FORGE.length)]; sess.liveOut = 0; setTitle("● " + (sessionTitle || "Nexus"));
+      busy = true; busyStart = Date.now(); busyWord = FORGE[Math.floor(Math.random() * FORGE.length)]; sess.liveOut = 0; curTurnFromQueue = _nextFromQueue; _nextFromQueue = false; setTitle("● " + (sessionTitle || "Nexus"));
       ctl = makeCtl(); // local engine checks .stopped; claude overrides .kill with a process kill
       startTick(); render();
       const finish = (res) => {
@@ -3823,7 +3824,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         bits.push("↑" + fmtK(din) + " ↓" + fmtK(dout) + " tok");
         if (+dt > 0 && dout > 0) bits.push(fmtK(Math.round(dout / +dt)) + " tok/s");
         if (PAID[engine] && dcost > 0) bits.push("$" + dcost.toFixed(4));
-        bits.push(dt + "s");
+        bits.push(+dt < 60 ? dt + "s" : fmtElapsed(Math.round(+dt)));
         { const cw = sess.ctxWindow || 200000; bits.push(Math.min(100, Math.round((sess.ctxUsed / cw) * 100)) + "% ctx"); }
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); try { bisectPersist(cwd, ckObj); } catch (_) {} } // persist the turn snapshot so `bisect` can search the timeline later
         const clock = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
@@ -3859,14 +3860,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (nextQueue.length && !busy && !compact.on) scheduleDrain(300);
       };
       let lastCtx = 0; // context size from the latest main-thread API call this turn
+      // Live token counter (same contract as every other engine: climbs while the
+      // reply streams). confOut = real output tokens locked in per finished message;
+      // estOut = rough estimate for the message still streaming. liveOut = both.
+      let confOut = 0, estOut = 0;
+      const bumpLive = (t) => { estOut += Math.ceil(t.length / 4); sess.liveOut = confOut + estOut; };
       const _resumeSid = (engine === "claude" && oneShotRan && claudeSid) ? claudeSid : undefined; // recover the tracked session if a one-shot (/btw, /dream…) ran since the last turn
       oneShotRan = false;
       if (engine === "claude") {
         runClaudeStream(promptText, cwd, cont, {
           onInit: (ev) => { if (ev.model) sess.model = ev.model; if (ev.session_id) claudeSid = ev.session_id; },
           onRateLimit: (info) => { rate = info; },
-          onThinking: (t) => { const bl = cur(); if (!bl.items) bl.items = []; let last = bl.items[bl.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; bl.items.push(last); } last.full += t; renderSoon(); },
-          onText: (t) => { ensureText().full += t; renderSoon(); },
+          onThinking: (t) => { const bl = cur(); if (!bl.items) bl.items = []; let last = bl.items[bl.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; bl.items.push(last); } last.full += t; bumpLive(t); renderSoon(); },
+          onText: (t) => { ensureText().full += t; bumpLive(t); renderSoon(); },
           onTool: (tu) => {
             const _item = { type: "tool", id: tu.id, name: tu.name, input: tu.input, label: toolLabel(tu.name, tu.input), detail: JSON.stringify(tu.input).slice(0, 400), status: "run", start: Date.now() };
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
@@ -3881,7 +3887,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if (it.name === "Task" && activeAgents) activeAgents--; }
             render();
           },
-          onUsage: (u, _m, sub) => { sess.liveOut += (u.output_tokens || 0); if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // accumulate output across every step of the turn (each agentic tool round is its own assistant message); overwriting showed only the last message's tokens. lastCtx tracks the latest main-thread call's prompt = the real context size
+          onUsage: (u, _m, sub) => { confOut += (u.output_tokens || 0); estOut = 0; sess.liveOut = confOut; if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // lock in the real output tokens for the message that just finished (each agentic tool round is its own assistant message) and clear the streaming estimate; the next message's estimate climbs on top of this. lastCtx tracks the latest main-thread call's prompt = the real context size
           onResult: (ev) => {
             const u = ev.usage || {};
             const newIn = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0);
@@ -3940,7 +3946,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           if (isChitchat(promptText) && !imgAttach.length) {
             let reply = ""; try { reply = await ollamaChat(mdl, [{ role: "system", content: "You are Nexus, a friendly local AI assistant in a terminal on a security workstation. Reply briefly and warmly. Do NOT use tools or inspect the system." }, { role: "user", content: promptText }], undefined, aSignal(ctl)); } catch (_) {}
             const t = ensureText(); t.full += (t.full ? "\n\n" : "") + ((reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it.");
-            sess.outTok += Math.ceil((reply || "").length / 4); return finish({ output: "" });
+            sess.outTok += Math.ceil((reply || "").length / 4); sess.liveOut += Math.ceil((reply || "").length / 4); return finish({ output: "" });
           }
           // Session-scoped read de-dup: an unchanged file isn't re-embedded on a
           // later turn either, not just within one turn. Safe because doCompact
@@ -5513,7 +5519,27 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("warning: this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
     try { Composer.cleanupDroppedTails(); } catch (_) {} // sweep paste-remainder temp files older than 24h
-    let imgCounter = 0; // for [Image#N] display on pasted image paths
+    let imgCounter = 0; // fallback running number when an image's folder position can't be read
+    // [Image#N]: N is the image's position within its own folder (sorted by name,
+    // numeric-aware), so the 58th screenshot in a 59-image folder shows as Image#58.
+    // Falls back to the running counter if the folder can't be listed.
+    const imgOrdinal = (fp) => {
+      try {
+        const abs = path.isAbsolute(fp) ? fp : path.resolve(cwd, fp);
+        const bn = path.basename(abs);
+        const imgs = fs.readdirSync(path.dirname(abs)).filter((f) => /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(f)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+        const i = imgs.indexOf(bn); return i >= 0 ? i + 1 : 0;
+      } catch (_) { return 0; }
+    };
+    // Record fp under a display number and return it. The number is the map key the
+    // placeholder resolves by, so it must be unique within the session: a slot already
+    // taken by a DIFFERENT file bumps to the next free one (re-attaching the same file reuses it).
+    const imgKey = (fp) => {
+      let n = imgOrdinal(fp) || ++imgCounter;
+      while (imgPaths.has(n) && imgPaths.get(n) !== fp) n++;
+      if (n > imgCounter) imgCounter = n;
+      imgPaths.set(n, fp); return n;
+    };
     // (nextQueue is declared earlier, near curBranch, so the status bar can read its length)
     // Up/Down, Claude Code style: step history straight through while showing an
     // untouched recalled entry; otherwise move one visual row inside the draft
@@ -5562,7 +5588,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const isPaste = /\x1b?\[200~/.test(s) || (s.length > 3 && /[\r\n]/.test(s) && !/^\x1b/.test(s));
       s = s.replace(/\x1b?\[200~/g, "").replace(/\x1b?\[201~/g, "");
       // ---- sanitize: convert pasted image paths to [Image#N] ----
-      s = s.replace(/'([^']+\.(png|jpe?g|gif|webp|bmp|svg))'/gi, (mm, p) => { if (!fs.existsSync(p)) return mm; imgCounter++; imgPaths.set(imgCounter, p); return "[Image#" + imgCounter + "]"; }); // keep the path: the marker used to throw it away, so the model never got the image
+      s = s.replace(/'([^']+\.(png|jpe?g|gif|webp|bmp|svg))'/gi, (mm, p) => { if (!fs.existsSync(p)) return mm; return "[Image#" + imgKey(p) + "]"; }); // keep the path: the marker used to throw it away, so the model never got the image
       if (!s) return;
       // Mirror the live buffer into the pure composer model, run the glue, read back.
       composer.text = input; composer.cursor = curPos;
@@ -5626,7 +5652,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (s === "\x16" && !isMouse) {
         const cb = readClipboard();
         if (cb.image) {
-          try { const dir = path.join(cwd, ".nexus", "pastes"); fs.mkdirSync(dir, { recursive: true }); const fp = path.join(dir, "paste-" + Date.now() + ".png"); fs.writeFileSync(fp, cb.image); imgCounter++; imgPaths.set(imgCounter, fp); composer.insert("[Image#" + imgCounter + "]"); flush(); }
+          try { const dir = path.join(cwd, ".nexus", "pastes"); fs.mkdirSync(dir, { recursive: true }); const fp = path.join(dir, "paste-" + Date.now() + ".png"); fs.writeFileSync(fp, cb.image); composer.insert("[Image#" + imgKey(fp) + "]"); flush(); }
           catch (e) { pasteNotice = "could not save the pasted image: " + e.message; }
         } else if (cb.text) { const pr = composer.paste(cb.text.replace(/[ \t\r\n]+$/, "")); flush(); const rep = pr && pr.report; pasteNotice = rep && rep.flagged ? rep.reasons.join(" · ") : ""; }
         else transcript.push({ role: "system", dismissable: true, text: cb.error }); // too long for the hint bar, which clips it
@@ -5694,7 +5720,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           const v = (composer.submit() || "").trim(); flush(); hIdx = composer.histIndex; input = ""; curPos = 0; menuSel = 0;
           if (v) nextQueue.unshift(v);
           if (!nextQueue.length) { pasteNotice = "nothing to send yet — type a prompt, then Ctrl+X/Ctrl+S to run it now"; render(); return; }
-          if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "sending the next queued prompt now — interrupting the current turn" }); }
+          // Interrupt ONLY the original turn. Once the first press has started the
+          // queue flushing, the running turn is itself a queued prompt — a second
+          // press must not kill it, or it would cancel the message it just launched.
+          if (curTurnFromQueue) { pasteNotice = (v ? "queued to run next — " : "already running your queue — ") + nextQueue.length + " in line"; }
+          else if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "sending the next queued prompt now — interrupting the current turn" }); }
           render(); return;
         }
         // the menu stays usable mid-turn: Esc dismisses it (not the turn), Tab
