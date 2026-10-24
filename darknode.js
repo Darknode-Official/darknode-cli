@@ -1833,7 +1833,7 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
 function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
   opts = opts || {};
   return new Promise((resolve) => {
-    const args = opts.readonly ? ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "plan"] : ["-p", prompt, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+    const args = opts.readonly ? ["-p", prompt, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--permission-mode", "plan"] : ["-p", prompt, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions"]; // partial messages = live text/thinking/token deltas so the counter climbs during a long turn instead of freezing between whole messages
     if (opts.resume) args.push("--resume", opts.resume); // resume a tracked session id (survives intervening one-shot calls that would hijack --continue)
     else if (cont) args.push("--continue");
     if (opts.model) args.push("--model", opts.model);
@@ -1864,6 +1864,11 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
             else if (c.type === "tool_use") { h.onTool && h.onTool({ id: c.id, name: c.name, input: c.input || {} }); }
           }
           if (ev.message.usage) h.onUsage && h.onUsage(ev.message.usage, ev.message.model, ev.parent_tool_use_id);
+        }
+        else if (ev.type === "stream_event" && ev.event) { // live deltas from --include-partial-messages: feed the token meter mid-message, not just between whole messages
+          const se = ev.event, d = se.delta;
+          if (se.type === "content_block_delta" && d) { const t = d.type === "text_delta" ? d.text : d.type === "thinking_delta" ? d.thinking : ""; if (t) h.onDelta && h.onDelta(t); }
+          else if (se.type === "message_delta" && se.usage && se.usage.output_tokens != null) h.onLiveTokens && h.onLiveTokens(se.usage.output_tokens); // real running output-token count for the message in flight
         }
         else if (ev.type === "user" && ev.message) {
           for (const c of ev.message.content || []) if (c.type === "tool_result") h.onToolResult && h.onToolResult({ id: c.tool_use_id, content: c.content, isError: c.is_error });
@@ -3885,6 +3890,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           onRateLimit: (info) => { rate = info; },
           onThinking: (t) => { const bl = cur(); if (!bl.items) bl.items = []; let last = bl.items[bl.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; bl.items.push(last); } last.full += t; bumpLive(t); renderSoon(); },
           onText: (t) => { ensureText().full += t; bumpLive(t); renderSoon(); },
+          onDelta: (t) => { bumpLive(t); renderSoon(); }, // mid-message delta: advance the live token estimate only (the whole text/thinking still lands via onText/onThinking)
+          onLiveTokens: (n) => { estOut = n; sess.liveOut = confOut + estOut; renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate
           onTool: (tu) => {
             const _item = { type: "tool", id: tu.id, name: tu.name, input: tu.input, label: toolLabel(tu.name, tu.input), detail: JSON.stringify(tu.input).slice(0, 400), status: "run", start: Date.now() };
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
