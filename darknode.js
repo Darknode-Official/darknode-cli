@@ -53,6 +53,9 @@ const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command regist
 const { toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
+const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
+const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
+const ASK_MCP_PATH = require("path").join(__dirname, "lib", "nexus", "ask-mcp.js"); // stdio MCP shim spawned by the engine
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
 const Jail = require("./lib/nexus/jail"); // canonical path jail shared by every file tool (symlink/dot-dot safe) (lib/nexus/jail.js)
 const Redact = require("./lib/nexus/redact"); // central sink redaction + keyed placeholders (lib/nexus/redact.js)
@@ -1810,15 +1813,16 @@ function killGroup(child, sig) {
 }
 
 // Delegate a whole task to an external agent binary (claude / opencode). Streams output; returns {ok, output}.
-function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, model, effort) {
+function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, model, effort, extra) {
   return new Promise((resolve) => {
     const m = ENGINES[engine];
     // Only this engine's own args() builds its flags — nothing crosses engines.
     // The "local" (Ollama) engine has no CLI form and is driven separately.
     if (!m || !m.args || m.kind === "local") return resolve({ ok: false, output: "engine '" + engine + "' cannot run as a CLI task" });
-    const cmd = m.bin, args = m.args(prompt, { cont, autonomous, model, effort });
+    const cmd = m.bin, args = m.args(prompt, { cont, autonomous, model, effort, mcpServers: extra && extra.mcpServers });
     let out = "";
-    const p = _cp.spawn(cmd, args, { cwd, env: process.env, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree
+    const spawnEnv = (extra && extra.env) ? Object.assign({}, process.env, extra.env) : process.env; // e.g. $OPENCODE_CONFIG pointing at the Nexus ask bridge
+    const p = _cp.spawn(cmd, args, { cwd, env: spawnEnv, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree
     if (ctl && ctl.kids) ctl.kids.push(() => { killGroup(p, "SIGINT"); setTimeout(() => killGroup(p, "SIGKILL"), 1200); }); // ctrl+c kills this child and everything it spawned
     try { p.stdin.end(); } catch (_) {} // signal EOF so the CLI doesn't wait on stdin
     p.stdout.on("data", (d) => { const s = d.toString(); out += s; if (onChunk) onChunk(s); else if (!tuiActive) process.stdout.write(gray("    " + s.replace(/\n/g, "\n    "))); });
@@ -1843,6 +1847,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     if (opts.maxBudgetUsd) args.push("--max-budget-usd", String(opts.maxBudgetUsd));
     if (opts.maxTurns) args.push("--max-turns", String(opts.maxTurns));
     if (opts.disallow && opts.disallow.length) args.push("--disallowed-tools", ...opts.disallow);
+    if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath); // give claude the Nexus ask bridge (+ any .nexus/mcp.json servers); no --strict so claude keeps its own servers too
     const env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
     const cp = _cp.spawn("claude", args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
     try { cp.stdin.end(); } catch (_) {} // signal EOF so claude doesn't wait on stdin
@@ -2801,6 +2806,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // Surgical-edit directive — a LOSSLESS token saver (no quality cost: the edit
     // engine errors on an ambiguous find rather than mis-applying, so a too-short
     // anchor just retries). Keeps diffs minimal instead of rewriting whole lines.
+    const ASK_ENGINE_NOTE = "\nYou can ask the operator a question via the mcp__nexus__ask_user tool — it opens a real popup in the Nexus terminal and waits for their answer (pick-one: pass options; pick-many: options + multi:true; free-text: input:true). Use it ONLY when a decision is genuinely theirs (an ambiguous requirement, a destructive/irreversible choice, picking among approaches) — never for something you can decide or look up yourself.";
     const TIGHT_DIR = "Surgical edits (saves tokens, no quality loss): when editing, make the old/find text the SHORTEST span that is still unique — change only what differs; never reproduce a whole line, block or function just to alter a few characters, but keep enough surrounding context to stay unambiguous. Don't paste file contents or long command output back into your reply.";
     const bgJobs = createBgJobs(); // long-running background commands (run_background/check_background)
     const fileGuard = makeFileState(); // stale-write guard: don't let a full overwrite clobber on-disk changes (persists across turns)
@@ -3610,6 +3616,51 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       pendingAsk = Object.assign({ question: String(question || ""), options: options || [], sel: 0, picked: [], text: "", resolve }, extra || {});
       scroll = 0; render();
     });
+    // ---- the ask bridge: lets an EXTERNAL engine's model raise this same popup.
+    // Lazily opened the first time an external engine launches; the out-of-process
+    // MCP shim (lib/nexus/ask-mcp.js) connects to askBridge.sockPath and forwards
+    // the question here, where handleBridgeAsk shows the real card and answers. ----
+    let askBridge = null;
+    const handleBridgeAsk = async (req) => {
+      const q = String((req && req.question) || "");
+      if (!q) return { skipped: true };
+      transcript.push({ role: "system", text: gray("the model is asking: ") + oneline(q, 60) }); render();
+      if (req.input) { const ans = await askUser(q, [], { input: true, placeholder: req.placeholder }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
+      const norm = Ask.normOptions(Array.isArray(req.options) ? req.options : []);
+      if (!norm.length) { const ans = await askUser(q, [], { input: true }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
+      if (req.multi) { const ans = await askUser(q, norm, { multi: true, picked: [] }); if (ans.cancelled) return { skipped: true }; return { selected: (ans.values || []).map((v) => (v && v.label != null) ? v.label : String(v)), indices: ans.indices || [] }; }
+      const ans = await askUser(q, norm); if (ans.cancelled) return { skipped: true }; return { selected: (ans.value && ans.value.label != null) ? ans.value.label : String(ans.value), index: ans.index };
+    };
+    const ensureAskBridge = () => { if (!askBridge) { try { askBridge = createAskServer(handleBridgeAsk); } catch (_) { askBridge = null; } } return askBridge; };
+    // Build (or reuse) the per-engine MCP config: the Nexus ask bridge plus any
+    // servers the user configured in a trusted .nexus/mcp.json. Returns a file
+    // path for claude's --mcp-config, or null if the bridge couldn't open.
+    const engineMcpServers = () => {
+      const b = ensureAskBridge(); if (!b) return null;
+      try { return buildEngineMcpServers({ sockPath: b.sockPath, askMcpPath: ASK_MCP_PATH, userServers: loadMcpConfig(cwd) || {} }); } catch (_) { return null; }
+    };
+    const engineMcpConfigPath = () => { const servers = engineMcpServers(); if (!servers) return null; try { return writeMcpConfigFile(path.join(cwd, ".nexus"), servers); } catch (_) { return null; } };
+    // Per-engine injection of the ask bridge for the CLI engines (claude uses
+    // --mcp-config directly). Returns the `extra` to hand runEngineTask: codex
+    // takes -c overrides via mcpServers; opencode is pointed at a merged config
+    // file via $OPENCODE_CONFIG (the user's own opencode config is preserved).
+    const engineMcpLaunch = (eng) => {
+      const m = ENGINES[eng] || {};
+      if (!engineCap(eng, "mcpInject")) return undefined;
+      const servers = engineMcpServers(); if (!servers) return undefined;
+      if (m.mcpMode === "env") {
+        let obj, fname;
+        if (m.mcpFormat === "opencode") { // opencode's own schema; merge INTO a copy of the user's project config
+          let base = {}; for (const f of ["opencode.json", "opencode.jsonc"]) { try { base = JSON.parse(fs.readFileSync(path.join(cwd, f), "utf8")); break; } catch (_) {} }
+          obj = toOpencodeConfig(servers, base); fname = "opencode.json";
+        } else { // claude-style { mcpServers } (gemini's system-overrides settings file — gemini merges it, so only 'nexus' is added)
+          obj = { mcpServers: servers }; fname = ".gemini-settings.json";
+        }
+        const p = writeEngineConfigFile(path.join(cwd, ".nexus"), fname, obj);
+        return (p && m.mcpEnvVar) ? { env: { [m.mcpEnvVar]: p } } : undefined;
+      }
+      return { mcpServers: servers }; // cArgs (codex): -c overrides via args()
+    };
     // ---- animation loop: typewriter reveal + spinners + elapsed ----
     const revealing = () => { const b = activeBlock || cur(); if (!b || !b.items) return false; return b.items.some((it) => it.type === "text" && it.shown < it.full.length); };
     const startTick = () => { if (tick) return; tick = setInterval(() => { const b = activeBlock || cur(); if (b && b.items) for (const it of b.items) if (it.type === "text" && it.shown < it.full.length) { let ns = Math.min(it.full.length, it.shown + Math.max(2, Math.ceil((it.full.length - it.shown) / 22))); const cc = it.full.charCodeAt(ns - 1); if (cc >= 0xD800 && cc <= 0xDBFF && ns < it.full.length) ns++; it.shown = ns; } render(); if (!busy && !revealing() && !compact.on) { clearInterval(tick); tick = null; } }, 45); };
@@ -3745,7 +3796,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (sess.ctxUsed > compactAt()) doCompact(true);
     };
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
-    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (_rsT) { clearTimeout(_rsT); _rsT = null; } if (_drainT) { clearTimeout(_drainT); _drainT = null; } if (_escTimer) { clearTimeout(_escTimer); _escTimer = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
+    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (_rsT) { clearTimeout(_rsT); _rsT = null; } if (_drainT) { clearTimeout(_drainT); _drainT = null; } if (_escTimer) { clearTimeout(_escTimer); _escTimer = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { askBridge && askBridge.close(); } catch (_) {} try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
     tuiActive = true;
     const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { term.teardown(); } catch (_) {} try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
@@ -3925,7 +3976,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             addUsage(ev.modelUsage, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
-        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt()) || undefined, fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
+        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
       } else if (ENGINES[engine] && ENGINES[engine].kind === "cli") { // gemini / codex / opencode / aider
         const eng = ENGINES[engine];
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose
@@ -3943,7 +3994,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
               renderSoon();
             })
           : ((chunk) => { textItem().full += chunk; sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); });
-        runEngineTask(engine, promptText, cwd, true, cont, onChunk, ctl, mdl).then((res) => {
+        runEngineTask(engine, promptText, cwd, true, cont, onChunk, ctl, mdl, undefined, engineMcpLaunch(engine)).then((res) => {
           const raw = res.output || "";
           let display = raw, inD, outD;
           if (jsonProto) {

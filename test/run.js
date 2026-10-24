@@ -2706,6 +2706,76 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       npx.parseNmapXML("<nmaprun start=\"x\" scanner=\"nmap\"><runstats><finished time=\"y\"/></runstats></nmaprun>")));
   }
 
+  group("engine MCP bridge — external engines get the Nexus ask_user popup");
+  {
+    const { buildEngineMcpServers, writeMcpConfigFile, codexMcpArgs, toOpencodeConfig, writeEngineConfigFile } = require("../lib/nexus/engine-mcp");
+    const { fmtAnswer, ASK_TOOL } = require("../lib/nexus/ask-mcp");
+    const { createAskServer } = require("../lib/nexus/ask-bridge");
+    const cp = require("child_process");
+
+    // --- config builder ---
+    const servers = buildEngineMcpServers({ sockPath: "/tmp/s.sock", askMcpPath: "/a/ask-mcp.js", nodePath: "/usr/bin/node", userServers: { github: { command: "npx", args: ["gh"] } } });
+    ok("bridge always adds the 'nexus' ask server", servers.nexus && servers.nexus.command === "/usr/bin/node" && servers.nexus.args[0] === "/a/ask-mcp.js");
+    ok("bridge passes the socket path via env", servers.nexus.env.NEXUS_ASK_SOCK === "/tmp/s.sock");
+    ok("user-configured servers are forwarded too", servers.github && servers.github.command === "npx");
+    ok("a malicious user 'nexus' override cannot shadow the bridge", buildEngineMcpServers({ sockPath: "/tmp/s.sock", askMcpPath: "/a.js", userServers: { nexus: { command: "evil" } } }).nexus.command !== "evil");
+    ok("no bridge when sockPath is missing", !buildEngineMcpServers({ askMcpPath: "/a.js" }).nexus);
+
+    const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), "nxmcpcfg-"));
+    const cfgPath = writeMcpConfigFile(cfgDir, servers);
+    ok("writeMcpConfigFile emits a { mcpServers } JSON file", cfgPath && JSON.parse(fs.readFileSync(cfgPath, "utf8")).mcpServers.nexus.command === "/usr/bin/node");
+
+    // --- codex -c override translation ---
+    const ca = codexMcpArgs("nexus", servers.nexus).join(" ");
+    ok("codexMcpArgs sets command/args/env as -c overrides", /mcp_servers\.nexus\.command=/.test(ca) && /mcp_servers\.nexus\.args=/.test(ca) && /mcp_servers\.nexus\.env=/.test(ca));
+    ok("codexMcpArgs returns nothing for a spec with no command", codexMcpArgs("x", {}).length === 0);
+    ok("codex engine declares mcpInject + injects the server into its args", engineCap("codex", "mcpInject") && ENGINES.codex.mcpMode === "cArgs" && ENGINES.codex.args("P", { mcpServers: servers }).join(" ").includes("mcp_servers.nexus.command="));
+    ok("non-MCP engines ignore mcpServers (no leakage)", !ENGINES.gemini.args("P", { mcpServers: servers }).join(" ").includes("mcp_servers"));
+
+    // --- opencode: env-mode, merge into (not replace) the user's config ---
+    ok("opencode declares env injection mode", engineCap("opencode", "mcpInject") && ENGINES.opencode.mcpMode === "env");
+    const oc = toOpencodeConfig(servers, { model: "anthropic/x", mcp: { mine: { type: "local", command: ["keep"], enabled: true } } });
+    ok("opencode config preserves the user's own settings + servers", oc.model === "anthropic/x" && oc.mcp.mine && oc.mcp.mine.command[0] === "keep");
+    ok("opencode config adds nexus as a local server (command is [bin,...args])", oc.mcp.nexus.type === "local" && oc.mcp.nexus.command[1] === "/a/ask-mcp.js" && oc.mcp.nexus.enabled === true);
+    ok("opencode config carries the socket under 'environment'", oc.mcp.nexus.environment.NEXUS_ASK_SOCK === "/tmp/s.sock");
+    const ocPath = writeEngineConfigFile(cfgDir, "opencode.json", oc);
+    ok("writeEngineConfigFile emits valid JSON", ocPath && JSON.parse(fs.readFileSync(ocPath, "utf8")).mcp.nexus.type === "local");
+
+    // --- gemini: env-mode via the system-overrides settings file (gemini MERGES mcpServers, so only 'nexus' is added) ---
+    ok("gemini declares env injection via GEMINI_CLI_SYSTEM_SETTINGS_PATH", engineCap("gemini", "mcpInject") && ENGINES.gemini.mcpMode === "env" && ENGINES.gemini.mcpEnvVar === "GEMINI_CLI_SYSTEM_SETTINGS_PATH" && ENGINES.gemini.mcpFormat === "mcpServers");
+    const gmPath = writeEngineConfigFile(cfgDir, ".gemini-settings.json", { mcpServers: servers });
+    const gm = JSON.parse(fs.readFileSync(gmPath, "utf8"));
+    ok("gemini settings file carries mcpServers.nexus with the bridge socket", gm.mcpServers.nexus.command === "/usr/bin/node" && gm.mcpServers.nexus.env.NEXUS_ASK_SOCK === "/tmp/s.sock");
+    ok("gemini settings file contains ONLY mcpServers (nothing to override user settings)", Object.keys(gm).length === 1 && gm.mcpServers);
+    ok("gemini still gets no mcp flags leaked into its argv", !ENGINES.gemini.args("P", { mcpServers: servers }).join(" ").includes("mcp"));
+
+    // --- MCP shim answer formatting (what the model reads back) ---
+    ok("fmtAnswer: free-text", fmtAnswer({ answer: "yes do it" }) === "The user answered: yes do it");
+    ok("fmtAnswer: single pick", fmtAnswer({ selected: "Option B", index: 1 }) === "The user chose: Option B");
+    ok("fmtAnswer: multi pick", fmtAnswer({ selected: ["A", "C"], indices: [0, 2] }) === "The user selected: A, C");
+    ok("fmtAnswer: dismissed/skip", /dismissed the question/.test(fmtAnswer({ skipped: true })) && /dismissed the question/.test(fmtAnswer(null)));
+    ok("ask_user tool schema requires a question", ASK_TOOL.name === "ask_user" && ASK_TOOL.inputSchema.required.includes("question"));
+
+    // --- real end-to-end: the stdio shim forwards a tools/call to the bridge and returns the user's answer ---
+    await new Promise((resolve) => {
+      const srv = createAskServer(async (req) => req.input ? { answer: "typed!" } : { selected: (req.options || [])[1], index: 1 });
+      const shim = cp.spawn(process.execPath, [path.join(__dirname, "..", "lib", "nexus", "ask-mcp.js")], { env: Object.assign({}, process.env, { NEXUS_ASK_SOCK: srv.sockPath }), stdio: ["pipe", "pipe", "ignore"] });
+      let out = "";
+      shim.stdout.on("data", (d) => { out += d.toString(); });
+      const send = (o) => shim.stdin.write(JSON.stringify(o) + "\n");
+      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } });
+      send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+      send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "ask_user", arguments: { question: "Pick", options: ["x", "y", "z"] } } });
+      setTimeout(() => {
+        const byId = {}; for (const l of out.trim().split("\n").filter(Boolean)) { try { const m = JSON.parse(l); byId[m.id] = m; } catch (_) {} }
+        ok("shim initialize → serverInfo name 'nexus'", byId[1] && byId[1].result.serverInfo.name === "nexus");
+        ok("shim tools/list → ask_user", byId[2] && byId[2].result.tools[0].name === "ask_user");
+        ok("shim tools/call → forwards to the bridge and returns the user's pick", byId[3] && /The user chose: y/.test(byId[3].result.content[0].text));
+        try { shim.kill(); } catch (_) {} srv.close(); resolve();
+      }, 800);
+    });
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
