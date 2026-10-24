@@ -2610,6 +2610,38 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("renderAsk tolerates no options", Array.isArray(renderAsk({ question: "q", options: [] }, 40)));
   }
 
+  group("ask — multi-select (checkbox) mode");
+  {
+    const base = { question: "Pick the test suites to run", options: ["unit", "e2e", "lint", "types"], sel: 0, multi: true, picked: [] };
+    ok("space toggles the current row on", (() => { const r = askKey(base, " "); return !r.done && JSON.stringify(r.picked) === JSON.stringify([0]); })());
+    ok("space again toggles it back off", (() => { const r = askKey({ ...base, picked: [0] }, " "); return JSON.stringify(r.picked) === JSON.stringify([]); })());
+    ok("a digit toggles that option", (() => { const r = askKey({ ...base, picked: [0] }, "3"); return JSON.stringify(r.picked) === JSON.stringify([0, 2]); })());
+    ok("arrows move without changing the picked set", (() => { const r = askKey({ ...base, picked: [1] }, "\x1b[B"); return r.sel === 1 && JSON.stringify(r.picked) === JSON.stringify([1]); })());
+    ok("enter confirms the whole set (sorted)", (() => { const r = askKey({ ...base, picked: [2, 0] }, "\r"); return r.done && JSON.stringify(r.indices) === JSON.stringify([0, 2]) && r.values[0].label === "unit" && r.values[1].label === "lint"; })());
+    ok("enter with nothing picked confirms an empty set", (() => { const r = askKey({ ...base, picked: [] }, "\r"); return r.done && JSON.stringify(r.indices) === JSON.stringify([]); })());
+    ok("esc still cancels in multi mode", askKey(base, "\x1b").cancelled === true);
+    const rows = renderAsk({ ...base, picked: [1] }, 60);
+    ok("renders checkboxes", rows.some((r) => r.includes("[x]")) && rows.some((r) => r.includes("[ ]")));
+    ok("multi footer mentions space-toggle and the picked count", rows.some((r) => /space/.test(r) && /toggle/.test(r) && /1 picked/.test(r)));
+    ok("no multi row exceeds width", rows.every((r) => r.length <= 60));
+  }
+
+  group("ask — free-text input mode");
+  {
+    const base = { question: "What should the new command be named?", input: true, text: "" };
+    ok("a printable char appends to the field", askKey(base, "s").text === "s");
+    ok("builds up the answer char by char", (() => { let a = { ...base }; for (const c of "scan") a = { ...a, text: askKey(a, c).text }; return a.text === "scan"; })());
+    ok("backspace removes the last char", askKey({ ...base, text: "scan" }, "\x7f").text === "sca");
+    ok("ctrl+u clears the field", askKey({ ...base, text: "scan" }, "\x15").text === "");
+    ok("enter submits the typed answer", (() => { const r = askKey({ ...base, text: "scan now" }, "\r"); return r.done && r.value === "scan now"; })());
+    ok("esc cancels the input", askKey({ ...base, text: "x" }, "\x1b").cancelled === true);
+    ok("a control byte (not backspace) is ignored", askKey({ ...base, text: "ab" }, "\x02").text === "ab");
+    const empty = renderAsk(base, 50), filled = renderAsk({ ...base, text: "scan" }, 50);
+    ok("shows a placeholder when empty", empty.some((r) => /type your answer/.test(r)));
+    ok("shows the typed text with a caret", filled.some((r) => r.includes("scan") && r.includes("█")));
+    ok("input footer says enter submits", filled.some((r) => /enter submit/.test(r)));
+  }
+
   group("api-server input validation (shell-out routes reject injection)");
   {
     const { isValidHostname, isSafeUrl } = require("../lib/nexus/url-guard");
