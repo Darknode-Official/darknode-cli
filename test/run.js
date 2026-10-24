@@ -710,7 +710,8 @@ group("render helpers (frameDiff + wordHi) — the trickiest pure algorithms");
   ok("frameDiff full redraw starts [H ends [J", frameDiff(null, ["a", "b", "c"], E).startsWith(E + "[H") && frameDiff(null, ["a"], E).endsWith(E + "[J"));
   ok("frameDiff rewrites only the changed row", frameDiff(["a", "b", "c"], ["a", "X", "c"], E) === E + "[2;1HX" + E + "[K");
   ok("frameDiff identical → empty", frameDiff(["a", "b"], ["a", "b"], E) === "");
-  ok("frameDiff row-count change → full", frameDiff(["a"], ["a", "b"], E).startsWith(E + "[H"));
+  ok("frameDiff taller frame appends only the new row (no full redraw)", frameDiff(["a"], ["a", "b"], E) === E + "[2;1Hb" + E + "[K");
+  ok("frameDiff shorter frame clears the stale rows below", frameDiff(["a", "b", "c"], ["a", "b"], E) === E + "[3;1H" + E + "[J");
   ok("frameDiff two changes target rows 2 & 4", frameDiff(["a", "b", "c", "d"], ["a", "B", "c", "D"], E) === E + "[2;1HB" + E + "[K" + E + "[4;1HD" + E + "[K");
   // wordHi (force color on for deterministic testing)
   const [m1, p1] = wordHi("const total = 22;", "const total = 12;", true);

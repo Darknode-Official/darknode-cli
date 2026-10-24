@@ -3564,7 +3564,20 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       let _w = b ? (ESC + "[?25l" + b) : "";
       if (_caretRC && !cardRows) _w += ESC + "[" + _caretRC.r + ";" + _caretRC.c + "H" + ESC + "[?25h";
       else if (b) _w += ESC + "[?25l";
-      if (_w) out.write(_w);
+      // Wrap the paint in synchronized-output mode (DECSET 2026) so the terminal
+      // shows all changed rows in one atomic update instead of tearing row by
+      // row. Terminals that don't support it ignore the private sequences.
+      if (_w) out.write(ESC + "[?2026h" + _w + ESC + "[?2026l");
+    };
+    // Coalesce the high-frequency repaints that streaming text triggers: render
+    // now, then at most once per frame (~25fps), flushing the latest state on
+    // the trailing edge. Keeps a fast token stream from repainting dozens of
+    // times a second. Only streaming uses this; everything else renders at once.
+    let _rsT = null, _rsPending = false;
+    const renderSoon = () => {
+      if (_rsT) { _rsPending = true; return; }
+      render();
+      _rsT = setTimeout(() => { _rsT = null; if (_rsPending) { _rsPending = false; render(); } }, 40);
     };
     // ---- model-driven question: pause the agent loop, show the Claude-style
     // multiple-choice card, and resolve with the user's pick (or {cancelled}
@@ -3848,8 +3861,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         runClaudeStream(promptText, cwd, cont, {
           onInit: (ev) => { if (ev.model) sess.model = ev.model; if (ev.session_id) claudeSid = ev.session_id; },
           onRateLimit: (info) => { rate = info; },
-          onThinking: (t) => { const bl = cur(); if (!bl.items) bl.items = []; let last = bl.items[bl.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; bl.items.push(last); } last.full += t; render(); },
-          onText: (t) => { ensureText().full += t; render(); },
+          onThinking: (t) => { const bl = cur(); if (!bl.items) bl.items = []; let last = bl.items[bl.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; bl.items.push(last); } last.full += t; renderSoon(); },
+          onText: (t) => { ensureText().full += t; renderSoon(); },
           onTool: (tu) => {
             const _item = { type: "tool", id: tu.id, name: tu.name, input: tu.input, label: toolLabel(tu.name, tu.input), detail: JSON.stringify(tu.input).slice(0, 400), status: "run", start: Date.now() };
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
@@ -3884,8 +3897,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // JSON-mode engines emit machine output (not human text), so don't render the
         // raw chunks — just track progress; text engines stream their stdout live.
         const onChunk = jsonProto
-          ? ((chunk) => { sess.liveOut += Math.ceil(chunk.length / 4); render(); })
-          : ((chunk) => { ensureText().full += chunk; sess.liveOut += Math.ceil(chunk.length / 4); render(); });
+          ? ((chunk) => { sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); })
+          : ((chunk) => { ensureText().full += chunk; sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); });
         runEngineTask(engine, promptText, cwd, true, cont, onChunk, ctl, mdl).then((res) => {
           const raw = res.output || "";
           let display = raw, inD, outD;
@@ -3957,7 +3970,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             // as context) so past chain-of-thought isn't resent on every step.
             const _ctx = { action: o.action }; if (o.tool) _ctx.tool = o.tool; if (o.args) _ctx.args = o.args; if (o.final) _ctx.final = o.final;
             oMsgs.push({ role: "assistant", content: JSON.stringify(_ctx) });
-            if (o.thought) { const t = ensureText(); t.full += (t.full ? "\n" : "") + o.thought; render(); }
+            if (o.thought) { const t = ensureText(); t.full += (t.full ? "\n" : "") + o.thought; renderSoon(); }
             if (o.action === "final") { if (!didTool && !isChitchat(promptText) && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = ensureText(); t.full += (t.full ? "\n\n" : "") + o.final; } break; }
             const { name, a } = normalizeToolCall(o);
             const card = { type: "tool", id: "o" + step, name, input: a, label: olbl(name, a), status: "run", start: Date.now(), detail: JSON.stringify(a).slice(0, 400) };
