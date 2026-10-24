@@ -3877,7 +3877,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if (it.name === "Task" && activeAgents) activeAgents--; }
             render();
           },
-          onUsage: (u, _m, sub) => { sess.liveOut = u.output_tokens || sess.liveOut; if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // one main-thread call's prompt = the real context size
+          onUsage: (u, _m, sub) => { sess.liveOut += (u.output_tokens || 0); if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // accumulate output across every step of the turn (each agentic tool round is its own assistant message); overwriting showed only the last message's tokens. lastCtx tracks the latest main-thread call's prompt = the real context size
           onResult: (ev) => {
             const u = ev.usage || {};
             const newIn = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0);
