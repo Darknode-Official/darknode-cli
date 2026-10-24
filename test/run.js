@@ -728,6 +728,7 @@ group("render helpers (frameDiff + wordHi) — the trickiest pure algorithms");
   const longTok = ansiWrap(CY("/very/long/path/to/a/deeply/nested/file.js"), 16);
   ok("ansiWrap splits a long colored token within width", longTok.every((l) => visLen(l) <= 16) && longTok.map(stripAnsi).join("") === "/very/long/path/to/a/deeply/nested/file.js");
   ok("ansiWrap re-opens the carried color on the continuation line", longTok.length > 1 && longTok[1].startsWith("\x1b[36m"));
+  ok("ansiWrap expands tabs so a line can't overflow the border", (() => { const r = ansiWrap("     1\tcode here", 40); return r.every((l) => !/\t/.test(l) && visLen(l) <= 40); })());
   // wordHi (force color on for deterministic testing)
   const [m1, p1] = wordHi("const total = 22;", "const total = 12;", true);
   ok("wordHi marks the changed token bold+underline", m1.includes("\x1b[1;4;31m22") && p1.includes("\x1b[1;4;32m12"));
