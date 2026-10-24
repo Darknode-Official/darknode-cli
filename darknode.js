@@ -2577,7 +2577,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     };
     const ident = resolveOperator({ cwd }); // operator/team for chargeback attribution + audit provenance
     const oMsgs = nexusMd ? [{ role: "system", content: "Nexus coding assistant.\n" + nexusMd }] : [{ role: "system", content: "Nexus coding assistant." }];
-    let input = "", curPos = 0, busy = false, cont = false, busyStart = 0, busyWord = "", tick = null;
+    let input = "", curPos = 0, busy = false, cont = false, busyStart = 0, busyWord = "", tick = null, activeBlock = null; // activeBlock: the nexus block currently streaming (the typewriter targets it even if an async note moved the transcript tail)
     // Carried across a compaction of the claude engine. Claude's context lives
     // server-side and is resumed with --continue; to actually shrink it we must
     // DROP --continue (cont=false) and re-seed the next prompt with a summary,
@@ -3609,8 +3609,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       scroll = 0; render();
     });
     // ---- animation loop: typewriter reveal + spinners + elapsed ----
-    const revealing = () => { const b = cur(); if (!b || !b.items) return false; return b.items.some((it) => it.type === "text" && it.shown < it.full.length); };
-    const startTick = () => { if (tick) return; tick = setInterval(() => { const b = cur(); if (b && b.items) for (const it of b.items) if (it.type === "text" && it.shown < it.full.length) { let ns = Math.min(it.full.length, it.shown + Math.max(2, Math.ceil((it.full.length - it.shown) / 22))); const cc = it.full.charCodeAt(ns - 1); if (cc >= 0xD800 && cc <= 0xDBFF && ns < it.full.length) ns++; it.shown = ns; } render(); if (!busy && !revealing() && !compact.on) { clearInterval(tick); tick = null; } }, 45); };
+    const revealing = () => { const b = activeBlock || cur(); if (!b || !b.items) return false; return b.items.some((it) => it.type === "text" && it.shown < it.full.length); };
+    const startTick = () => { if (tick) return; tick = setInterval(() => { const b = activeBlock || cur(); if (b && b.items) for (const it of b.items) if (it.type === "text" && it.shown < it.full.length) { let ns = Math.min(it.full.length, it.shown + Math.max(2, Math.ceil((it.full.length - it.shown) / 22))); const cc = it.full.charCodeAt(ns - 1); if (cc >= 0xD800 && cc <= 0xDBFF && ns < it.full.length) ns++; it.shown = ns; } render(); if (!busy && !revealing() && !compact.on) { clearInterval(tick); tick = null; } }, 45); };
     // Flatten the kept transcript tail into a short plain-text summary, so a
     // claude turn that has just dropped --continue still knows what came before.
     // User lines and the model's own answers only — no tool spew, capped so the
@@ -3816,7 +3816,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         transcript.push(blk); impact.cachedHits++; impact.cachedSaved += (hit.cost || 0); hit.hits = (hit.hits || 0) + 1; try { cachePut(cwd, ckey, hit); } catch (_) {}
         cont = true; render(); try { saveSession(); } catch (_) {} return;
       } }
-      const block = { role: "nexus", items: [] }; transcript.push(block);
+      const block = { role: "nexus", items: [] }; transcript.push(block); activeBlock = block;
+      // Append streamed text to THIS turn's block, not cur() — an async slash-command
+      // result (/scan, /verify…) can push a system message mid-turn and move the tail,
+      // which would otherwise attach the model's reply to that unrelated block.
+      const textItem = () => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; block.items.push(last); } return last; };
       const stat = { files: new Set(), paths: new Set(), cmds: 0, inTok0: sess.inTok, outTok0: sess.outTok, cost0: sess.cost, t0: Date.now() };
       const relOf = (p) => { try { return path.relative(cwd, path.resolve(cwd, p)); } catch (_) { return null; } };
       const ckTree = nexusCheckpoint(cwd); // every engine can now modify files, so always checkpoint (null if not a git repo)
@@ -3827,7 +3831,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const finish = (res) => {
         for (const it of block.items) if (it.type === "tool" && it.status === "run") { it.status = res && res.interrupted ? "err" : "ok"; it.interrupted = !!(res && res.interrupted); it.end = Date.now(); }
         runningShells = 0; activeAgents = 0; ctl = null;
-        if (!block.items.length || !block.items.some((i) => i.type === "text" && i.full.trim())) { const t = ensureText(); if (!t.full.trim()) t.full = res && res.interrupted ? "(interrupted)" : (res && res.output) || "(no output)"; }
+        if (!block.items.length || !block.items.some((i) => i.type === "text" && i.full.trim())) { const t = textItem(); if (!t.full.trim()) t.full = res && res.interrupted ? "(interrupted)" : (res && res.output) || "(no output)"; }
         const dt = ((Date.now() - stat.t0) / 1000).toFixed(1);
         const din = sess.inTok - stat.inTok0, dout = sess.outTok - stat.outTok0, dcost = sess.cost - stat.cost0;
         if (PAID[engine]) { impact.cloudTurns++; impact.cloudInTok += Math.max(0, din); impact.cloudOutTok += Math.max(0, dout); impact.cloudCost += Math.max(0, dcost); } else { impact.localTurns++; impact.localTok += Math.max(0, din + dout); }
@@ -3849,6 +3853,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (ckey && !(res && res.interrupted) && stat.files.size === 0 && stat.cmds === 0) { try { const ft = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").trim(); if (ft && ft !== "(no output)") cachePut(cwd, ckey, { text: ft, inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), readonly: true, hits: 0, ts: Date.now() }); } catch (_) {} }
         if (!(res && res.interrupted)) { try { const answerText = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").slice(0, 2000); nexusLearn(text, answerText); } catch (_) {} }
         for (const it of block.items) if (it.type === "text") it.shown = it.full.length; // turn's done: show the whole reply at once (typewriter is for live streaming only)
+        activeBlock = null;
         cont = true; busy = false; lastLines = null; if (costCap && sess.cost >= costCap) transcript.push({ role: "system", text: "budget cap reached ($" + sess.cost.toFixed(4) + ") — /budget <amount> to raise" });
         if (!warned50 && sess.ctxUsed > 0.5 * (sess.ctxWindow || 200000)) { warned50 = true; transcript.push({ role: "system", text: "context is over 50% — quality can dip on very long sessions; use /compact or /clear when it makes sense" }); }
         try { saveSession(); } catch (_) {}
@@ -3888,8 +3893,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         runClaudeStream(promptText, cwd, cont, {
           onInit: (ev) => { if (ev.model) sess.model = ev.model; if (ev.session_id) claudeSid = ev.session_id; },
           onRateLimit: (info) => { rate = info; },
-          onThinking: (t) => { const bl = cur(); if (!bl.items) bl.items = []; let last = bl.items[bl.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; bl.items.push(last); } last.full += t; bumpLive(t); renderSoon(); },
-          onText: (t) => { ensureText().full += t; bumpLive(t); renderSoon(); },
+          onThinking: (t) => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; block.items.push(last); } last.full += t; bumpLive(t); renderSoon(); },
+          onText: (t) => { textItem().full += t; bumpLive(t); renderSoon(); },
           onDelta: (t) => { bumpLive(t); renderSoon(); }, // mid-message delta: advance the live token estimate only (the whole text/thinking still lands via onText/onThinking)
           onLiveTokens: (n) => { estOut = n; sess.liveOut = confOut + estOut; renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate
           onTool: (tu) => {
@@ -3935,7 +3940,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
               if (eng.proto === "codex-json") { jbuf += chunk; let nl; while ((nl = jbuf.indexOf("\n")) >= 0) { const s = jbuf.slice(0, nl).trim(); jbuf = jbuf.slice(nl + 1); if (s[0] === "{") { try { const e = JSON.parse(s); const u = e.usage || (e.item && e.item.usage) || (e.msg && e.msg.usage); if (u && u.output_tokens != null) sess.liveOut = u.output_tokens; } catch (_) {} } } }
               renderSoon();
             })
-          : ((chunk) => { ensureText().full += chunk; sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); });
+          : ((chunk) => { textItem().full += chunk; sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); });
         runEngineTask(engine, promptText, cwd, true, cont, onChunk, ctl, mdl).then((res) => {
           const raw = res.output || "";
           let display = raw, inD, outD;
@@ -3946,7 +3951,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
               if (parsed.inTok || parsed.outTok) { inD = parsed.inTok || Math.ceil(promptText.length / 4); outD = parsed.outTok || Math.ceil(display.length / 4); } // REAL usage
               if (parsed.model && (!sess.model || sess.model === engine)) sess.model = parsed.model;
             }
-            ensureText().full = display; // show the parsed assistant text (or raw output if the parse failed)
+            textItem().full = display; // show the parsed assistant text (or raw output if the parse failed)
           }
           if (inD == null) { inD = Math.ceil(promptText.length / 4); outD = Math.ceil(display.length / 4); } // estimate fallback
           sess.inTok += inD; sess.outTok += outD; sess.ctxUsed = (sess.inTok + sess.outTok) - (sess.ctxBase || 0); // window since the last compaction, not cumulative spend (doCompact advances ctxBase)
@@ -3967,12 +3972,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           let mdl = process.env.DARKNODE_MODEL || (sess.model && sess.model !== engine ? sess.model : "");
           if (!mdl) { mdl = pickCoderModel(await ollamaTags()); }
           sess.model = mdl || engine;
-          if (!mdl) { ensureText().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : "No local model found. Install Ollama and pull one, e.g. `ollama pull gpt-oss:20b`, or use /engine claude."; return finish({ output: "" }); }
+          if (!mdl) { textItem().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : "No local model found. Install Ollama and pull one, e.g. `ollama pull gpt-oss:20b`, or use /engine claude."; return finish({ output: "" }); }
           // Greeting / trivial message → reply conversationally and NEVER enter the tool
           // loop (so "hi" can't make a weak model start probing the system).
           if (isChitchat(promptText) && !imgAttach.length) {
             let reply = ""; try { reply = await ollamaChat(mdl, [{ role: "system", content: "You are Nexus, a friendly local AI assistant in a terminal on a security workstation. Reply briefly and warmly. Do NOT use tools or inspect the system." }, { role: "user", content: promptText }], undefined, aSignal(ctl)); } catch (_) {}
-            const t = ensureText(); t.full += (t.full ? "\n\n" : "") + ((reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it.");
+            const t = textItem(); t.full += (t.full ? "\n\n" : "") + ((reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it.");
             sess.outTok += Math.ceil((reply || "").length / 4); sess.liveOut += Math.ceil((reply || "").length / 4); return finish({ output: "" });
           }
           // Session-scoped read de-dup: an unchanged file isn't re-embedded on a
@@ -3997,9 +4002,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             }
           };
           for (let step = 1; step <= stepLimit; step++) {
-            if (ctl && ctl.stopped) { ensureText().full += (ensureText().full.trim() ? "\n" : "") + "(interrupted)"; break; }
-            if (lean && (sess.outTok - turnStartTok) > 8000) { ensureText().full += "\n(token budget for this turn reached — wrap up with /continue if needed)"; break; }
-            let raw; try { raw = await ollamaChat(mdl, oMsgs, CODER_SCHEMA, aSignal(ctl)); } catch (e) { if (ctl && ctl.stopped) break; ensureText().full += "\n" + explainEngineError(e && e.message, { engine, model: mdl }); break; }
+            if (ctl && ctl.stopped) { textItem().full += (textItem().full.trim() ? "\n" : "") + "(interrupted)"; break; }
+            if (lean && (sess.outTok - turnStartTok) > 8000) { textItem().full += "\n(token budget for this turn reached — wrap up with /continue if needed)"; break; }
+            let raw; try { raw = await ollamaChat(mdl, oMsgs, CODER_SCHEMA, aSignal(ctl)); } catch (e) { if (ctl && ctl.stopped) break; textItem().full += "\n" + explainEngineError(e && e.message, { engine, model: mdl }); break; }
             sess.outTok += Math.ceil(raw.length / 4); sess.liveOut += Math.ceil(raw.length / 4);
             let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
             if (!o || typeof o !== "object") { oMsgs.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
@@ -4007,8 +4012,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             // as context) so past chain-of-thought isn't resent on every step.
             const _ctx = { action: o.action }; if (o.tool) _ctx.tool = o.tool; if (o.args) _ctx.args = o.args; if (o.final) _ctx.final = o.final;
             oMsgs.push({ role: "assistant", content: JSON.stringify(_ctx) });
-            if (o.thought) { const t = ensureText(); t.full += (t.full ? "\n" : "") + o.thought; renderSoon(); }
-            if (o.action === "final") { if (!didTool && !isChitchat(promptText) && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = ensureText(); t.full += (t.full ? "\n\n" : "") + o.final; } break; }
+            if (o.thought) { const t = textItem(); t.full += (t.full ? "\n" : "") + o.thought; renderSoon(); }
+            if (o.action === "final") { if (!didTool && !isChitchat(promptText) && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = textItem(); t.full += (t.full ? "\n\n" : "") + o.final; } break; }
             const { name, a } = normalizeToolCall(o);
             const card = { type: "tool", id: "o" + step, name, input: a, label: olbl(name, a), status: "run", start: Date.now(), detail: JSON.stringify(a).slice(0, 400) };
             if (a.path && name === "write_file") card.diff = editDiff("Write", { file_path: a.path, content: a.content });
@@ -4110,7 +4115,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (_lg) {
               transcript.push({ role: "system", text: _lg.message });
               oMsgs.push({ role: "tool", content: "[loop guard] " + _lg.message });
-              if (_lg.action === "break") { ensureText().full += (ensureText().full.trim() ? "\n" : "") + _lg.message; render(); break; }
+              if (_lg.action === "break") { textItem().full += (textItem().full.trim() ? "\n" : "") + _lg.message; render(); break; }
             }
             render();
           }
