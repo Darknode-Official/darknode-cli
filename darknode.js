@@ -2963,7 +2963,23 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // One welcome tip chosen once per session (stable across every render so the
     // card never flickers), rotated by start time for a little variety.
     const _welcomeTip = NEXUS_TIPS[Math.floor(Date.now() / 1000) % NEXUS_TIPS.length];
+    // Memoize the fully-rendered transcript while idle. bodyLines re-wraps every
+    // message (ANSI, diffs, tool cards) on each paint — O(transcript) — and every
+    // keystroke paints, so a long session (common after /restart resumes one) made
+    // held-key input lag: each repeat paid a full rebuild. Typing never changes the
+    // transcript, so when !busy we reuse the cached lines and only the composer
+    // repaints. We skip the cache while busy/compacting (live spinners, streaming
+    // text, running-tool timers) and key the cache on everything bodyLines reads.
+    const _bodySig = () => {
+      const m = transcript[transcript.length - 1];
+      let last = "";
+      if (m) { last = (m.role || "") + ":" + (m.text ? m.text.length : 0); if (m.items) { last += ":" + m.items.length; for (const it of m.items) last += "," + (it.status || "") + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? it.detail.length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0); } }
+      return transcript.length + "|" + cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + effort + "|" + engine + "|" + shownModel() + "|" + guard + "|" + (gitBranch || "") + "|" + mcpServers.filter((s) => s && !s.error).length + "|" + (_welcomeTip || "") + "|" + nextQueue.length + "/" + nextQueue.join("\u0001").length + "|" + last;
+    };
+    let _blCache = null, _blSig = "";
     const bodyLines = () => {
+      const _sig = (busy || compact.on) ? null : _bodySig();
+      if (_sig !== null && _blCache && _sig === _blSig) return _blCache;
       const L = [];
       for (const m of transcript) {
         if (m.role === "art") {
@@ -3172,6 +3188,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         L.push("");
         L.push(workGlyph() + " " + cyan("Compacting conversation…") + gray("  (" + fmtElapsed(el) + (compact.tok ? " · ↓ " + fmtK(compact.tok) + " tokens" : "") + " · esc to interrupt)"));
       }
+      if (_sig !== null) { _blCache = L; _blSig = _sig; }
       return L;
     };
     // ---- status + hint bars ----
