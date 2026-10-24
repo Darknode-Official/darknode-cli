@@ -5779,6 +5779,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         case "confirm-submit": pasteNotice = "shell-looking paste — press Enter again to send"; render(); return;
         case "submit": {
           const t = (eff.text || "").trim(); input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; const pick = menuSel; menuSel = 0;
+          curTurnFromQueue = false; // a directly-typed action is never a drained queued prompt (keeps Ctrl+X able to interrupt it)
           if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; }
           if (t.startsWith("/")) { let cmd = t; if (!/\s/.test(t)) { const mm = fuzzyCmds(t); if (mm.length) cmd = (mm[pick] || mm[0])[0]; } handleSlash(cmd); render(); return; }
           if (t[0] === "!" && t.length > 1) { runBang(t.slice(1).trim()); render(); return; }
