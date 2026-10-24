@@ -41,7 +41,10 @@ const cyan = (s) => p(A.cyan, s), green = (s) => p(A.green, s), red = (s) => p(A
 // on a deep green (+) / deep red (-) row. Truecolor when the terminal advertises it,
 // nearest xterm-256 otherwise.
 const _tc = /truecolor|24bit/i.test(process.env.COLORTERM || "");
-const CC_DIFF = _tc ? { add: "\x1b[48;2;34;92;43m\x1b[38;2;255;255;255m", del: "\x1b[48;2;122;41;54m\x1b[38;2;255;255;255m", addWord: "\x1b[48;2;56;166;96m\x1b[38;2;255;255;255m", delWord: "\x1b[48;2;179;89;107m\x1b[38;2;255;255;255m" } : { add: "\x1b[48;5;22m\x1b[97m", del: "\x1b[48;5;88m\x1b[97m", addWord: "\x1b[48;5;28m\x1b[97m", delWord: "\x1b[48;5;131m\x1b[97m" };
+// Diff colors: additions green, removals red, mirrored so the green is exactly
+// as saturated as the red (the old addition green was dark enough to read as
+// teal/blue on some displays).
+const CC_DIFF = _tc ? { add: "\x1b[48;2;41;122;54m\x1b[38;2;255;255;255m", del: "\x1b[48;2;122;41;54m\x1b[38;2;255;255;255m", addWord: "\x1b[48;2;89;179;107m\x1b[38;2;255;255;255m", delWord: "\x1b[48;2;179;89;107m\x1b[38;2;255;255;255m" } : { add: "\x1b[48;5;28m\x1b[97m", del: "\x1b[48;5;88m\x1b[97m", addWord: "\x1b[48;5;34m\x1b[97m", delWord: "\x1b[48;5;131m\x1b[97m" };
 const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint: dim, info: blue, special: mag, strong: bold };
 
 const { frameDiff, wordHi, wordFlags } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
