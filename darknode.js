@@ -1799,6 +1799,16 @@ async function subrecon(domain, filter) {
   console.log(gray("\n" + dead.length + " did not resolve · " + list.length + " total subdomains"));
 }
 
+// Interrupt the WHOLE process tree of an engine child, not just its top process.
+// Engine CLIs spawn their own subprocesses (git, model helpers, shells); when the
+// child is its own group leader (spawned detached), process.kill(-pid) signals the
+// whole group so nothing is orphaned mid-turn. Falls back to the bare pid if the
+// group is already gone or on platforms without process groups (Windows).
+function killGroup(child, sig) {
+  if (!child || child.pid == null) return;
+  try { process.kill(-child.pid, sig); } catch (_) { try { child.kill(sig); } catch (_) {} }
+}
+
 // Delegate a whole task to an external agent binary (claude / opencode). Streams output; returns {ok, output}.
 function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, model, effort) {
   return new Promise((resolve) => {
@@ -1808,12 +1818,12 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
     if (!m || !m.args || m.kind === "local") return resolve({ ok: false, output: "engine '" + engine + "' cannot run as a CLI task" });
     const cmd = m.bin, args = m.args(prompt, { cont, autonomous, model, effort });
     let out = "";
-    const p = _cp.spawn(cmd, args, { cwd, env: process.env });
-    if (ctl && ctl.kids) ctl.kids.push(() => { try { p.kill("SIGINT"); } catch (_) {} setTimeout(() => { try { p.kill("SIGKILL"); } catch (_) {} }, 1200); }); // let ctrl+c kill this child
+    const p = _cp.spawn(cmd, args, { cwd, env: process.env, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree
+    if (ctl && ctl.kids) ctl.kids.push(() => { killGroup(p, "SIGINT"); setTimeout(() => killGroup(p, "SIGKILL"), 1200); }); // ctrl+c kills this child and everything it spawned
     try { p.stdin.end(); } catch (_) {} // signal EOF so the CLI doesn't wait on stdin
     p.stdout.on("data", (d) => { const s = d.toString(); out += s; if (onChunk) onChunk(s); else if (!tuiActive) process.stdout.write(gray("    " + s.replace(/\n/g, "\n    "))); });
     p.stderr.on("data", (d) => (out += d.toString()));
-    const to = setTimeout(() => { try { p.kill("SIGKILL"); } catch (_) {} }, 40 * 60 * 1000);
+    const to = setTimeout(() => killGroup(p, "SIGKILL"), 40 * 60 * 1000);
     p.on("close", (code) => { clearTimeout(to); resolve({ ok: code === 0, output: out.slice(-12000) }); });
     p.on("error", (e) => { clearTimeout(to); resolve({ ok: false, output: "engine spawn error: " + e.message + " (is '" + engine + "' installed & logged in?)" }); });
   });
@@ -1834,10 +1844,10 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     if (opts.maxTurns) args.push("--max-turns", String(opts.maxTurns));
     if (opts.disallow && opts.disallow.length) args.push("--disallowed-tools", ...opts.disallow);
     const env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
-    const cp = _cp.spawn("claude", args, { cwd, env });
+    const cp = _cp.spawn("claude", args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
     try { cp.stdin.end(); } catch (_) {} // signal EOF so claude doesn't wait on stdin
     let buf = "", finalText = "", res = null, killed = false;
-    if (ctl) ctl.kill = () => { killed = true; try { cp.kill("SIGINT"); } catch (_) {} setTimeout(() => { try { cp.kill("SIGKILL"); } catch (_) {} }, 1500); };
+    if (ctl) ctl.kill = () => { killed = true; killGroup(cp, "SIGINT"); setTimeout(() => killGroup(cp, "SIGKILL"), 1500); };
     cp.stdout.on("data", (d) => {
       buf += d.toString();
       let nl;
@@ -1862,7 +1872,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
       }
     });
     cp.stderr.on("data", () => {});
-    const to = setTimeout(() => { try { cp.kill("SIGKILL"); } catch (_) {} }, 40 * 60 * 1000);
+    const to = setTimeout(() => killGroup(cp, "SIGKILL"), 40 * 60 * 1000);
     cp.on("close", (code) => { clearTimeout(to); resolve({ ok: code === 0 && !killed, interrupted: killed, output: finalText, result: res }); });
     cp.on("error", (e) => { clearTimeout(to); resolve({ ok: false, output: "engine spawn error: " + e.message + " (is claude installed & logged in?)" }); });
   });
@@ -3906,9 +3916,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose
         const jsonProto = eng.proto === "gemini-json" || eng.proto === "codex-json";
         // JSON-mode engines emit machine output (not human text), so don't render the
-        // raw chunks — just track progress; text engines stream their stdout live.
+        // raw chunks. For the live token counter, show the REAL running count, never
+        // an estimate of protocol bytes: codex streams JSONL events, so parse each
+        // completed line and read the latest usage.output_tokens; gemini emits one JSON
+        // blob only at the end, so there's no honest mid-stream signal — leave the
+        // counter alone (the spinner shows elapsed; the real total lands in the summary).
+        let jbuf = "";
         const onChunk = jsonProto
-          ? ((chunk) => { sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); })
+          ? ((chunk) => {
+              if (eng.proto === "codex-json") { jbuf += chunk; let nl; while ((nl = jbuf.indexOf("\n")) >= 0) { const s = jbuf.slice(0, nl).trim(); jbuf = jbuf.slice(nl + 1); if (s[0] === "{") { try { const e = JSON.parse(s); const u = e.usage || (e.item && e.item.usage) || (e.msg && e.msg.usage); if (u && u.output_tokens != null) sess.liveOut = u.output_tokens; } catch (_) {} } } }
+              renderSoon();
+            })
           : ((chunk) => { ensureText().full += chunk; sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); });
         runEngineTask(engine, promptText, cwd, true, cont, onChunk, ctl, mdl).then((res) => {
           const raw = res.output || "";
