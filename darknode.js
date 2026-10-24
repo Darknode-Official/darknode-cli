@@ -3326,6 +3326,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let btw = null;         // { list, i, scroll, loading, flash } while the overlay is open
     const btwLog = [];      // prior side questions this session (in-memory only, newest last)
     let claudeSid = "";     // most recent claude CLI session id (from the stream init)
+    let claudeCostSid = "", claudeCostBase = 0; // claude's result.total_cost_usd is CUMULATIVE per session across --continue, so charge only the per-turn delta (reset when the session id changes)
     let oneShotRan = false; // a claude one-shot ran since the last main turn → resume the tracked
                             // session id next turn instead of letting --continue pick the one-shot
     const btwWrap = (s, w) => {
@@ -3919,7 +3920,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             sess.inTok += newIn;
             sess.outTok += u.output_tokens || 0;
             sess.ctxUsed = lastCtx || (newIn + cacheIn + (u.output_tokens || 0)); // result usage is SUMMED over every call in the turn (30 tool calls = 30x the context), so prefer the last call's
-            if (typeof ev.total_cost_usd === "number") sess.cost += ev.total_cost_usd;
+            if (typeof ev.total_cost_usd === "number") { const sid = ev.session_id || claudeSid; if (sid !== claudeCostSid) { claudeCostSid = sid; claudeCostBase = 0; } sess.cost += Math.max(0, ev.total_cost_usd - claudeCostBase); claudeCostBase = ev.total_cost_usd; } // total_cost_usd is the session's running total; add only what this turn added
             addUsage(ev.modelUsage, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
