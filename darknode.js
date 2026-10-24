@@ -1834,15 +1834,19 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
 }
 // Claude Code stream-json driver — parses NDJSON events so the TUI can render
 // tool cards, live token usage, cost and context size exactly like Claude Code.
+const ULTRACODE_DIR = "ULTRACODE is ON for this session: the user turned it on and it stands for every message until they turn it off. Aim for the most thorough, correct result you can produce; token cost is not a constraint. For any substantive task, orchestrate: use the Workflow tool (or Agent subagents) to split the work into parallel pieces, cover it from independent angles, and adversarially verify findings and changes before reporting them. Multi-phase work (understand, design, implement, review) can be several workflows in sequence. Work solo only on conversational replies or trivial mechanical edits.";
 function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
   opts = opts || {};
+  const ultra = opts.effort === "ultracode"; // Nexus level above max: max thinking + standing multi-agent orchestration
+  if (ultra && !/^\s*\//.test(prompt)) prompt = "ultracode: " + prompt; // the keyword in the prompt is claude's opt-in for its Workflow tool (skip slash commands)
   return new Promise((resolve) => {
     const args = opts.readonly ? ["-p", prompt, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--permission-mode", "plan"] : ["-p", prompt, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions"]; // partial messages = live text/thinking/token deltas so the counter climbs during a long turn instead of freezing between whole messages
     if (opts.resume) args.push("--resume", opts.resume); // resume a tracked session id (survives intervening one-shot calls that would hijack --continue)
     else if (cont) args.push("--continue");
     if (opts.model) args.push("--model", opts.model);
-    if (opts.effort) args.push("--effort", opts.effort);
-    if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
+    if (opts.effort) args.push("--effort", ultra ? "max" : opts.effort);
+    const _sys = (opts.appendSystemPrompt || "") + (ultra ? "\n" + ULTRACODE_DIR : "");
+    if (_sys) args.push("--append-system-prompt", _sys);
     if (opts.fallbackModel) args.push("--fallback-model", opts.fallbackModel);
     if (opts.maxBudgetUsd) args.push("--max-budget-usd", String(opts.maxBudgetUsd));
     if (opts.maxTurns) args.push("--max-turns", String(opts.maxTurns));
@@ -2752,7 +2756,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/ensemble", "all engines answer, then synthesize the best"], ["/settings", "all options, neatly arranged (alias /options /config)"], ["/jobs", "background commands the agent started (run_background)"], ["/loop", "autonomous goal loop: /loop [-n rounds] <goal> until GOAL-DONE"], ["/team", "multi-model workspace: architect + builder + reviewer, loops to PASS"], ["/policy", "show the enterprise security policy (org + local)"], ["/audit", "audited tool actions · /audit verify (tamper check)"], ["/bench", "speed / tokens / cost table per engine"], ["/explain", "explain the diff or a file in plain English"], ["/test", "generate & run unit tests for a file"], ["/refactor", "restructure code for clarity without changing behavior"], ["/migrate", "migrate code: /migrate <from> to <to>"], ["/pr", "AI-write a PR title+body from the diff and open it (gh)"],
       ["/index", "index the repo for local auto-context"], ["/map", "show the repo map (file+symbol outline); /map on|off"], ["/verify", "detect + run this project's tests/build"], ["/radar", "codebase complexity + hotspot map"], ["/review-fast", "fast rule-based review of changed code (no AI)"], ["/diffexplain", "explain the current git diff"], ["/testgen", "scaffold tests for a function/file"], ["/snippet", "save / use a prompt macro"], ["/snippets", "list saved prompt macros"],
       ["/plan", "make & run an editable task checklist"], ["/git", "branch, status & recent commits"], ["/blame", "who last changed a file's lines"],
-      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "max token savings with ZERO quality loss"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens)"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
+      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "max token savings with ZERO quality loss"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens)"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max|ultracode)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
       ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "session savings (tokens & cost avoided)"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "built-in documentation (/docs <topic>)"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
       ["/tree", "show the project file tree"], ["/theme", "change the color theme"],
       ["/color", "set the accent color · /color <name|0-255|#hex> · /color reset"], ["/colors", "list accent colors"], ["/gradient", "set the logo gradient · /gradient <theme|reset>"], ["/mouse", "toggle mouse capture · /mouse off to select & copy text"],
@@ -2920,7 +2924,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (name === "Read") return "Read(" + relP(a.file_path) + ")";
       if (name === "Bash") return "Bash(" + oneline(a.command, Math.max(40, cols() - 30)) + ")" + (a.run_in_background ? gray(" &") : "");
       if (name === "Grep" || name === "Glob") return "Search(pattern: \"" + oneline(a.pattern, 40) + "\"" + (a.path ? ", path: \"" + relP(a.path) + "\"" : "") + ")";
-      if (name === "Task") return "Task(" + oneline(a.subagent_type || a.description || "agent", 30) + ")";
+      if (name === "Task" || name === "Agent") return name + "(" + oneline(a.subagent_type || a.description || "agent", 30) + ")";
+      if (name === "Workflow") return "Workflow(" + oneline(a.name || (String(a.script || "").match(/name:\s*['"]([^'"]+)/) || [])[1] || "script", 30) + ")";
       if (name === "WebFetch") return "Fetch(" + oneline(a.url, 36) + ")";
       if (name === "WebSearch") return "Search(" + oneline(a.query, 34) + ")";
       if (name === "TodoWrite") return "Update Todos";
@@ -3240,7 +3245,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       "/color": () => Object.keys(COLORS).map((n) => [n, "\x1b[" + COLORS[n] + "m█████\x1b[0m"]),
       "/gradient": () => Object.keys(THEMES).map((t) => [t, THEMES[t].grad.map((g) => "\x1b[" + g + "m█\x1b[0m").join("")]),
       "/style": () => [["default", ""], ["concise", "minimal"], ["explanatory", "detailed"], ["review", "code review"], ["tdd", "test-driven"], ["secure", "security-focused"], ["teacher", "educational"]],
-      "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"], ["xhigh", "harder problems"], ["max", "maximum thinking"]],
+      "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"], ["xhigh", "harder problems"], ["max", "maximum thinking"], ["ultracode", "max + multi-agent workflows"]],
       "/guard": () => [["enforce", "block destructive commands"], ["warn", "warn but allow"], ["off", "no safety checks"]],
       "/marketplace": () => [["list", "installed packages"], ["install", "install from path/URL"], ["remove", "uninstall a package"], ["init", "scaffold a publishable package"]],
       "/cron": () => [["list", "show scheduled jobs"], ["add", "schedule a new job"], ["remove", "delete a job"], ["enable", "enable a job"], ["disable", "pause a job"], ["run", "run a job now"]],
@@ -3294,7 +3299,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const _goldTxt = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
     const godApply = () => {
       godSnap = { effort, lean, minimizeCalls, stepCap, trimOutput, repoMapOn };
-      if (engineCap(engine, "effort")) effort = "max"; // only the quality levers; nothing that trades quality for cost/speed
+      if (engineCap(engine, "effort") && effort !== "ultracode") effort = "max"; // only the quality levers; nothing that trades quality for cost/speed
       lean = false; minimizeCalls = false; stepCap = false; trimOutput = false; repoMapOn = true;
     };
     const godRestore = () => { if (!godSnap) return; ({ effort, lean, minimizeCalls, stepCap, trimOutput, repoMapOn } = godSnap); godSnap = null; };
@@ -3304,6 +3309,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["high", "Deeper reasoning on most problems"],
       ["xhigh", "Hard problems — more thinking, more tokens"],
       ["max", "Maximum thinking — the hardest problems, most tokens"],
+      ["ultracode", "Max thinking + multi-agent workflows that fan out and verify — by far the most tokens"],
     ];
     const renderEffortPicker = (C, sel) => {
       const names = EFFORT_LEVELS.map((l) => l[0]);
@@ -3961,13 +3967,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
             block.items.push(_item);
             if (tu.name === "Bash") { runningShells++; stat.cmds++; }
-            if (tu.name === "Task") activeAgents++;
+            if (tu.name === "Task" || tu.name === "Agent") activeAgents++;
             if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(tu.name) && (tu.input.file_path || tu.input.notebook_path)) { const fp = tu.input.file_path || tu.input.notebook_path; stat.files.add(base(fp)); const r = relOf(fp); if (r) stat.paths.add(r); }
             render();
           },
           onToolResult: (tr) => {
             const it = block.items.find((x) => x.type === "tool" && x.id === tr.id);
-            if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if (it.name === "Task" && activeAgents) activeAgents--; }
+            if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if ((it.name === "Task" || it.name === "Agent") && activeAgents) activeAgents--; }
             render();
           },
           onUsage: (u, _m, sub) => { confOut += (u.output_tokens || 0); estOut = 0; sess.liveOut = confOut; if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // lock in the real output tokens for the message that just finished (each agentic tool round is its own assistant message) and clear the streaming estimate; the next message's estimate climbs on top of this. lastCtx tracks the latest main-thread call's prompt = the real context size
@@ -4568,7 +4574,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (cmd === "/help") {
         const HS = [
           { title: "Session", rows: [["/clear","start a new conversation"],["/chat-clear","clear the screen but keep the conversation in memory"],["/compact","summarize the conversation to free up context"],["/resume","reload the last saved session"],["/export","save the conversation to a markdown file"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/recap","recap the session so far (/recap [on|off] for after-task recaps)"],["/title","name the terminal tab for this topic (/title [text|on|off])"],["/exit","quit Nexus"]] },
-          { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low | medium | high"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max token savings, zero quality loss"],["/tight","surgical minimal edits (lossless)"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
+          { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low … max | ultracode"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max token savings, zero quality loss"],["/tight","surgical minimal edits (lossless)"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
           { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/codereview","review changes for bugs, ranked by severity (--fix applies)"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
           { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/open","launch the live web dashboard in your browser"],["/dashboard","start/stop the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
           { title: "Input prefixes", rows: [["/command","run a command (type / to browse)"],["@file","attach a file or image (Tab completes the path)"],["!command","run a shell command (output goes to the AI)"],["#note","save a note to memory"]] },
@@ -5029,7 +5035,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         transcript.push({ role: "system", text: bold("/mode " + a2) + " — " + p.desc + " (saved)\n  " + gray(bits.join(" · ")) });
         return;
       }
-      else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else { const _i = EFFORT_LEVELS.findIndex((l) => l[0] === (effort || "high")); pendingEffort = { sel: _i < 0 ? 2 : _i }; render(); } }
+      else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max", "ultracode"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "ultracode" ? "max thinking and orchestrates multi-agent workflows on every substantive task (fans out, adversarially verifies; by far the most tokens — /budget still caps it)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else { const _i = EFFORT_LEVELS.findIndex((l) => l[0] === (effort || "high")); pendingEffort = { sel: _i < 0 ? 2 : _i }; render(); } }
       else if (cmd === "/hack") { hack = arg === "on" ? true : arg === "off" ? false : !hack; transcript.push({ role: "system", text: hack ? red("● HACK MODE") + " — Nexus is now an offensive-security specialist for AUTHORIZED engagements, with the full Darknode toolkit (scan · dns · cert · subs · cve · payloads · revshell · dorks · jwt · hash · totp · encode …) available via run_command. Systems you own or are explicitly in-scope to test only. " + gray("/hack off to exit") : "hack mode OFF — back to the standard coding agent" }); }
       else if (cmd === "/pentest") { const { startPentest } = require("./lib/nexus/pentest-engine"); startPentest(arg || null, { reportDir: process.cwd() }).catch(e => transcript.push({ role: "system", text: "HYDRA error: " + e.message })); }
       else if (cmd === "/ai-prompt" || cmd === "/aiprompt") {
