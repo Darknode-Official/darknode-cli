@@ -4383,8 +4383,20 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // real text for this session; only the durable session.json copy is redacted.
     const redactBlock = (b) => { if (!b || typeof b !== "object") return b; let c = null; for (const k of Object.keys(b)) { if (k !== "role" && typeof b[k] === "string" && b[k]) { const r = Redact.emit("transcript", b[k]); if (r !== b[k]) { c = c || Object.assign({}, b); c[k] = r; } } } return c || b; };
     const restoreSession = (s) => {
-      transcript.length = 0; for (const b of s.transcript || []) transcript.push(b);
+      transcript.length = 0;
+      for (const b of s.transcript || []) {
+        if (b && b.role === "system" && /^(restarted with latest code|previous session restored)/.test(b.text || "")) continue; // drop restore notes saved before they were made ephemeral, so they stop piling up
+        // Sanitize each restored block: a save taken mid-turn (periodic autosave, or a
+        // crash) can leave text half-revealed or a tool stuck on "run", which would then
+        // render frozen/truncated forever since no turn is driving it. Make history final.
+        if (b && Array.isArray(b.items)) for (const it of b.items) {
+          if (it.type === "text") it.shown = (it.full || "").length;
+          else if (it.type === "tool" && it.status === "run") { it.status = "ok"; if (!it.end) it.end = it.start || Date.now(); }
+        }
+        transcript.push(b);
+      }
       if (s.sess) Object.assign(sess, s.sess); if (s.engine && ENGINES[s.engine]) engine = s.engine;
+      sess.liveOut = 0; activeBlock = null; busy = false; scroll = 0; // clear transient run state so the resumed view is clean
       cont = true; carryNote = ""; localReplay = []; oMsgs.length = 1;
       if (engine === "claude") {
         // resume the exact saved session; without an id, --continue could grab an unrelated
@@ -4397,7 +4409,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
       } // cli engines replay the transcript every turn — nothing to restore
     };
-    const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); const { readCache: _rc, fileSnap: _fs, ...persistSess } = sess; fs.writeFileSync(path.join(cwd, ".nexus", "session.json"), JSON.stringify({ engine, model: sess.model, transcript: transcript.map(redactBlock), sess: persistSess, claudeSid, ts: Date.now() })); secureNexus(cwd); } catch (_) {} };
+    const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); const { readCache: _rc, fileSnap: _fs, ...persistSess } = sess; fs.writeFileSync(path.join(cwd, ".nexus", "session.json"), JSON.stringify({ engine, model: sess.model, transcript: transcript.filter((b) => !(b && b.ephemeral)).map(redactBlock), sess: persistSess, claudeSid, ts: Date.now() })); secureNexus(cwd); } catch (_) {} };
 
     // ---- localhost dashboard (/dashboard, /open) — live web view of this agent session ----
     let dashServer = null;              // { url, port, close } once started
@@ -5225,26 +5237,34 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         transcript.push({ role: "system", text: "saving session and restarting…" }); render();
         setTimeout(() => {
           cleanup();
+          // Already running under a restart supervisor? Just exit with the restart
+          // code and let it re-spawn fresh code. This is what stops every /restart
+          // from stacking another idle wrapper process on top of the last.
+          if (process.env.NEXUS_SUPERVISED === "1") { process.exit(75); return; }
           const cp = require("child_process");
           // Rebuild a minimal, launch-mode-agnostic command instead of replaying
           // process.argv: that replay differs across the `darknode`/`nexus` bins,
           // npm symlinks and the pkg binary (where argv[1] is a virtual /snapshot
           // path the child rejects as an unknown command), and any stray task text
           // in it would turn the restart into a one-shot run instead of the TUI.
-          // Carry the CURRENT engine so a mid-session /engine switch survives.
+          // Carry the CURRENT engine so a mid-session /engine switch survives (the
+          // resumed session also restores it, so this is just a fallback default).
           const sub = ["nexus", "--resume", "-e", engine];
           const args = process.pkg ? sub : [process.argv[1]].concat(sub); // pkg binary: the exe is already the entry
-          // Re-exec as a child that INHERITS our stdio and stays in our process
-          // group, then wait for it and exit with its code. Spawning the child and
-          // exiting the parent immediately would orphan it into a BACKGROUND
-          // process group, so its very first terminal read fails with `read EIO`
-          // the moment the user types. Staying alive as a thin wrapper keeps the
-          // terminal's foreground process group intact for the restarted session.
-          try {
-            const child = cp.spawn(process.execPath, args, { stdio: "inherit", cwd });
-            child.on("exit", (code, sig) => process.exit(sig ? 1 : (code || 0)));
-            child.on("error", () => process.exit(1));
-          } catch (_) { process.exit(0); }
+          // Become a thin supervisor: spawn the TUI (inheriting our stdio so it keeps
+          // the terminal's foreground process group — spawning then exiting would
+          // orphan it into the BACKGROUND group and its first read fails `read EIO`),
+          // and re-spawn it whenever it exits with the restart code (75). One waiter,
+          // one live TUI, no matter how many times the user hits /restart.
+          const childEnv = Object.assign({}, process.env, { NEXUS_SUPERVISED: "1" });
+          const spawnChild = () => {
+            try {
+              const child = cp.spawn(process.execPath, args, { stdio: "inherit", cwd, env: childEnv });
+              child.on("exit", (code, sig) => { if (!sig && code === 75) spawnChild(); else process.exit(sig ? 1 : (code || 0)); });
+              child.on("error", () => process.exit(1));
+            } catch (_) { process.exit(1); }
+          };
+          spawnChild();
         }, 200);
       }
       else if (cmd === "/next") {
@@ -5511,7 +5531,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let loading = true;
     // Boot animation control: any key skips it; DARKNODE_FAST / NO_MOTION goes straight to the chat.
     let bootTimer = null, bootDone = false;
-    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); if (autoResume) { try { const s = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8")); const hadConvo = (s.transcript || []).some((b) => b.role === "user" && b.text && String(b.text).trim()); if (hadConvo) { restoreSession(s); transcript.push({ role: "system", text: autoResume === "restart" ? "restarted with latest code — session restored" : "previous session restored (" + new Date(s.ts).toLocaleString() + ") · /clear for a fresh chat · `nexus --new` to launch blank" }); } else { transcript.length = 0; transcript.push({ role: "art" }); } } catch (_) {} autoResume = false; } render(); };
+    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); if (autoResume) { try { const s = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8")); const hadConvo = (s.transcript || []).some((b) => b.role === "user" && b.text && String(b.text).trim()); if (hadConvo) { restoreSession(s); transcript.push({ role: "system", ephemeral: true, text: autoResume === "restart" ? "restarted with latest code — session restored" : "previous session restored (" + new Date(s.ts).toLocaleString() + ") · /clear for a fresh chat · `nexus --new` to launch blank" }); } else { transcript.length = 0; transcript.push({ role: "art" }); } } catch (_) {} autoResume = false; } render(); };
     const fastBoot = !!(process.env.DARKNODE_FAST || process.env.NO_MOTION);
     // auto-connect MCP servers (non-blocking): the workspace's .nexus/mcp.json PLUS the
     // no-key servers that ship bundled with Nexus (fetch, memory, sequential-thinking,
