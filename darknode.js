@@ -2740,7 +2740,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/restart", "save session, restart Nexus with latest code, resume where you left off"],
       ["/update", "check for & install a newer Nexus (/update apply to install now)"],
       ["/autoupdate", "auto-update on launch: /autoupdate on | check | off"],
-      ["/next", "queue a prompt after the current turn (clear / rm <n> to manage)"],
+      ["/next", "queue a prompt after the current turn (Ctrl+X / Ctrl+S runs it now; clear / rm <n> to manage)"],
       ["/btw", "side question — answered from context, never saved to history"],
       ["/compat", "which features this model supports (nothing is hidden)"],
       ["/mode", "capability preset: /mode power|cost|speed|reset (model-compatible only)"],
@@ -3130,6 +3130,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           for (let k = 1; k < w.length; k++) L.push(qhl("  " + gray(w[k]) + (k === w.length - 1 && fits ? tag : "")));
           if (!fits) L.push(qhl("  " + gray(stripA(tag).trim())));
         });
+        if (busy) L.push(gray("  Ctrl+X / Ctrl+S runs " + (nextQueue.length > 1 ? "the next one" : "it") + " now"));
       }
       // live compaction line, styled like the working line (Claude Code's "Compacting conversation…")
       if (compact.on) {
@@ -4944,7 +4945,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const KS = [
           { title: "Send & edit", rows: [["Enter","send the message"],["Alt+Enter / Shift+Enter / Ctrl+J","insert a newline"],["Home / End","start / end of the line"],["Ctrl+A / Ctrl+E","start / end of the line"],["Ctrl+← / → · Alt+B / F","jump a word"],["Alt+Backspace · Ctrl+W","delete the word before the cursor"],["Ctrl+U / Ctrl+K","kill to start / end of line"],["Ctrl+Y","yank back what was killed"],["Ctrl+_","undo the last edit"]] },
           { title: "History", rows: [["Ctrl+P / Ctrl+N","previous / next command (your draft is kept)"],["Up / Down (while typing)","step through history"],["Ctrl+R","reverse-search history"]] },
-          { title: "Session", rows: [["Shift+Tab","cycle mode: normal / accept edits / plan / bypass"],["Ctrl+O","expand or collapse tool detail"],["Esc","interrupt a running turn"],["Esc Esc","rewind: undo last turn's file changes + edit the prompt (/redo re-applies)"],["Esc Esc","clear the input (idle)"],["Ctrl+C","interrupt, then clear, then exit"],["Ctrl+D","exit on an empty line"],["Ctrl+G","edit the message in $EDITOR"],["Ctrl+L","redraw the screen"]] },
+          { title: "Session", rows: [["Shift+Tab","cycle mode: normal / accept edits / plan / bypass"],["Ctrl+O","expand or collapse tool detail"],["Esc","interrupt a running turn"],["Ctrl+X / Ctrl+S","send a typed/queued prompt now (interrupts the current turn)"],["Esc Esc","rewind: undo last turn's file changes + edit the prompt (/redo re-applies)"],["Esc Esc","clear the input (idle)"],["Ctrl+C","interrupt, then clear, then exit"],["Ctrl+D","exit on an empty line"],["Ctrl+G","edit the message in $EDITOR"],["Ctrl+L","redraw the screen"]] },
           { title: "Scroll, select & copy", rows: [["Mouse wheel","scroll the transcript"],["Up / Down (empty input)","scroll line by line"],["PgUp / PgDn","scroll a page"],["Home","jump to the oldest"],["End","jump to the latest"],["Select with the mouse","just drag to select, then copy — the mouse is yours by default"],["/mouse on","re-enable click + wheel capture (selection then needs Shift+drag)"]] },
         ];
         transcript.push({ role: "system", dismissable: true, lines: helpLines(KS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }).concat(["", gray("  (Esc closes this)")]) });
@@ -5682,6 +5683,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
 
       // ---- during a turn: Esc / Ctrl+C interrupt; other keys buffer & queue ----
       if (busy) {
+        // Ctrl+X / Ctrl+S — "send now": queue the current draft (if any) at the
+        // front, then interrupt the running turn so it starts immediately instead
+        // of waiting for the turn to finish. With nothing drafted it just runs the
+        // existing queue now.
+        if (s === "\x18" || s === "\x13") {
+          const v = (composer.submit() || "").trim(); flush(); hIdx = composer.histIndex; input = ""; curPos = 0; menuSel = 0;
+          if (v) nextQueue.unshift(v);
+          if (!nextQueue.length) { pasteNotice = "nothing to send yet — type a prompt, then Ctrl+X/Ctrl+S to run it now"; render(); return; }
+          if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "sending the next queued prompt now — interrupting the current turn" }); }
+          render(); return;
+        }
         // the menu stays usable mid-turn: Esc dismisses it (not the turn), Tab
         // completes, Enter queues the highlighted command to run after the turn
         if (cm.length && s === "\x1b") { input = ""; curPos = 0; menuSel = 0; render(); return; }
