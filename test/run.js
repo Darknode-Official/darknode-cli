@@ -23,7 +23,7 @@ const { validatePolicy, validateTeam } = require("../lib/cli/validate");
 const { oneline, extractJson } = require("../lib/cli/text");
 const { frameDiff, diffTokens, wordHi } = require("../lib/cli/diff");
 const { renderAsk, askKey, normOptions } = require("../lib/cli/ask");
-const { stripAnsi, visLen, fitWidth, padRight, shortenPath, bootHeader, modelLabel, effortLabel, explainEngineError } = require("../lib/cli/tui-format");
+const { toolResultView, stripAnsi, visLen, fitWidth, padRight, shortenPath, bootHeader, modelLabel, effortLabel, explainEngineError } = require("../lib/cli/tui-format");
 const { TOP_PORTS, parsePorts, idHash, parseCve, cidrCalc, ipToInt, inCidr } = require("../lib/toolkit/scanutil");
 const { DONE_TOKEN, loopDecision, clampRounds, loopPrompt } = require("../lib/nexus/loop");
 const { semverGt, autoUpdateMode, shouldCheck } = require("../lib/nexus/update");
@@ -2458,6 +2458,20 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("all three listed by buildToolList", ["git_tool", "lint_format", "notebook_edit"].every((n) => NT2.buildToolList().some((t) => t.name === n)));
   }
 
+  group("tui-format (Claude Code-style tool result lines)");
+  { const T = (n, i, c, o) => toolResultView(n, i, c, o).lines.map((l) => l.text);
+    eq("Read counts numbered lines", T("Read", {}, "     1\tabc\n     2→def\n"), ["Read 2 lines"]);
+    eq("native read_file maps to Read", T("read_file", {}, { content: "a\nb\nc" }), ["Read 3 lines"]);
+    const b = toolResultView("Bash", {}, "a\n\nb\nc\nd");
+    eq("Bash preview skips blanks, folds the rest", [b.lines.map((l) => l.text), b.more], [["a", "b", "c"], 1]);
+    eq("Bash empty output", T("Bash", {}, ""), ["(No content)"]);
+    eq("native non-zero exit is an error", T("run_command", {}, { code: 3, output: "nope\n[diagnosis] hint" }), ["Error: Exit code 3", "nope"]);
+    eq("tool_use_error unwrapped", T("Edit", {}, "<tool_use_error>String not found</tool_use_error>", { isError: true }), ["Error: String not found"]);
+    eq("Grep keeps Found header", T("Grep", {}, "Found 2 files\na\nb"), ["Found 2 files"]);
+    eq("Glob with no hits", T("Glob", {}, "No files found"), ["No files found"]);
+    eq("TodoWrite checklist states", toolResultView("TodoWrite", { todos: [{ content: "x", status: "completed" }, { content: "y", status: "in_progress" }, { content: "z", status: "pending" }] }, "").lines.map((l) => l.s), ["done", "active", "todo"]);
+    eq("interrupted", T("Bash", {}, "", { interrupted: true }), ["Interrupted by user"]);
+  }
   group("tui-format (boot header + width fitting)");
   {
     const A = (s) => "\x1b[36m" + s + "\x1b[0m"; // a sample colored span
