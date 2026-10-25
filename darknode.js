@@ -54,7 +54,8 @@ const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint
 const { frameDiff, wordHi, wordFlags } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
-const { renderMd } = require("./lib/cli/md-render"); // answer markdown: highlighted code, tables, quotes, links
+const { renderMd } = require("./lib/cli/md-render");
+const { findLinks, openLink } = require("./lib/cli/links"); // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
 const { sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
@@ -3328,6 +3329,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const hint = () => {
       if (composer.searchMode) return yellow("reverse search: ") + bold(composer.searchQuery) + gray("   ctrl+r older · enter accept · esc cancel");
       if (pasteNotice) return yellow("paste: ") + pasteNotice;
+      if (linkNotice) return (linkNotice.ok ? green : yellow)(linkNotice.text);
       if (slashMatches().length || argMatches().length) return gray("↑↓ select · tab complete · enter run · esc dismiss");
       // persistent vim-mode tag whenever /vim is on (NORMAL is attention-grabbing)
       const vtag = composer.vim ? (composer.vimMode === "normal" ? bold(yellow("-- NORMAL --")) : green("-- INSERT --")) + gray(" · ") : "";
@@ -3406,6 +3408,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       return text.replace(/(^|\s)(@\S+)/g, (_, pre, at) => pre + blue(at));
     };
     let lastLines = null; // previous frame's rows, for line-level diffing
+    let linkZones = [], linkNotice = null; // transcript links under the mouse (rebuilt each render) + the brief "opened …" hint
     let clickZones = []; // rebuilt each render: [{row,c0,c1,kind,cmd}] clickable hitboxes (1-indexed screen coords)
     let navOpen = false; // is the ⋯ status menu expanded?
     let pendingAsk = null; // the model raised ask_user{question,options}: {question,options,sel,resolve} — the loop awaits the user's pick
@@ -3651,6 +3654,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         _thumbH = Math.max(1, Math.round((bodyRows * bodyRows) / lines.length));
         _thumbTop = Math.round((bodyRows - _thumbH) * (start / Math.max(1, lines.length - bodyRows)));
       }
+      linkZones = mouseOn ? findLinks(view.slice(0, bodyRows).map((r) => stripA(clip(r || "", C - 2))), C - 2).map((z) => ({ row: z.row + 1, c0: z.c0 + 2, c1: z.c1 + 2, kind: "link", url: z.url })) : [];
       for (let i = 0; i < bodyRows; i++) {
         const _row = " " + clip(view[i] || "", C - 2);
         if (_overflow) frame.push(padRightV(_row, C - 1) + (i >= _thumbTop && i < _thumbTop + _thumbH ? gray("┃") : dim(gray("│"))));
@@ -3715,7 +3719,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // menu (cost, savings & more) is the clickable "..." at the far right;
       // when open its buttons take over the row.
       {
-        clickZones = [];
+        clickZones = linkZones.slice();
         const row = frame.length + 1; // 1-indexed screen row of the footer
         if (navOpen) {
           let col = 2, str = " ";
@@ -5473,7 +5477,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const a = (arg || "").trim().toLowerCase();
         const on = a === "on" ? true : a === "off" ? false : !mouseOn;
         setMouse(on); const st = readGlobal("state.json", {}) || {}; st.mouse = on; writeGlobal("state.json", st);
-        transcript.push({ role: "system", text: on ? "mouse capture ON — wheel scrolls the transcript & slash menu. To select/copy text: /mouse off (or hold Shift while dragging)." : "mouse capture OFF — select & copy text natively now. Scroll with PgUp/PgDn · Home/End · ↑/↓ in the menu. /mouse on to re-enable wheel." });
+        transcript.push({ role: "system", text: on ? "mouse capture ON — wheel scrolls the transcript & slash menu, click a link, CVE, GHSA or CWE id to open it. To select/copy text: /mouse off (or hold Shift while dragging)." : "mouse capture OFF — select & copy text natively now. Scroll with PgUp/PgDn · Home/End · ↑/↓ in the menu. /mouse on to re-enable wheel." });
       }
       else if (cmd === "/offline") { offline = !offline; if (offline && (PAID[engine] || apiConfigured())) { if (apiConfigured()) delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = "ollama"; sess.ctxWindow = CTXW.ollama || 8192; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; cont = false; oMsgs.length = 1; transcript.push({ role: "system", text: "offline lock ON — switched to the local engine; cloud engines and remote APIs are blocked, nothing leaves this machine" }); } else transcript.push({ role: "system", text: offline ? "offline lock ON — cloud engines & remote APIs blocked; nothing leaves this machine" : "offline lock off — cloud engines allowed again" }); }
       else if (cmd === "/checkpoints") { transcript.push({ role: "system", text: checkpoints.length ? ("checkpoints (newest last):\n" + checkpoints.map((c, i) => "  #" + (i + 1) + "  " + c.label).join("\n") + "\n/undo restores the most recent") : "no checkpoints yet" }); }
@@ -6204,7 +6208,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
 
       // ---- mouse (SGR): drive menus / scroll / click zones ----
-      if (isMouse) { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (btn === 64) { if (cm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (cm.length) menuSel = Math.min(cm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; if (!busy) { input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; menuSel = 0; scroll = 0; handleSlash(z.cmd); } render(); } } } } return; }
+      if (isMouse) { const m = /\[<(\d+);(\d+);(\d+)([Mm])/.exec(s); if (m) { const btn = +m[1], mcol = +m[2], mrow = +m[3], press = m[4] === "M"; const mm = slashMatches(); const am = mm.length ? [] : argMatches(); const cm = mm.length ? mm : am; if (btn === 64) { if (cm.length) menuSel = Math.max(0, menuSel - 1); else scroll += 3; render(); } else if (btn === 65) { if (cm.length) menuSel = Math.min(cm.length - 1, menuSel + 1); else scroll = Math.max(0, scroll - 3); render(); } else if (btn === 0 && press) { const z = clickZones.find((z) => z.row === mrow && mcol >= z.c0 && mcol <= z.c1); if (z) { if (z.kind === "link") { const okd = openLink(z.url); linkNotice = { text: (okd ? "opened " : "can't open ") + z.url, ok: okd }; setTimeout(() => { linkNotice = null; render(); }, 3000); render(); } else if (z.kind === "toggle") { navOpen = true; render(); } else if (z.kind === "close") { navOpen = false; render(); } else if (z.kind === "run") { navOpen = false; if (!busy) { input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; menuSel = 0; scroll = 0; handleSlash(z.cmd); } render(); } } } } return; }
 
       // ---- mode / expand (don't touch the buffer) ----
       if (s === "\x1b[Z") { mode = (mode + 1) % MODES.length; saveSetting("mode", mode); render(); return; } // shift+tab
