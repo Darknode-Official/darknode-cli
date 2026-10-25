@@ -1326,6 +1326,14 @@ group("cost savers — squeeze + response cache");
   const sq2 = squeezeContext(twoFiles);
   ok("squeeze keeps distinct files with identical content (no false dedupe)", !sq2.text.includes("already shown above") && sq2.text.indexOf(body) !== sq2.text.lastIndexOf(body));
   ok("squeeze collapses blank runs + trailing spaces", squeezeContext("a  \n\n\n\nb").text === "a\n\nb");
+  { const C = require("../lib/nexus/costsave");
+    ok("strips ANSI colour codes", C.stripTermNoise("\x1b[32mok\x1b[0m") === "ok");
+    ok("keeps only the last progress-bar repaint", C.stripTermNoise(" 10%\r 50%\r100%\nnext") === "100%\nnext");
+    ok("CRLF line endings are not treated as redraws", C.stripTermNoise("a\r\nb\r\n") === "a\nb\n");
+    ok("source with an escaped x1b literal is untouched", C.stripTermNoise('const e = "\\x1b[0m";') === 'const e = "\\x1b[0m";');
+    ok("squeeze drops terminal noise from inlined logs", squeezeContext("\x1b[31merror\x1b[0m").text === "error");
+    ok("cache key ignores CRLF + trailing spaces", cacheKey("c", "m", "fix it  \r\n") === cacheKey("c", "m", "fix it"));
+    ok("cache key keeps interior spacing + case", cacheKey("c", "m", "a  b") !== cacheKey("c", "m", "a b") && cacheKey("c", "m", "Fix") !== cacheKey("c", "m", "fix")); }
   ok("squeeze leaves clean small text untouched (no savings)", squeezeContext("hello world").saved === 0);
   ok("cacheKey stable + sensitive to engine/model/prompt", cacheKey("ollama", "m", "p") === cacheKey("ollama", "m", "p") && cacheKey("ollama", "m", "p") !== cacheKey("ollama", "m2", "p") && cacheKey("ollama", "m", "p") !== cacheKey("ollama", "m", "p2"));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-cache-"));
