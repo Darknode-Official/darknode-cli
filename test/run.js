@@ -3035,6 +3035,106 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     });
   }
 
+  group("/cheap v2 savers — repeat-line collapse + read-only call memo");
+  {
+    const CS = require("../lib/nexus/costsave");
+    const L = "waiting for the database to accept connections";
+    const r = CS.collapseRepeats(["start", L, L, L, L, L, "end"].join("\n"));
+    eq("5 identical lines → 1 + exact count", r.text, ["start", L, "[previous line repeated 4 more times]", "end"].join("\n"));
+    eq("never lengthens: short lines whose note would be longer stay", CS.collapseRepeats("a\nok\nok\nok\nok\nb").text, "a\nok\nok\nok\nok\nb");
+    ok("reports tokens saved", r.saved > 0);
+    eq("3 repeats are left alone (below the threshold)", CS.collapseRepeats("a\nx\nx\nx\nb").text, "a\nx\nx\nx\nb");
+    eq("blank-line runs are left alone", CS.collapseRepeats("a\n\n\n\n\nb").text, "a\n\n\n\n\nb");
+    const res = { stdout: "ok\n" + "warn: x\n".repeat(10), content: "same\nsame\nsame\nsame\nsame" };
+    ok("collapseToolOutput shrinks command output", CS.collapseToolOutput(res) > 0 && /repeated 9 more/.test(res.stdout));
+    eq("file contents are never collapsed (edits need exact text)", res.content, "same\nsame\nsame\nsame\nsame");
+    const memo = CS.createToolMemo(), msgs = [], big = JSON.stringify({ hits: "x".repeat(300) });
+    eq("first read-only call passes through", memo.lookup("search", { pattern: "foo" }, big, msgs), null);
+    msgs.push({ role: "tool", content: big });
+    ok("identical repeat → pointer", /identical to the earlier search/.test(memo.lookup("search", { pattern: "foo" }, big, msgs) || ""));
+    eq("different args → no pointer", memo.lookup("search", { pattern: "bar" }, big, msgs), null);
+    msgs.push({ role: "tool", content: big });
+    memo.lookup("run_command", { command: "touch x" }, "{}", msgs); msgs.push({ role: "tool", content: "{}" });
+    eq("a mutating tool in between invalidates the memo", memo.lookup("search", { pattern: "foo" }, big, msgs), null);
+    msgs.push({ role: "tool", content: big });
+    msgs[msgs.length - 1].content = "[superseded]";
+    eq("earlier copy no longer in history → no pointer", memo.lookup("search", { pattern: "foo" }, big, msgs), null);
+    const small = memo.lookup("list_dir", { path: "." }, "[]", msgs); msgs.push({ role: "tool", content: "[]" });
+    eq("tiny results are never replaced", memo.lookup("list_dir", { path: "." }, "[]", msgs), null);
+    void small;
+  }
+
+  group("read_symbol — one definition instead of the whole file");
+  {
+    const RS = require("../lib/nexus/read-symbol");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rsym-")), rp = (p) => path.resolve(dir, p);
+    fs.writeFileSync(path.join(dir, "a.js"), [
+      "const x = 1;",
+      "// adds things",
+      "function add(a, b) {",
+      "  const re = /[{}]/g; // braces in a regex",
+      "  const s = \"}\";",
+      "  if (a) { return a + b; }",
+      "  return b;",
+      "}",
+      "function other() { return 2; }",
+    ].join("\n"));
+    let r = RS.readSymbolTool({ path: "a.js", name: "add" }, dir, rp);
+    eq("JS: doc comment through closing brace (regex + string braces skipped)", r.lines, "2-8");
+    ok("content is line-numbered", /^2  \/\/ adds things/.test(r.content) && /8  }$/.test(r.content));
+    eq("one-line function", RS.readSymbolTool({ path: "a.js", name: "other" }, dir, rp).lines, "9-9");
+    ok("unknown name suggests similar ones", /similar: add/.test(RS.readSymbolTool({ path: "a.js", name: "ad" }, dir, rp).error || ""));
+    fs.writeFileSync(path.join(dir, "m.py"), "import os\n\n@cache\ndef load(p,\n         q):\n    x = 1\n\n    return x\n\ndef after():\n    pass\n");
+    r = RS.readSymbolTool({ path: "m.py", name: "load" }, dir, rp);
+    eq("Python: decorator + multi-line signature + body by indentation", r.lines, "3-8");
+    ok("needs path and name", /needs \{path, name\}/.test(RS.readSymbolTool({ path: "a.js" }, dir, rp).error));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("json_query — one value from a JSON/JSONC file");
+  {
+    const JQ = require("../lib/nexus/json-query");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jq-")), rp = (p) => path.resolve(dir, p);
+    fs.writeFileSync(path.join(dir, "p.json"), JSON.stringify({ scripts: { test: "node t.js" }, deps: { "@a/b": "1.0.0", c: "2" }, items: [{ n: 1 }, { n: 2 }, { n: 3 }] }));
+    fs.writeFileSync(path.join(dir, "ts.json"), '{\n  // comment\n  "compilerOptions": { "strict": true, /* x */ "url": "http://a//b", },\n}\n');
+    const q = (f, query, extra) => JQ.jsonQueryTool(Object.assign({ path: f, query }, extra || {}), dir, rp);
+    eq("dotted path", q("p.json", "scripts.test").value, '"node t.js"');
+    eq("bracket key with @ and /", q("p.json", 'deps["@a/b"]').value, '"1.0.0"');
+    eq("negative index = from the end", q("p.json", "items[-1].n").value, "3");
+    eq("* maps over elements", JSON.parse(q("p.json", "items.*.n").value), [1, 2, 3]);
+    eq("keys_only lists keys", q("p.json", "deps", { keys_only: true }).keys, ["@a/b", "c"]);
+    ok("missing key lists the keys that exist", /keys there: scripts, deps, items/.test(q("p.json", "nope").error));
+    eq("JSONC: comments + trailing commas, // inside a string kept", q("ts.json", "compilerOptions.url").value, '"http://a//b"');
+    eq("parsePath", JQ.parsePath("a.b[0]['x.y'].*"), ["a", "b", 0, "x.y", "*"]);
+    ok("bad query is reported", /could not parse/.test(q("p.json", "a..b").error || ""));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("undo_edit — take back the agent's own last change to a file");
+  {
+    const { createEditUndo } = require("../lib/nexus/edit-undo");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "undo-")), f = path.join(dir, "x.txt"), g = path.join(dir, "new.txt");
+    fs.writeFileSync(f, "v1");
+    const u = createEditUndo();
+    let s = u.snapshot([f]); fs.writeFileSync(f, "v2"); eq("a real change is recorded", u.commit(s), 1);
+    s = u.snapshot([f]); fs.writeFileSync(f, "v3"); u.commit(s);
+    s = u.snapshot([f]); eq("a no-op write is not recorded", u.commit(s), 0);
+    ok("undo restores the previous version", u.undo(f).ok && fs.readFileSync(f, "utf8") === "v2");
+    ok("undo again steps further back", u.undo(f).ok && fs.readFileSync(f, "utf8") === "v1");
+    ok("nothing left to undo", /no edit of this file/.test(u.undo(f).error));
+    s = u.snapshot([f]); fs.writeFileSync(f, "agent"); u.commit(s); fs.writeFileSync(f, "user edit");
+    ok("refuses when the file changed since", /changed after that edit/.test(u.undo(f).error) && fs.readFileSync(f, "utf8") === "user edit");
+    ok("force restores anyway", u.undo(f, { force: true }).ok && fs.readFileSync(f, "utf8") === "v1");
+    s = u.snapshot([g]); fs.writeFileSync(g, "created"); u.commit(s);
+    ok("undoing a create deletes the file", u.undo(g).ok && !fs.existsSync(g));
+    const TG = require("../lib/nexus/tool-gates");
+    ok("plan mode blocks undo_edit (it writes)", TG.isPlanBlocked("undo_edit"));
+    ok("plan mode allows read_symbol + json_query", !TG.isPlanBlocked("read_symbol") && !TG.isPlanBlocked("json_query"));
+    const NT = require("../lib/nexus/native-tools"), sc = NT.TOOL_SCHEMAS;
+    ok("all three tools have schemas", ["read_symbol", "json_query", "undo_edit"].every((n) => sc[n] && sc[n].description));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
