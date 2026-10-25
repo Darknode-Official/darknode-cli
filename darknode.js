@@ -54,6 +54,7 @@ const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint
 const { frameDiff, wordHi, wordFlags } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
+const { renderMd } = require("./lib/cli/md-render"); // answer markdown: highlighted code, tables, quotes, links
 const { sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
@@ -2924,6 +2925,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // ---- inline markdown / command coloring ----
     const paintCode = (c) => (/(^|\s)(node|npm|npx|git|python3?|pip3?|bash|sh|cd|ls|cat|make|cargo|go|docker|curl|grep|sed|rm|mkdir|chmod|sudo)\b/.test(c) || /\s--?\w/.test(c)) ? blue(c) : mag(c);
     const colorMd = (line, inCode) => { if (inCode) return blue(line); const hm = line.match(/^(#{1,6})\s+(.*)/); if (hm) { const lvl = hm[1].length; const txt = hm[2].replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); return (lvl <= 2 ? bold(cyan("▍ ")) : "  ") + bold(cyan(txt)); } let s = line.replace(/\*\*([^*]+)\*\*/g, (_, c) => "\x1b[1m" + c.replace(/`([^`]+)`/g, (__, ic) => "\x1b[0m" + paintCode(ic) + "\x1b[1m") + "\x1b[0m").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); s = s.replace(/^(\s*)\d+\.\s/, (_, sp) => sp + cyan("• ")); return s.replace(/^(\s*[-*]\s)/, (_, b) => cyan(b.replace(/[-*]/, "•"))); };
+    // Rendered answer rows, memoised per text item: the frame redraws on every
+    // keystroke and spinner tick, so re-highlighting unchanged answers is waste.
+    const MDC = { inline: (l) => colorMd(l, false), gray, dim, mag, green, yellow, cyan, red, bold, italic: (x) => p("\x1b[3m", x), underline: (x) => p("\x1b[4m", x) };
+    const _mdMemo = new WeakMap();
+    const mdLines = (owner, text, w) => { const c = owner && _mdMemo.get(owner); if (c && c.w === w && c.text === text) return c.lines; const lines = renderMd(text, w, MDC); if (owner) _mdMemo.set(owner, { w, text, lines }); return lines; };
     const wrap = (text) => ansiWrap(text, Math.max(1, cols() - 4)); // ANSI-aware: measures visible width, never slices a color escape, carries color across lines
     // Rendered like Claude Code: gray ※, bold "recap:", italic body, then the disable hint.
     const recapLines = (t) => { const it = (x) => "\x1b[3m" + gray(x) + "\x1b[23m"; return wrap("recap: " + t + " (disable recaps in /config)").map((ln, j) => j ? "  " + it(ln) : gray("※") + " " + bold(gray("recap:")) + it(ln.slice(6))); };
@@ -3147,8 +3153,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           if (it.type === "text") {
             if (prevType) L.push("");
             const vis = it.full.slice(0, it.shown);
-            let inCode = false, first = true;
-            for (const ln of wrap(vis)) { const lead = first && ln.trim() ? "● " : "  "; if (ln.trim()) first = false; if (/^```/.test(ln.trim())) { inCode = !inCode; L.push(lead + gray(ln)); continue; } L.push(lead + colorMd(ln, inCode)); }
+            let first = true;
+            for (const ln of mdLines(it, vis, Math.max(1, cols() - 4))) { const lead = first && stripA(ln).trim() ? "● " : "  "; if (stripA(ln).trim()) first = false; L.push(lead + ln); }
             prevType = "text";
           } else if (it.type === "thinking") {
             if (prevType) L.push("");
@@ -3478,7 +3484,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       let ans;
       if (cur.a == null) ans = [gray(st.loading ? "thinking… answering from the conversation so far" : "…")];
       else if (isCmd) ans = ansiWrap(cur.a, w);
-      else { ans = []; let inCode = false; for (const ln of ansiWrap(cur.a, w)) { if (/^```/.test(ln.trim())) { inCode = !inCode; ans.push(gray(ln)); continue; } ans.push(colorMd(ln, inCode)); } }
+      else ans = mdLines(cur, cur.a, w).slice();
       while (ans.length > 1 && !stripA(ans[ans.length - 1]).trim()) ans.pop();
       const foot = 4; // rule + input + bottom + hint
       const bodyMax = Math.max(3, Math.min(ans.length, R - 4 - head.length - foot));
@@ -5847,7 +5853,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else return ""; // other CLI engines emit protocol JSON here — keep the "Nexus" default
         const cand = (raw || "").split("\n").map((x) => titleClean(x)).filter(Boolean);
         const bad = /\b(error|cannot|sorry|warning|usage|unable|invalid|here is|the name|i |as an|assistant)\b/i;
-        return cand.find((x) => { const w = x.split(/\s+/).length; return w >= 2 && w <= 6 && x.length >= 4 && x.length <= 48 && !bad.test(x); }) || "";
+        return cand.find((x) => { const w = x.split(/\s+/).length; return w >= 2 && w <= 6 && x.length >= 4 && x.length <= 48 && !bad.test(x) && !/[|{}()<>=;\[\]\\]/.test(x) && /\p{L}{3}/u.test(x); }) || ""; // a table row, code or markup is never a name (small local models answer with them)
       } catch (_) { return ""; }
     };
     const maybeAutoTitle = (force) => {
