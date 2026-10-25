@@ -6,6 +6,10 @@
  * Uses only Node.js built-ins. Copyright (c) 2026 Darknode. All rights reserved.
  * Use only on systems you own or are explicitly authorized to test.
  */
+// Restart-supervisor handshake: read it once, then scrub it from our env so it
+// never leaks into anything we spawn (engines, shell commands, a nested nexus) —
+// an inherited flag made a nested nexus's /restart exit with no supervisor to respawn it.
+const NEXUS_SUPERVISED = process.env.NEXUS_SUPERVISED === "1"; delete process.env.NEXUS_SUPERVISED;
 const net = require("net");
 const tls = require("tls");
 const http = require("http");
@@ -1877,7 +1881,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
             else if (c.type === "thinking" && c.thinking) { h.onThinking && h.onThinking(c.thinking); }
             else if (c.type === "tool_use") { h.onTool && h.onTool({ id: c.id, name: c.name, input: c.input || {} }); }
           }
-          if (ev.message.usage) h.onUsage && h.onUsage(ev.message.usage, ev.message.model, ev.parent_tool_use_id);
+          if (ev.message.usage) h.onUsage && h.onUsage(ev.message.usage, ev.message.model, ev.parent_tool_use_id, ev.message.id); // one assistant event per content block — all repeat the SAME message usage; the id lets the host count it once
         }
         else if (ev.type === "stream_event" && ev.event) { // live deltas from --include-partial-messages: feed the token meter mid-message, not just between whole messages
           const se = ev.event, d = se.delta;
@@ -3008,11 +3012,33 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       return transcript.length + "|" + cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + effort + "|" + engine + "|" + shownModel() + "|" + guard + "|" + (gitBranch || "") + "|" + mcpServers.filter((s) => s && !s.error).length + "|" + (_welcomeTip || "") + "|" + nextQueue.length + "/" + nextQueue.join("\u0001").length + "|" + last;
     };
     let _blCache = null, _blSig = "";
+    // Per-message memo for the BUSY path. The whole-transcript cache above is off
+    // while a turn runs (spinners, streaming), so each keystroke re-wrapped every
+    // message — ~240ms/key on a long session. A finished message renders the same
+    // until the width/colours/expand state change, so cache its lines per object
+    // and re-render only live ones (the running turn, running tools, text still
+    // revealing). WeakMap: dropped messages free their lines.
+    const _msgCache = new WeakMap();
+    const _msgSig = (m, g) => {
+      if (!m || m.role === "art" || (busy && m === cur())) return null;
+      let sg = g + "|" + (m.role || "") + "|" + (m.text == null ? -1 : String(m.text).length) + "|" + (Array.isArray(m.lines) ? m.lines.length + ":" + m.lines.join("").length : "") + "|" + (m.summary ? String(m.summary).length : 0) + "|" + (m.recap ? JSON.stringify(m.recap).length : 0) + "|" + (m.auto ? 1 : 0) + "|" + (m.before || 0);
+      if (m.items) for (const it of m.items) {
+        if (it.status === "run" || it.status === "wait" || (it.full != null && (it.shown | 0) < String(it.full).length)) return null; // still live
+        sg += "," + (it.type || "") + "." + (it.status || "") + "." + (it.full != null ? String(it.full).length : 0) + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? String(it.detail).length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0) + "." + (it.end || 0) + "." + (it.interrupted ? 1 : 0) + "." + (it.input ? JSON.stringify(it.input).length : 0);
+      }
+      return sg;
+    };
     const bodyLines = () => {
       const _sig = (busy || compact.on) ? null : _bodySig();
       if (_sig !== null && _blCache && _sig === _blSig) return _blCache;
       const L = [];
+      const _g = cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + A.cyan + "|" + GRAD.join(",") + "|" + effort + "|" + engine + "|" + guard;
+      let _pend = null; // the message rendered last iteration: store its lines once we know where they end (branches `continue`)
+      const _flush = () => { if (_pend) { _msgCache.set(_pend.m, { sig: _pend.sig, lines: L.slice(_pend.from) }); _pend = null; } };
       for (const m of transcript) {
+        _flush();
+        const _ms = _msgSig(m, _g);
+        if (_ms !== null) { const c = _msgCache.get(m); if (c && c.sig === _ms) { for (const x of c.lines) L.push(x); continue; } _pend = { m, sig: _ms, from: L.length }; }
         if (m.role === "art") {
           // Welcome card: product + tagline + version, a labelled session summary
           // (model/engine/project/context), and a two-column quick-start grid that
@@ -3170,6 +3196,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (m.recap && !(busy && m === cur())) recapLines(m.recap).forEach((x) => L.push(x));
         L.push("");
       }
+      _flush();
       // Idle home: while the chat is still empty (only the welcome card), fill the
       // screen below it with a gradient NEXUS wordmark, a few real starter prompts
       // and a live project pulse — so a fresh session reads as a product, not a void.
@@ -3272,7 +3299,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const fuzzyCmds = (q) => {
       q = q.toLowerCase(); const cmds = allCmds();
       const pre = cmds.filter((c) => c[0].startsWith(q));
-      if (pre.length) return pre;
+      if (pre.length) return pre.sort((a, b) => (b[0] === q) - (a[0] === q)); // an exact name always wins (typing /cheap must not run /cheaper)
       const needle = q.replace(/^\//, ""); if (!needle) return [];
       const scored = [];
       for (const c of cmds) {
@@ -3891,7 +3918,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }).replace(/(^|\s)@(\S+\.(?:png|jpe?g|gif|webp|bmp))\b/gi, (mm, pre, p) => {
         try { const fp = path.resolve(cwd, p); if (fs.statSync(fp).size > 6 * 1024 * 1024) return mm; const ext = p.split(".").pop().toLowerCase(); imgAttach.push({ b64: fs.readFileSync(fp).toString("base64"), mime: "image/" + (ext === "jpg" ? "jpeg" : ext), name: p }); return pre + "[attached image: " + p + "]"; } catch (_) { return mm; }
       });
-      if (imgAttach.length) transcript.push({ role: "system", text: "attached " + imgAttach.length + " image" + (imgAttach.length > 1 ? "s" : "") + (engine === "ollama" ? (apiConfigured() ? " → sent to the API model (needs a vision model)" : " → sent to the local model (needs a vision model, e.g. llama3.2-vision)") : " → the " + engine + " engine reads it from the path") });
+      if (imgAttach.length) transcript.push({ role: "system", text: "attached " + imgAttach.length + " image" + (imgAttach.length > 1 ? "s" : "") });
       let sendText = inlineAts(preText);
       if (pinned.size) { let pre = ""; for (const f of pinned) { try { pre += "\n\n--- pinned: " + f + " ---\n" + fs.readFileSync(path.resolve(cwd, f), "utf8").slice(0, 4000) + "\n--- end " + f + " ---"; } catch (_) {} } if (pre) sendText = pre + "\n\n" + sendText; }
       // Shell commands the user ran with ! since the last turn become context for
@@ -4006,20 +4033,25 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       };
       let lastCtx = 0; // context size from the latest main-thread API call this turn
       // Live token counter (same contract as every other engine: climbs while the
-      // reply streams). confOut = real output tokens locked in per finished message;
+      // reply streams). real output tokens are locked in per finished message (outById);
       // estOut = rough estimate for the message still streaming. liveOut = both.
-      let confOut = 0, estOut = 0;
-      const bumpLive = (t) => { estOut += Math.ceil(t.length / 4); sess.liveOut = confOut + estOut; };
+      // Real output is keyed by message id: Claude Code repeats a message's usage
+      // on every content-block event (thinking, text, tool_use), so summing each
+      // event double/triple-counted it, and zeroing the estimate on each one made
+      // the meter drop. The shown value never goes backwards within a turn.
+      const outById = new Map(); let estOut = 0, shownLive = 0, anyDelta = false, anonUse = 0;
+      const setLive = () => { let c = 0; for (const v of outById.values()) c += v; shownLive = Math.max(shownLive, c + estOut); sess.liveOut = shownLive; };
+      const bumpLive = (t) => { estOut += Math.ceil(t.length / 4); setLive(); };
       const _resumeSid = (engine === "claude" && oneShotRan && claudeSid) ? claudeSid : undefined; // recover the tracked session if a one-shot (/btw, /dream…) ran since the last turn
       oneShotRan = false;
       if (engine === "claude") {
         runClaudeStream(promptText, cwd, cont, {
           onInit: (ev) => { if (ev.model) sess.model = ev.model; if (ev.session_id) claudeSid = ev.session_id; },
           onRateLimit: (info) => { rate = info; },
-          onThinking: (t) => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; block.items.push(last); } last.full += t; bumpLive(t); renderSoon(); },
-          onText: (t) => { textItem().full += t; bumpLive(t); renderSoon(); },
-          onDelta: (t) => { bumpLive(t); renderSoon(); }, // mid-message delta: advance the live token estimate only (the whole text/thinking still lands via onText/onThinking)
-          onLiveTokens: (n) => { estOut = Math.max(estOut, n); sess.liveOut = confOut + estOut; renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate (never let it yank the counter backwards if the estimate ran ahead)
+          onThinking: (t) => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; block.items.push(last); } last.full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
+          onText: (t) => { textItem().full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
+          onDelta: (t) => { anyDelta = true; bumpLive(t); renderSoon(); }, // mid-message delta: advance the live token estimate only (the whole text/thinking still lands via onText/onThinking)
+          onLiveTokens: (n) => { estOut = Math.max(estOut, n); setLive(); renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate (never let it yank the counter backwards if the estimate ran ahead)
           onTool: (tu) => {
             const _item = { type: "tool", id: tu.id, name: tu.name, input: tu.input, label: toolLabel(tu.name, tu.input), detail: JSON.stringify(tu.input).slice(0, 400), status: "run", start: Date.now() };
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
@@ -4034,7 +4066,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if ((it.name === "Task" || it.name === "Agent") && activeAgents) activeAgents--; if (it._agId) { const rg = agents.find((x) => x.id === it._agId); if (rg && rg.status === "run") finishAgent(rg, tr.isError ? "fail" : "ok", resultText(tr.content)); } }
             render();
           },
-          onUsage: (u, _m, sub) => { confOut += (u.output_tokens || 0); estOut = 0; sess.liveOut = confOut; if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // lock in the real output tokens for the message that just finished (each agentic tool round is its own assistant message) and clear the streaming estimate; the next message's estimate climbs on top of this. lastCtx tracks the latest main-thread call's prompt = the real context size
+          onUsage: (u, _m, sub, mid) => { const k = mid || ("anon" + (++anonUse)); outById.set(k, Math.max(outById.get(k) || 0, u.output_tokens || 0)); estOut = 0; setLive(); if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // lock in the real output tokens for the message that just finished (each agentic tool round is its own assistant message) and clear the streaming estimate; the next message's estimate climbs on top of this. lastCtx tracks the latest main-thread call's prompt = the real context size
           onResult: (ev) => {
             const u = ev.usage || {};
             const newIn = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0);
@@ -5181,7 +5213,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         lean = false; effort = ""; minimizeCalls = false; stepCap = false; trimOutput = false; autoCompact = false; autoCompactAt = 0;
         saveSetting("cache", true); saveSetting("tightEdits", true);
         saveSetting("lean", false); saveSetting("effort", ""); saveSetting("minimizeCalls", false); saveSetting("stepCap", false); saveSetting("trimOutput", false); saveSetting("autoCompact", false); saveSetting("autoCompactAt", 0);
-        transcript.push({ role: "system", text: "cheap mode " + green("ON") + " — every token saver that keeps full quality:\n  " + green("•") + " surgical edits (change only what differs, never rewrite whole lines)\n  " + green("•") + " exact-repeat cache (free re-answers for unchanged read-only turns)\n  " + green("•") + " context de-dup, re-read supersession & unchanged-file skip (always on)\n  " + green("•") + " Claude prompt-caching (automatic on the claude engine)\n  " + gray("quality-reducing knobs (lean, low effort, minimizeCalls, stepCap, trimOutput, autoCompact) were turned OFF.") + "\n  " + gray("want deeper cuts (with a small quality trade-off)? /cowork " + (cowork.on ? cowork.strong : "opus") + " ollama:<local-model>, or /lean.") }); }
+        transcript.push({ role: "system", text: "cheap mode " + green("ON") + " — every token saver that keeps full quality:\n  " + green("•") + " surgical edits (change only what differs, never rewrite whole lines)\n  " + green("•") + " exact-repeat cache (free re-answers for unchanged read-only turns)\n  " + green("•") + " context de-dup, re-read supersession & unchanged-file skip (always on)\n  " + green("•") + " terminal-noise strip: colour codes + progress-bar redraws dropped from pasted logs (always on)\n  " + green("•") + " cache ignores formatting-only differences (CRLF, trailing spaces)\n  " + green("•") + " Claude prompt-caching (automatic on the claude engine)\n  " + gray("quality-reducing knobs (lean, low effort, minimizeCalls, stepCap, trimOutput, autoCompact) were turned OFF.") + "\n  " + gray("want deeper cuts (with a small quality trade-off)? /cowork " + (cowork.on ? cowork.strong : "opus") + " ollama:<local-model>, or /lean.") }); }
       else if (cmd === "/estimate") { if (!argstr) transcript.push({ role: "system", text: "usage: /estimate <prompt> — rough token/cost estimate before you send it" }); else if (!PAID[engine]) transcript.push({ role: "system", text: "local engine — free (no token charges)" }); else { const inTok = Math.ceil(argstr.length / 4) + sess.ctxUsed; const outEst = lean ? 400 : 900; const mdl = cowork.on ? cowork.strong : sess.model; const pr = priceOf(mdl); const cost = (inTok / 1e6) * pr.in + (outEst / 1e6) * pr.out; transcript.push({ role: "system", text: "estimate on " + mdl + ": ~" + fmtK(inTok) + " input (your prompt + ~" + fmtK(sess.ctxUsed) + " current context) + ~" + outEst + " output  →  ~$" + cost.toFixed(4) + " (rough; " + (lean ? "lean on" : "add /lean to cut output") + ")" }); } }
       else if (cmd === "/models") {
         transcript.push({ role: "system", text: "checking local models…" }); render();
@@ -5442,7 +5474,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // Already running under a restart supervisor? Just exit with the restart
           // code and let it re-spawn fresh code. This is what stops every /restart
           // from stacking another idle wrapper process on top of the last.
-          if (process.env.NEXUS_SUPERVISED === "1") { process.exit(75); return; }
+          if (NEXUS_SUPERVISED) { process.exit(75); return; }
           const cp = require("child_process");
           // Rebuild a minimal, launch-mode-agnostic command instead of replaying
           // process.argv: that replay differs across the `darknode`/`nexus` bins,
