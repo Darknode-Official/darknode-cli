@@ -2173,11 +2173,7 @@ async function deviceTool(name, a, cwd) {
   const SKIP = /(^|\/)(\.git|node_modules|dist|build|\.nexus|\.cache)(\/|$)/;
   if (name === "search" || name === "grep") return require("./lib/nexus/search").searchTool(a, cwd, rp);
   if (name === "find" || name === "find_files" || name === "glob") return require("./lib/nexus/search").findTool(a, cwd, rp);
-  if (name === "http_fetch" || name === "web_fetch" || name === "fetch_url" || name === "http") {
-    const url = a.url; if (!url) return { error: "http_fetch needs a url" };
-    if (_ssrfLocal(url)) return { error: "http_fetch blocked: refusing to reach a local/private/link-local address (SSRF guard — protects cloud metadata and internal services). If you intend to hit a local service, use run_command (e.g. curl) so it passes through the shell guard." };
-    return await new Promise((resolve) => { try { const lib = String(url).startsWith("https") ? require("https") : require("http"); const req = lib.request(url, { method: a.method || "GET", headers: a.headers || {}, timeout: 15000 }, (res) => { let d = ""; res.on("data", (c) => { if (d.length < 200000) d += c; }); res.on("end", () => resolve({ status: res.statusCode, contentType: res.headers["content-type"], body: d.slice(0, 20000) })); }); req.on("timeout", () => { req.destroy(); resolve({ error: "timeout" }); }); req.on("error", (e) => resolve({ error: e.message })); if (a.body != null) req.write(typeof a.body === "string" ? a.body : JSON.stringify(a.body)); req.end(); } catch (e) { resolve({ error: e.message }); } });
-  }
+  if (name === "http_fetch" || name === "web_fetch" || name === "fetch_url" || name === "http") return await require("./lib/nexus/http-fetch").httpFetchTool(a, { isLocal: _ssrfLocal }); // redirects re-checked by the SSRF guard on every hop
   if (name === "sysinfo" || name === "system_info") {
     let disk = ""; try { disk = _cp.execSync("df -h " + JSON.stringify(cwd) + " 2>/dev/null", { encoding: "utf8" }).trim().split("\n").slice(-1)[0]; } catch (_) {}
     const c = os.cpus()[0] || {};

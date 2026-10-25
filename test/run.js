@@ -3296,6 +3296,40 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  group("http_fetch — redirects re-checked by the SSRF guard, HTML as text, whole UTF-8");
+  {
+    const HF = require("../lib/nexus/http-fetch");
+    const http = require("http");
+    const srv = http.createServer((req, res) => {
+      if (req.url === "/r1") { res.writeHead(302, { location: "/page" }); return res.end(); }
+      if (req.url === "/evil") { res.writeHead(301, { location: "http://blocked.internal/latest/meta-data" }); return res.end(); }
+      if (req.url === "/page") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end("<html><head><title>Page</title><script>x()</script></head><body><p>héllo wörld ✓</p><a href=\"/next\">Next</a></body></html>"); }
+      if (req.url === "/img") { res.writeHead(200, { "content-type": "image/png" }); return res.end(Buffer.alloc(300)); }
+      if (req.url === "/big") { res.writeHead(200, { "content-type": "text/plain" }); return res.end("x".repeat(25000)); }
+      // multi-byte character split across two chunks
+      if (req.url === "/split") { res.writeHead(200, { "content-type": "text/plain" }); const b = Buffer.from("añb"); res.write(b.subarray(0, 2)); setTimeout(() => res.end(b.subarray(2)), 20); return; }
+      res.writeHead(404); res.end();
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    const base = "http://127.0.0.1:" + srv.address().port;
+    const deps = { isLocal: (u) => /blocked\.internal/.test(u) }; // the real guard would also block 127.0.0.1; here only the redirect target is "private"
+    let r = await HF.httpFetchTool({ url: base + "/r1" }, deps);
+    ok("redirect followed to the final page", r.status === 200 && r.finalUrl === base + "/page");
+    ok("HTML → readable text: title, words, absolute link; no script", /^# Page/.test(r.body) && /héllo wörld ✓/.test(r.body) && r.body.includes("[Next](" + base + "/next)") && !/x\(\)/.test(r.body));
+    ok("raw:true keeps the markup", /<script>/.test((await HF.httpFetchTool({ url: base + "/page", raw: true }, deps)).body));
+    r = await HF.httpFetchTool({ url: base + "/evil" }, deps);
+    ok("a redirect to a blocked host is refused (SSRF via redirect)", /blocked/.test(r.error) && /via a redirect/.test(r.error));
+    r = await HF.httpFetchTool({ url: base + "/img" }, deps);
+    ok("binary is described, not dumped", r.binary === true && r.bytes === 300 && r.body === undefined);
+    r = await HF.httpFetchTool({ url: base + "/big" }, deps);
+    ok("a cut body says so", r.body.length === 20000 && /of 25000 chars/.test(r.truncated));
+    eq("UTF-8 split across chunks decodes whole", (await HF.httpFetchTool({ url: base + "/split" }, deps)).body, "añb");
+    ok("non-http schemes refused", /only http/.test((await HF.httpFetchTool({ url: "file:///etc/passwd" }, deps)).error));
+    const { isLocalTarget } = require("../lib/governance/default-guard");
+    ok("the real guard blocks cloud metadata", /SSRF/.test((await HF.httpFetchTool({ url: "http://169.254.169.254/" }, { isLocal: isLocalTarget })).error));
+    srv.close();
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
