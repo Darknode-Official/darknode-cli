@@ -3344,6 +3344,24 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("dice similarity", E.dice("hello world", "hello wrld") > 0.8 && E.dice("abc", "xyz") === 0);
   }
 
+  // ── coderShell: closed stdin, tree kill on timeout/interrupt, utf8, exit codes ──
+  if (process.platform !== "win32") {
+    const { coderShell } = require("../lib/nexus/shell-run");
+    const os = require("os");
+    const r1 = await coderShell("read x; echo got:[$x]", os.tmpdir());
+    ok("stdin is closed — a prompt gets EOF, no hang", r1.code === 0 && /got:\[\]/.test(r1.output));
+    const t0 = Date.now();
+    const r2 = await coderShell("sleep 30 & echo started; wait", os.tmpdir(), { timeoutMs: 1000 });
+    ok("timeout returns promptly even with a child holding the pipe", Date.now() - t0 < 5000 && r2.timedOut === true && r2.code === 124);
+    ok("timeout note keeps the output and points at run_background", /^started/.test(r2.output) && /timed out after 1s/.test(r2.output) && /run_background/.test(r2.output));
+    const ctl = { stopped: false }; setTimeout(() => { ctl.stopped = true; }, 300);
+    const r3 = await coderShell("sleep 30", os.tmpdir(), { ctl });
+    ok("interrupt via ctl kills it", r3.interrupted === true && r3.code === 130 && /interrupted/.test(r3.output));
+    eq("exit code passes through", (await coderShell("exit 3", os.tmpdir())).code, 3);
+    ok("utf8 survives chunking", /héllo — ✓/.test((await coderShell("printf 'h\\303\\251llo \\342\\200\\224 \\342\\234\\223'", os.tmpdir())).output));
+    ok("git never prompts", /^0$/m.test((await coderShell("echo $GIT_TERMINAL_PROMPT", os.tmpdir())).output));
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
