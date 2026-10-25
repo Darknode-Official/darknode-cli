@@ -2148,7 +2148,7 @@ const { autoReview } = require("./lib/nexus/code-review-auto"); // fast rule-bas
 const { explainDiff } = require("./lib/nexus/code-diff-explain"); // semantic diff explainer
 const { generateTests } = require("./lib/nexus/smart-test"); // structure-aware test scaffolder
 const { MCP_CATALOG, catalogGet, isBundled, bundledSpecs, addServerToConfig, removeServerFromConfig } = require("./lib/nexus/mcp-catalog"); // one-command + bundled MCP servers (lib/mcp-catalog.js)
-const { squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats, supersedeReread } = require("./lib/nexus/costsave"); // extra cost savers (lib/costsave.js)
+const { squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats, supersedeReread, collapseToolOutput, createToolMemo } = require("./lib/nexus/costsave"); // extra cost savers (lib/costsave.js)
 const CACHE_TTL = 24 * 3600 * 1000; // response-cache entries expire after 24h
 const { TAGS: TODO_TAGS, scanTree: scanTodos, summarizeTodos, rankTodos } = require("./lib/nexus/todos"); // tech-debt marker scanner (lib/nexus/todos.js)
 const { summarizeStats, rankedLangs, scanStats } = require("./lib/nexus/codestats"); // codebase overview (lib/nexus/codestats.js)
@@ -2740,7 +2740,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     if (S.mode != null && typeof S.mode === "number" && S.mode >= 0 && S.mode <= 2) mode = S.mode; // restore last mode (shift+tab)
     if (S.model && engine === "claude") { sess.model = S.model; sess.userModel = true; } // restore the saved /model choice (the init event replaces it with the resolved id)
     const READONLY_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"]; // disallowed to enforce read-only (plan mode / /bench)
-    const impact = { localTurns: 0, cloudTurns: 0, localTok: 0, cloudInTok: 0, cloudOutTok: 0, cloudCost: 0, ctxSavedTok: 0, coworkSaved: 0, delegated: 0, cachedHits: 0, cachedSaved: 0, squeezeTok: 0 }; // Impact Receipt tallies
+    const impact = { localTurns: 0, cloudTurns: 0, localTok: 0, cloudInTok: 0, cloudOutTok: 0, cloudCost: 0, ctxSavedTok: 0, coworkSaved: 0, delegated: 0, cachedHits: 0, cachedSaved: 0, squeezeTok: 0, repeatTok: 0, memoTok: 0, sideSkipped: 0 }; // Impact Receipt tallies
     const sessStart = Date.now();             // wall-clock start of this TUI session (dashboard uptime)
     const sessFiles = new Set();              // every repo-relative file the agent touched this session (for the dashboard)
     const toolUse = Object.create(null);      // tool name -> call count this session (for the dashboard)
@@ -2840,7 +2840,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/ensemble", "all engines answer, then synthesize the best"], ["/settings", "all options, neatly arranged (alias /options /config)"], ["/jobs", "background commands the agent started (run_background)"], ["/loop", "autonomous goal loop: /loop [-n rounds] <goal> until GOAL-DONE"], ["/team", "multi-model workspace: architect + builder + reviewer, loops to PASS"], ["/policy", "show the enterprise security policy (org + local)"], ["/audit", "audited tool actions · /audit verify (tamper check)"], ["/bench", "speed / tokens / cost table per engine"], ["/explain", "explain the diff or a file in plain English"], ["/test", "generate & run unit tests for a file"], ["/refactor", "restructure code for clarity without changing behavior"], ["/migrate", "migrate code: /migrate <from> to <to>"], ["/pr", "AI-write a PR title+body from the diff and open it (gh)"],
       ["/index", "index the repo for local auto-context"], ["/map", "show the repo map (file+symbol outline); /map on|off"], ["/verify", "detect + run this project's tests/build"], ["/radar", "codebase complexity + hotspot map"], ["/review-fast", "fast rule-based review of changed code (no AI)"], ["/diffexplain", "explain the current git diff"], ["/testgen", "scaffold tests for a function/file"], ["/snippet", "save / use a prompt macro"], ["/snippets", "list saved prompt macros"],
       ["/plan", "make & run an editable task checklist"], ["/git", "branch, status & recent commits"], ["/blame", "who last changed a file's lines"],
-      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "max token savings with ZERO quality loss"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens)"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max|ultracode)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
+      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "max token savings with ZERO quality loss (status · off)"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens)"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max|ultracode)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
       ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "session savings (tokens & cost avoided)"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "Nexus docs: /docs <topic> or /docs <words> to search every command & key"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
       ["/tree", "show the project file tree"], ["/theme", "change the color theme"],
       ["/color", "set the accent color · /color <name|0-255|#hex> · /color reset"], ["/colors", "list accent colors"], ["/gradient", "set the logo gradient · /gradient <theme|reset>"], ["/mouse", "toggle mouse capture · /mouse off to select & copy text"],
@@ -3387,6 +3387,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       "/color": () => Object.keys(COLORS).map((n) => [n, "\x1b[" + COLORS[n] + "m█████\x1b[0m"]),
       "/gradient": () => Object.keys(THEMES).map((t) => [t, THEMES[t].grad.map((g) => "\x1b[" + g + "m█\x1b[0m").join("")]),
       "/style": () => [["default", ""], ["concise", "minimal"], ["explanatory", "detailed"], ["review", "code review"], ["tdd", "test-driven"], ["secure", "security-focused"], ["teacher", "educational"]],
+      "/cheap": () => [["status", "what each saver did this session"], ["off", "undo the preset (cache + local titles off)"]],
       "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"], ["xhigh", "harder problems"], ["max", "maximum thinking"], ["ultracode", "max + multi-agent workflows"]],
       "/guard": () => [["enforce", "block destructive commands"], ["warn", "warn but allow"], ["off", "no safety checks"]],
       "/marketplace": () => [["list", "installed packages"], ["install", "install from path/URL"], ["remove", "uninstall a package"], ["init", "scaffold a publishable package"]],
@@ -4224,7 +4225,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // later turn either, not just within one turn. Safe because doCompact
           // clears it whenever it trims oMsgs — so we never tell the model a file
           // is "already in context" after that content was pruned away.
-          let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = sess.readCache || (sess.readCache = {}); const fileSnap = sess.fileSnap || (sess.fileSnap = new Map());
+          let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = sess.readCache || (sess.readCache = {}); const fileSnap = sess.fileSnap || (sess.fileSnap = new Map()); const toolMemo = createToolMemo(); // per turn: the user may edit files between turns
           const loopGuard = makeLoopGuard(); // break the agent out of repeat/oscillation stalls
           const stepLimit = lean ? 12 : (stepCap ? 20 : 100000); // step cap is opt-in: off by default = run until the model stops (lean keeps its own 12 cap)
           const turnStartTok = sess.outTok;
@@ -4371,7 +4372,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (hooks && !blocked) try { runHooks(hooks, "PostToolUse", { TOOL_NAME: name, TOOL_ARGS: JSON.stringify(a), TOOL_RESULT: JSON.stringify(result).slice(0, 2000) }, cwd); } catch (_) {}
             card.status = result.error ? "err" : "ok"; card.end = Date.now(); card.result = result; card.detail = oneline(resultText(JSON.stringify(result)), 260);
             if (a.__act && !blocked) { if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.__act.path, cmd: a.__act.command, status: result && result.error ? "error" : "ok" }); if ((a.__act.type === "write" || a.__act.type === "edit") && result && !result.error) filesThisTurn++; }
-            const obs = JSON.stringify(result).slice(0, 14000);
+            if (!blocked) impact.repeatTok += collapseToolOutput(result); // N identical output lines → 1 + exact count (lossless)
+            let obs = JSON.stringify(result).slice(0, 14000);
+            { const ptr = toolMemo.lookup(name, a, obs, oMsgs); if (ptr) { impact.memoTok += Math.ceil((obs.length - ptr.length) / 4); obs = ptr; } } // same read-only call, nothing changed → point at the earlier copy
             oMsgs.push({ role: "tool", content: obs }); sess.inTok += Math.ceil(obs.length / 4);
             // Lossless context compression: a FRESH full read of a file makes any
             // earlier full copy of that same file in history pure waste — the model
@@ -5327,13 +5330,29 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
       else if (cmd === "/cheap") {
         // Max LOSSLESS savings: turn on every quality-safe saver and turn OFF the
-        // lossy knobs, so /cheap can never degrade output. (Lossless: /cache,
-        // surgical edits. Always-on lossless savers run regardless.)
-        cacheOn = true; tightEdits = true;
-        lean = false; effort = ""; minimizeCalls = false; stepCap = false; trimOutput = false; autoCompact = false; autoCompactAt = 0;
-        saveSetting("cache", true); saveSetting("tightEdits", true);
-        saveSetting("lean", false); saveSetting("effort", ""); saveSetting("minimizeCalls", false); saveSetting("stepCap", false); saveSetting("trimOutput", false); saveSetting("autoCompact", false); saveSetting("autoCompactAt", 0);
-        transcript.push({ role: "system", text: "cheap mode " + green("ON") + " — every token saver that keeps full quality:\n  " + green("•") + " surgical edits (change only what differs, never rewrite whole lines)\n  " + green("•") + " exact-repeat cache (free re-answers for unchanged read-only turns)\n  " + green("•") + " context de-dup, re-read supersession & unchanged-file skip (always on)\n  " + green("•") + " terminal-noise strip: colour codes + progress-bar redraws dropped from pasted logs (always on)\n  " + green("•") + " cache ignores formatting-only differences (CRLF, trailing spaces)\n  " + green("•") + " Claude prompt-caching (automatic on the claude engine)\n  " + gray("quality-reducing knobs (lean, low effort, minimizeCalls, stepCap, trimOutput, autoCompact) were turned OFF.") + "\n  " + gray("want deeper cuts (with a small quality trade-off)? /cowork " + (cowork.on ? cowork.strong : "opus") + " ollama:<local-model>, or /lean.") }); }
+        // lossy knobs, so /cheap can never degrade output. /cheap status reports
+        // what each saver did this session; /cheap off undoes the preset.
+        const sub = (arg || "").trim().toLowerCase();
+        if (sub === "off") { cacheOn = false; cheapSide = false; saveSetting("cache", false); saveSetting("cheapSide", false); }
+        else if (sub !== "status") {
+          cacheOn = true; tightEdits = true; cheapSide = true;
+          lean = false; effort = ""; minimizeCalls = false; stepCap = false; trimOutput = false; autoCompact = false; autoCompactAt = 0;
+          saveSetting("cache", true); saveSetting("tightEdits", true); saveSetting("cheapSide", true);
+          saveSetting("lean", false); saveSetting("effort", ""); saveSetting("minimizeCalls", false); saveSetting("stepCap", false); saveSetting("trimOutput", false); saveSetting("autoCompact", false); saveSetting("autoCompactAt", 0);
+        }
+        const on = cacheOn && tightEdits && cheapSide, tk = (n) => n ? gray("  ~" + fmtK(n) + " tok saved") : "";
+        const row = (st, label, extra) => "  " + (st === true ? green("●") : st === false ? gray("○") : cyan("◆")) + " " + label + (extra || "");
+        const lossy = [["lean", lean], ["effort " + effort, effort === "low" || effort === "minimal"], ["minimizeCalls", minimizeCalls], ["stepCap", stepCap], ["trimOutput", trimOutput], ["autoCompact", autoCompact]].filter((x) => x[1]).map((x) => x[0]);
+        transcript.push({ role: "system", text: "cheap mode " + (on ? green("ON") : sub === "off" ? red("OFF") : yellow("PARTIAL")) + " — token savers that keep full quality (" + green("●") + " on  " + gray("○") + " off  " + cyan("◆") + " always on):\n" + [
+          row(tightEdits, "surgical edits — change only what differs, never rewrite whole lines"),
+          row(cacheOn, "exact-repeat cache — free re-answers for unchanged read-only turns", impact.cachedHits ? gray("  " + impact.cachedHits + " hit" + (impact.cachedHits === 1 ? "" : "s") + " · $" + impact.cachedSaved.toFixed(4) + " saved") : ""),
+          row(cheapSide, "local tab titles + recaps — no extra Claude Code session per title/recap", impact.sideSkipped ? gray("  " + impact.sideSkipped + " call" + (impact.sideSkipped === 1 ? "" : "s") + " skipped") : ""),
+          row(null, "context de-dup, re-read supersession, unchanged-file skip", tk(impact.squeezeTok)),
+          row(null, "repeated output lines → one line + exact count", tk(impact.repeatTok)),
+          row(null, "repeated read-only tool calls → pointer to the identical earlier result", tk(impact.memoTok)),
+          row(null, "terminal-noise strip — colour codes + progress-bar redraws dropped from logs"),
+          row(null, "prompt caching (automatic on the claude engine) — /warm shows the countdown"),
+        ].join("\n") + "\n  " + (lossy.length ? yellow("quality-reducing knobs still ON: " + lossy.join(", ") + " — /cheap turns them off") : gray("quality-reducing knobs (lean, low effort, minimizeCalls, stepCap, trimOutput, autoCompact) are OFF.")) + "\n  " + gray("/cheap status · /cheap off · deeper cuts with a small quality trade-off: /cowork " + (cowork.on ? cowork.strong : "opus") + " ollama:<local-model>, or /lean.") }); }
       else if (cmd === "/estimate") { if (!argstr) transcript.push({ role: "system", text: "usage: /estimate <prompt> — rough token/cost estimate before you send it" }); else if (!PAID[engine]) transcript.push({ role: "system", text: "local engine — free (no token charges)" }); else { const inTok = Math.ceil(argstr.length / 4) + sess.ctxUsed; const outEst = lean ? 400 : 900; const mdl = cowork.on ? cowork.strong : sess.model; const pr = priceOf(mdl); const cost = (inTok / 1e6) * pr.in + (outEst / 1e6) * pr.out; transcript.push({ role: "system", text: "estimate on " + mdl + ": ~" + fmtK(inTok) + " input (your prompt + ~" + fmtK(sess.ctxUsed) + " current context) + ~" + outEst + " output  →  ~$" + cost.toFixed(4) + " (rough; " + (lean ? "lean on" : "add /lean to cut output") + ")" }); } }
       else if (cmd === "/models") {
         transcript.push({ role: "system", text: "checking local models…" }); render();
@@ -5788,7 +5807,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const first = c(u[0].text), last = c(u[u.length - 1].text);
       return "First request: " + first + (u.length > 1 && last !== first ? "\nCurrent focus: " + last : "");
     };
+    // /cheap: on the claude engine each title/recap call starts a whole Claude Code
+    // session (its system prompt alone is thousands of tokens), so cheap mode names
+    // the tab from the request's own words and uses the extractive recap instead.
+    let cheapSide = settingsStore.getSaved("cheapSide") === true;
+    const TITLE_SKIP = /^(the|a|an|and|or|to|of|in|on|for|with|my|me|i|it|this|that|is|are|be|can|could|would|you|please|pls|plz|make|do|just|some|so|now|also|then|keep|let|lets|help|want|need|go|ahead|hey|hi)$/i;
+    const localTitle = (digest) => { const first = (String(digest).match(/First request: ([^\n]*)/) || [])[1] || ""; const w = first.replace(/[^\p{L}\p{N}\s\/.-]+/gu, " ").split(/\s+/).filter((x) => x.length > 1 && !TITLE_SKIP.test(x) && !/^[\/@.]/.test(x)).slice(0, 4); return w.length >= 2 ? w.map((x) => x[0].toUpperCase() + x.slice(1)).join(" ") : ""; };
     const genAiTitle = async (digest) => {
+      if (cheapSide && engine === "claude") { impact.sideSkipped++; return localTitle(digest); }
       const prompt =
         "Name this coding session for a terminal tab. Reply with ONLY the name.\n" +
         "Rules: 2 to 5 words, Title Case, specific and concrete — name the actual feature, file, tool, bug, or subject. " +
@@ -5824,6 +5850,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const recapClean = (s) => String(s || "").replace(/\x1b\[[0-9;]*m/g, "").replace(/[*`#>]+/g, "").replace(/^\s*(recap|summary)\s*[:\-]\s*/i, "").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/).filter((x) => !/\?["')]*$/.test(x)).join(" "); // a recap only reports - drop any question
     const extractRecap = (reply) => { const paras = String(reply || "").replace(/\x1b\[[0-9;]*m/g, "").split(/\n\s*\n/).map((x) => x.trim()).filter((x) => x && !/^[|`\-*#]/.test(x)); const p = paras[0] || ""; const m = p.match(/^.{20,240}?[.!?](\s|$)/); return recapClean(m ? m[0] : p.slice(0, 200)); };
     const genRecap = async (brief) => {
+      if (cheapSide && engine === "claude") { impact.sideSkipped++; return ""; } // callers fall back to the extractive recap
       const prompt =
         "Write a recap of this finished coding task for the developer, who may have stepped away. Reply with ONLY the recap.\n" +
         "Rules: address the developer as \"you\". Start with what they asked for (\"You wanted ...\"), then what is now done and where (name the files, feature, or fix), " +
