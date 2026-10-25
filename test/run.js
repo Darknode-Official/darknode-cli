@@ -23,7 +23,7 @@ const { validatePolicy, validateTeam } = require("../lib/cli/validate");
 const { oneline, extractJson } = require("../lib/cli/text");
 const { frameDiff, diffTokens, wordHi } = require("../lib/cli/diff");
 const { renderAsk, askKey, normOptions } = require("../lib/cli/ask");
-const { toolResultView, stripAnsi, visLen, fitWidth, ansiWrap, padRight, shortenPath, bootHeader, modelLabel, effortLabel, explainEngineError } = require("../lib/cli/tui-format");
+const { sanitizeTerm, toolResultView, stripAnsi, visLen, fitWidth, ansiWrap, padRight, shortenPath, bootHeader, modelLabel, effortLabel, explainEngineError } = require("../lib/cli/tui-format");
 const { TOP_PORTS, parsePorts, idHash, parseCve, cidrCalc, ipToInt, inCidr } = require("../lib/toolkit/scanutil");
 const { DONE_TOKEN, loopDecision, clampRounds, loopPrompt } = require("../lib/nexus/loop");
 const { semverGt, autoUpdateMode, shouldCheck } = require("../lib/nexus/update");
@@ -718,6 +718,10 @@ group("render helpers (frameDiff + wordHi) — the trickiest pure algorithms");
   const prose = "The quick brown fox jumps over the lazy dog and then keeps running across the whole meadow without ever stopping.";
   let wrapParity = true; for (let w = 4; w <= 60; w += 3) if (JSON.stringify(ansiWrap(prose, w)) !== JSON.stringify(oldWrap(prose, w))) wrapParity = false;
   ok("ansiWrap matches the plain wrapper on prose at every width", wrapParity);
+  ok("sanitizeTerm keeps SGR colour", sanitizeTerm("a\x1b[31mb\x1b[0m") === "a\x1b[31mb\x1b[0m");
+  ok("sanitizeTerm drops clears, cursor moves, OSC title/hyperlinks, C0/C1", sanitizeTerm("x\x1b[2J\x1b[5;1H\x1b]0;t\x07\x1b]8;;u\x1b\\y\r\b\x07\x9bz") === "xyz");
+  ok("sanitizeTerm keepNl keeps newlines/tabs, otherwise flattens them", sanitizeTerm("a\nb\tc", true) === "a\nb\tc" && sanitizeTerm("a\nb\tc") === "a b  c");
+  ok("ansiWrap neutralises injected escapes", JSON.stringify(ansiWrap("hi\x1b[2J there\x1b]0;t\x07", 40)) === JSON.stringify(["hi there"]));
   ok("ansiWrap preserves blank lines between paragraphs", JSON.stringify(ansiWrap("a\n\nb", 10)) === JSON.stringify(["a", "", "b"]));
   const CY = (s) => "\x1b[36m" + s + "\x1b[0m";
   const colored = "status is " + CY("connected now") + " and holding steady across the whole long session here";
@@ -2729,6 +2733,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("view shows the agent's result text", vr.some((r) => /Added 12 tests/.test(r)));
     ok("view of a running agent with no output says running", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /running/.test(r)));
     ok("running view offers a stop key; finished view does not", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /s stop/.test(r)) && !A.viewRows(agents[0], 70, 24, 0, null, now).some((r) => /s stop/.test(r)));
+    const vb = A.viewBar(agents[0], 0, 3, 80, null, now), vbr = A.viewBar(agents[1], 1, 3, 80, null, now);
+    ok("agent view bar: position, status and task in the header", /agent 1\/3/.test(vb[1]) && /done/.test(vb[1]));
+    ok("agent view bar: stop key only while running, prev/next with several agents", /s stop/.test(vbr[2]) && !/s stop/.test(vb[2]) && /prev\/next/.test(vb[2]));
+    ok("agent view bar never exceeds the width", A.viewBar(agents[1], 1, 3, 34, null, now).every((r) => r.length <= 34));
     ok("view never crashes on a bare agent", Array.isArray(A.viewRows({ task: "x", status: "run", start: now }, 40, 12, 99, null, now)));
   }
 
@@ -2854,6 +2862,19 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("rejects a leading-dash value (curl would treat it as an option, not a URL)", !isSafeUrl("-o/tmp/pwn") && !isSafeUrl("-K/etc/curlrc") && !isSafeUrl("-V"));
   }
 
+  group("audit fixes — edit engine + policy normalisation");
+  {
+    const E = require("../lib/nexus/edit");
+    eq("flexible edit on a tab-indented block keeps tabs", E.applyEditsFlexible("\tif (x) {\n\t\ty();\n\t}\n", [{ find: "if (x) {\n  y();\n}", replace: "if (x) {\n  z();\n}" }]).content, "\tif (x) {\n\t\tz();\n\t}\n");
+    eq("flexible edit on a CRLF file keeps CRLF endings", E.applyEditsFlexible("a\r\nfoo();\r\nbar();\r\nz\r\n", [{ find: "foo();\nbar();", replace: "FOO();\nBAR();" }]).content, "a\r\nFOO();\r\nBAR();\r\nz\r\n");
+    ok("replaceAll:\"false\" is not treated as true", E.applyEdits("x x", [{ find: "x", replace: "y", replaceAll: "false" }]).ok === false);
+    ok("replaceAll:\"true\" still replaces every match", E.applyEdits("x x", [{ find: "x", replace: "y", replaceAll: "true" }]).content === "y y");
+    const P = require("../lib/governance/policy");
+    ok("hard-deny sees through ./ and // in protected paths", !!P.hitsHardDeny({ type: "write", path: ".nexus/./settings.json" }) && !!P.hitsHardDeny({ type: "write", path: ".nexus//audit.jsonl" }) && !!P.hitsHardDeny({ type: "edit", path: "x/../.nexus/settings.json" }));
+    ok("the agent can't rewrite its own policy/permission files", !!P.hitsHardDeny({ type: "write", path: ".nexus/policy.json" }) && !!P.hitsHardDeny({ type: "edit", path: ".nexus/permissions.json" }));
+    ok("ordinary files are untouched by the floor", !P.hitsHardDeny({ type: "write", path: "src/app.js" }));
+  }
+
   group("path jail — canonical, symlink- and dot-dot-safe (NSAFE-020)");
   {
     const jroot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "nx-jail-")));
@@ -2903,6 +2924,28 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     // nmap-parser: a present-but-non-numeric timestamp attribute must not throw RangeError
     ok("parseNmapXML tolerates a non-numeric start/finish time", noThrow(() =>
       npx.parseNmapXML("<nmaprun start=\"x\" scanner=\"nmap\"><runstats><finished time=\"y\"/></runstats></nmaprun>")));
+  }
+
+  group("nexus docs — the reference the model reads on questions about Nexus");
+  {
+    const ND = require("../lib/cli/nexus-docs");
+    const gen = require("../scripts/gen-nexus-docs.js");
+    const names = new Set(["/warm", "/btw", "/agents", "/cost"]);
+    ok("asks about a command → yes", ND.isNexusQuestion("what does /warm do?", names) && ND.isNexusQuestion("how do I use /btw", names));
+    ok("asks about nexus / shortcuts → yes", ND.isNexusQuestion("how do I open an agent in nexus", names) && ND.isNexusQuestion("what keyboard shortcuts are there?", names));
+    ok("ordinary coding prompts → no", !ND.isNexusQuestion("fix the bug in auth.js", names) && !ND.isNexusQuestion("why does this test fail?", names) && !ND.isNexusQuestion("add a /health route to the api", names));
+    ok("running a command or an unknown /path → no", !ND.isNexusQuestion("/cost", names) && !ND.isNexusQuestion("what is in /etc/hosts?", names));
+    const full = gen.generate();
+    ok("docs/NEXUS-COMMANDS.md is up to date (run: node scripts/gen-nexus-docs.js)", fs.readFileSync(path.join(__dirname, "..", "docs", "NEXUS-COMMANDS.md"), "utf8") === full);
+    const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+    const menu = [...new Set((src.slice(src.indexOf("const CMDS = ["), src.indexOf("const HELP_SECTIONS")).match(/\["\/[a-z0-9:-]+"/g) || []).map((x) => x.slice(2, -1)))];
+    ok("every menu command (" + menu.length + ") is in the reference", menu.length > 100 && menu.every((c) => full.includes("`" + c + "`")));
+    ok("reference covers /btw keys and the agent view", /Ctrl\+Y copies the answer/.test(full) && /full conversation like the main chat/.test(full));
+    const brief = ND.buildReference({ brief: true, cmds: [["/a", "x"]], help: [{ title: "H", rows: [["/a", "x"]] }], keys: [{ title: "K", rows: [["Esc", "stop"]] }], topics: { t: { title: "T", body: "b" } } });
+    ok("brief copy drops the repeated /help groups + topic guides, keeps keys", !/Command groups|Topic guides/.test(brief) && /Keyboard shortcuts/.test(brief));
+    const hits = ND.search(full, "copy answer");
+    ok("/docs search finds lines with every word, under their heading", hits.length >= 2 && /^## /.test(hits[0]) && hits.slice(1).every((h) => /^## /.test(h) || /cop(y|ies)/i.test(h)));
+    ok("forPrompt marks the reference as this-question-only", /Use it only for this question/.test(ND.forPrompt("x")));
   }
 
   group("engine MCP bridge — external engines get the Nexus ask_user popup");
