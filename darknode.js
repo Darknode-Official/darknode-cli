@@ -4375,7 +4375,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             card.status = result.error ? "err" : "ok"; card.end = Date.now(); card.result = result; card.detail = oneline(resultText(JSON.stringify(result)), 260);
             if (a.__act && !blocked) { if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.__act.path, cmd: a.__act.command, status: result && result.error ? "error" : "ok" }); if ((a.__act.type === "write" || a.__act.type === "edit") && result && !result.error) filesThisTurn++; }
             let _obsRes = result; // what the MODEL gets; the card keeps the full output for you
-            if (!blocked && result && typeof result === "object") { const _c = Object.assign({}, result), _sv = collapseToolOutput(_c); if (_sv) { impact.repeatTok += _sv; _obsRes = _c; } } // N identical output lines → 1 + exact count (lossless)
+            if (!blocked && result && typeof result === "object") { const _c = Object.assign({}, result), _sv = collapseToolOutput(_c); if (_sv) { impact.repeatTok += _sv; _obsRes = _c; } } // identical lines → 1 + count, counting runs → first/last + exact step, node-internal frames → count (costsave.js)
             let obs = JSON.stringify(_obsRes).slice(0, 14000);
             { const ptr = toolMemo.lookup(name, a, obs, oMsgs); if (ptr) { impact.memoTok += Math.ceil((obs.length - ptr.length) / 4); obs = ptr; } } // same read-only call, nothing changed → point at the earlier copy
             oMsgs.push({ role: "tool", content: obs }); sess.inTok += Math.ceil(obs.length / 4);
@@ -5355,7 +5355,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           row(cacheOn, "exact-repeat cache — free re-answers for unchanged read-only turns", impact.cachedHits ? gray("  " + impact.cachedHits + " hit" + (impact.cachedHits === 1 ? "" : "s") + " · $" + impact.cachedSaved.toFixed(4) + " saved") : ""),
           row(cheapSide, "local tab titles + recaps — no extra Claude Code session per title/recap", impact.sideSkipped ? gray("  " + impact.sideSkipped + " call" + (impact.sideSkipped === 1 ? "" : "s") + " skipped") : ""),
           row(null, "context de-dup, re-read supersession, unchanged-file skip", tk(impact.squeezeTok)),
-          row(null, "repeated output lines → one line + exact count", tk(impact.repeatTok)),
+          row(null, "repeated / counting output lines + node-internal frames → exact summaries", tk(impact.repeatTok)),
           row(null, "repeated read-only tool calls → pointer to the identical earlier result", tk(impact.memoTok)),
           row(null, "terminal-noise strip — colour codes + progress-bar redraws dropped from logs"),
           row(null, "prompt caching (automatic on the claude engine) — /warm shows the countdown"),

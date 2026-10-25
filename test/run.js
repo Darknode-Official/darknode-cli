@@ -3524,6 +3524,26 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     }
   }
 
+  // ── lossless progress-run collapse + node-internal frames (model copy only) ──
+  {
+    const C = require("../lib/nexus/costsave");
+    let t = ""; for (let i = 0; i < 30; i++) t += "running case " + i + "\n";
+    const r = C.collapseSequences(t + "done");
+    ok("counting run → first, exact note, last", r.text.split("\n").length === 4 && /28 more lines .* counting up by 1/.test(r.text) && /running case 29\ndone$/.test(r.text));
+    eq("step and direction kept", /counting down by 5/.test(C.collapseSequences(Array.from({ length: 20 }, (_, k) => "items left: " + (200 - 5 * k)).join("\n")).text), true);
+    eq("two numbers changing → untouched", C.collapseSequences(["a 1 b 1", "a 2 b 2", "a 3 b 3", "a 4 b 4", "a 5 b 5", "a 6 b 6"].join("\n")).saved, 0);
+    eq("uneven steps → untouched", C.collapseSequences(["x 1", "x 2", "x 4", "x 5", "x 6", "x 9"].join("\n")).saved, 0);
+    eq("leading zeros → untouched", C.collapseSequences(["f 01", "f 02", "f 03", "f 04", "f 05", "f 06"].join("\n")).saved, 0);
+    eq("short runs → untouched", C.collapseSequences("x 1\nx 2\nx 3\nx 4").saved, 0);
+    const st = "Error: boom\n    at run (/p/app.js:3:9)\n    at Module._compile (node:internal/modules/cjs/loader:1521:14)\n    at Module.load (node:internal/modules/cjs/loader:1266:32)\n    at node:internal/main/run_main_module:28:49 {\n  code: 'X'\n}";
+    const d = C.dropInternalFrames(st).text;
+    ok("project frame kept, internal ones counted, brace kept", /at run \(\/p\/app\.js:3:9\)/.test(d) && /\[3 node-internal stack frames\] \{\n  code: 'X'\n\}$/.test(d));
+    eq("a lone internal frame stays as is", C.dropInternalFrames("E\n    at x (node:internal/a:1:1)\n    at y (/p/b.js:1:1)").saved, 0);
+    const res = { output: t, content: t };
+    C.collapseToolOutput(res);
+    ok("file contents are never collapsed", res.content === t && res.output !== t);
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
