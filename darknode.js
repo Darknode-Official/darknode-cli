@@ -3655,8 +3655,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (req.input) { const ans = await askUser(q, [], { input: true, placeholder: req.placeholder }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
       const norm = Ask.normOptions(Array.isArray(req.options) ? req.options : []);
       if (!norm.length) { const ans = await askUser(q, [], { input: true }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
-      if (req.multi) { const ans = await askUser(q, norm, { multi: true, picked: [] }); if (ans.cancelled) return { skipped: true }; return { selected: (ans.values || []).map((v) => (v && v.label != null) ? v.label : String(v)), indices: ans.indices || [] }; }
-      const ans = await askUser(q, norm); if (ans.cancelled) return { skipped: true }; return { selected: (ans.value && ans.value.label != null) ? ans.value.label : String(ans.value), index: ans.index };
+      if (req.multi) { const ans = await askUser(q, norm, { multi: true, picked: [] }); if (ans.cancelled) return { skipped: true }; if (ans.typed) return { answer: String(ans.value || "") }; return { selected: (ans.values || []).map((v) => (v && v.label != null) ? v.label : String(v)), indices: ans.indices || [] }; }
+      const ans = await askUser(q, norm); if (ans.cancelled) return { skipped: true }; if (ans.typed) return { answer: String(ans.value || "") }; return { selected: (ans.value && ans.value.label != null) ? ans.value.label : String(ans.value), index: ans.index };
     };
     const ensureAskBridge = () => { if (!askBridge) { try { askBridge = createAskServer(handleBridgeAsk); } catch (_) { askBridge = null; } } return askBridge; };
     // Build (or reuse) the per-engine MCP config: the Nexus ask bridge plus any
@@ -4173,12 +4173,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
                   card.label = "AskUser(" + oneline(q, 30) + ")"; render();
                   const ans = await askUser(q, norm, { multi: true, picked: [] });
                   if (ans.cancelled) { result = skipNote; transcript.push({ role: "system", text: "Nexus asked: " + oneline(q, 48) + " — skipped" }); }
+                  else if (ans.typed) { const answer = String(ans.value || ""); result = { answer }; transcript.push({ role: "system", text: "you answered: " + oneline(answer || "(empty)", 40) + "  (" + oneline(q, 36) + ")" }); }
                   else { const labels = (ans.values || []).map((v) => v && v.label != null ? v.label : String(v)); result = { selected: labels, indices: ans.indices || [] }; transcript.push({ role: "system", text: "you chose: " + oneline(labels.join(", ") || "(none)", 42) + "  (" + oneline(q, 32) + ")" }); }
                 }
                 else {
                   card.label = "AskUser(" + oneline(q, 30) + ")"; render();
                   const ans = await askUser(q, norm);
                   if (ans.cancelled) { result = skipNote; transcript.push({ role: "system", text: "Nexus asked: " + oneline(q, 48) + " — skipped" }); }
+                  else if (ans.typed) { const answer = String(ans.value || ""); result = { answer }; transcript.push({ role: "system", text: "you answered: " + oneline(answer || "(empty)", 40) + "  (" + oneline(q, 36) + ")" }); }
                   else { const label = ans.value && ans.value.label != null ? ans.value.label : String(ans.value); result = { selected: label, index: ans.index }; transcript.push({ role: "system", text: "you chose: " + oneline(label, 36) + "  (" + oneline(q, 40) + ")" }); }
                 }
               }
@@ -5818,8 +5820,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (isMouse) return; // swallow mouse while choosing (no accidental scroll/edit)
         const r = Ask.askKey(pendingAsk, s);
         if (r.cancelled) { const p = pendingAsk; pendingAsk = null; p.resolve({ cancelled: true }); render(); return; }
-        if (r.done) { const p = pendingAsk; pendingAsk = null; p.resolve(r); render(); return; } // r carries value/index (single), indices/values (multi) or value (text)
-        if (r.sel != null) pendingAsk.sel = r.sel; if (r.picked) pendingAsk.picked = r.picked; if (r.text != null) pendingAsk.text = r.text;
+        if (r.typing) { pendingAsk.input = true; pendingAsk.typed = true; if (pendingAsk.text == null) pendingAsk.text = ""; pendingAsk.placeholder = pendingAsk.placeholder || "type your answer"; render(); return; } // "type a different answer" row → drop into a free-text field
+        if (r.done) { const p = pendingAsk; pendingAsk = null; p.resolve(r); render(); return; } // r carries value/index (single), indices/values (multi) or value+typed (text)
+        if (r.sel != null) pendingAsk.sel = r.sel; if (r.pick != null) pendingAsk.pick = r.pick; if (r.picked) pendingAsk.picked = r.picked; if (r.text != null) pendingAsk.text = r.text;
         render(); return;
       }
 

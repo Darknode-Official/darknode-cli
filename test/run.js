@@ -2585,45 +2585,54 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("normalizes strings + objects to {label,hint}", JSON.stringify(normOptions(["a", { label: "b", hint: "h" }])), JSON.stringify([{ label: "a", hint: "" }, { label: "b", hint: "h" }]));
     eq("drops empty labels", normOptions(["", "x", null]).length, 1);
     eq("caps options at 9 (single-digit pick)", normOptions(Array.from({ length: 20 }, (_, i) => "o" + i)).length, 9);
-    // ---- askKey: navigation ----
-    eq("down moves selection +1", askKey(ask, "\x1b[B").sel, 1);
-    eq("up from 0 wraps to last", askKey(ask, "\x1b[A").sel, 2);
+    // ---- askKey: navigation (rows = 3 options + Type + Submit = 5) ----
+    eq("down moves focus +1", askKey(ask, "\x1b[B").sel, 1);
+    eq("up from 0 wraps to last row (Submit)", askKey(ask, "\x1b[A").sel, 4);
     eq("bare-CSI down (no ESC) also moves", askKey(ask, "[B").sel, 1);
-    eq("down at last wraps to 0", askKey({ ...ask, sel: 2 }, "\x1b[B").sel, 0);
+    eq("down tracks pick when landing on an option", askKey(ask, "\x1b[B").pick, 1);
     // ---- askKey: confirm / pick / cancel ----
-    ok("enter confirms the current selection", (() => { const r = askKey({ ...ask, sel: 1 }, "\r"); return r.done && r.index === 1 && r.value.label === "SQLite"; })());
+    ok("enter on an option row confirms it", (() => { const r = askKey({ ...ask, sel: 1 }, "\r"); return r.done && r.index === 1 && r.value.label === "SQLite"; })());
     ok("a digit picks that option immediately", (() => { const r = askKey(ask, "3"); return r.done && r.index === 2 && r.value.label === "MySQL"; })());
+    ok("enter on the Submit row confirms the tracked pick", (() => { const r = askKey({ ...ask, sel: 4, pick: 2 }, "\r"); return r.done && r.index === 2 && r.value.label === "MySQL"; })());
+    ok("enter on the Type row signals typing (no answer yet)", (() => { const r = askKey({ ...ask, sel: 3 }, "\r"); return r.typing === true && !r.done; })());
     ok("an out-of-range digit is a no-op", (() => { const r = askKey(ask, "7"); return !r.done && !r.cancelled; })());
     ok("esc cancels (user skips)", askKey(ask, "\x1b").cancelled === true);
     ok("ctrl+c cancels", askKey(ask, "\x03").cancelled === true);
-    ok("an unrelated key is a no-op that keeps selection", (() => { const r = askKey({ ...ask, sel: 1 }, "x"); return !r.done && !r.cancelled && r.sel === 1; })());
+    ok("an unrelated key is a no-op that keeps focus", (() => { const r = askKey({ ...ask, sel: 1 }, "x"); return !r.done && !r.cancelled && r.sel === 1; })());
     // ---- renderAsk: layout + content (plain, colors identity) ----
     const rows = renderAsk({ ...ask, sel: 1 }, 60);
-    ok("opens and closes with a horizontal rule", /─/.test(rows[0]) && /─/.test(rows[rows.length - 1]));
+    ok("draws a rounded box (corners + walls)", rows[0].includes("╭") && rows[0].includes("╮") && rows.some((r) => r.includes("╰") && r.includes("╯")) && rows.some((r) => r.includes("│")));
     ok("shows the question text", rows.some((r) => r.includes("Which database")));
     ok("numbers every option", rows.some((r) => /1\. PostgreSQL/.test(r)) && rows.some((r) => /2\. SQLite/.test(r)) && rows.some((r) => /3\. MySQL/.test(r)));
-    ok("marks the selected option with ›", rows.some((r) => r.includes("›") && r.includes("SQLite")));
+    ok("marks the focused option with ❯", rows.some((r) => r.includes("❯") && r.includes("SQLite")));
     ok("renders a hint when provided", rows.some((r) => r.includes("zero-config")));
-    ok("has a key-legend footer", rows.some((r) => /enter confirm/.test(r) && /esc skip/.test(r)));
+    ok("offers a Type-a-different-answer row", rows.some((r) => /Type a different answer/.test(r)));
+    ok("offers a Submit row", rows.some((r) => /Submit/.test(r)));
+    ok("has a key-legend footer", rows.some((r) => /enter select/.test(r) && /esc skip/.test(r)));
+    ok("every box row is exactly the requested width (plain)", rows.filter((r) => r.includes("│")).every((r) => r.length === 60));
     ok("no row exceeds the requested width (plain)", rows.every((r) => r.length <= 60));
+    ok("allowType:false drops the Type row", !renderAsk({ ...ask, allowType: false }, 60).some((r) => /Type a different answer/.test(r)));
     ok("empty options + esc still cancels (no crash)", askKey({ question: "q", options: [], sel: 0 }, "\x1b").cancelled === true);
     ok("renderAsk tolerates no options", Array.isArray(renderAsk({ question: "q", options: [] }, 40)));
   }
 
   group("ask — multi-select (checkbox) mode");
   {
+    // rows = 4 options (0-3) + Type (4) + Submit (5)
     const base = { question: "Pick the test suites to run", options: ["unit", "e2e", "lint", "types"], sel: 0, multi: true, picked: [] };
     ok("space toggles the current row on", (() => { const r = askKey(base, " "); return !r.done && JSON.stringify(r.picked) === JSON.stringify([0]); })());
     ok("space again toggles it back off", (() => { const r = askKey({ ...base, picked: [0] }, " "); return JSON.stringify(r.picked) === JSON.stringify([]); })());
+    ok("enter on an option row toggles (does not submit)", (() => { const r = askKey({ ...base, sel: 1, picked: [] }, "\r"); return !r.done && JSON.stringify(r.picked) === JSON.stringify([1]); })());
     ok("a digit toggles that option", (() => { const r = askKey({ ...base, picked: [0] }, "3"); return JSON.stringify(r.picked) === JSON.stringify([0, 2]); })());
     ok("arrows move without changing the picked set", (() => { const r = askKey({ ...base, picked: [1] }, "\x1b[B"); return r.sel === 1 && JSON.stringify(r.picked) === JSON.stringify([1]); })());
-    ok("enter confirms the whole set (sorted)", (() => { const r = askKey({ ...base, picked: [2, 0] }, "\r"); return r.done && JSON.stringify(r.indices) === JSON.stringify([0, 2]) && r.values[0].label === "unit" && r.values[1].label === "lint"; })());
-    ok("enter with nothing picked confirms an empty set", (() => { const r = askKey({ ...base, picked: [] }, "\r"); return r.done && JSON.stringify(r.indices) === JSON.stringify([]); })());
+    ok("enter on Submit confirms the whole set (sorted)", (() => { const r = askKey({ ...base, sel: 5, picked: [2, 0] }, "\r"); return r.done && JSON.stringify(r.indices) === JSON.stringify([0, 2]) && r.values[0].label === "unit" && r.values[1].label === "lint"; })());
+    ok("enter on Submit with nothing picked confirms an empty set", (() => { const r = askKey({ ...base, sel: 5, picked: [] }, "\r"); return r.done && JSON.stringify(r.indices) === JSON.stringify([]); })());
     ok("esc still cancels in multi mode", askKey(base, "\x1b").cancelled === true);
     const rows = renderAsk({ ...base, picked: [1] }, 60);
-    ok("renders checkboxes", rows.some((r) => r.includes("[x]")) && rows.some((r) => r.includes("[ ]")));
-    ok("multi footer mentions space-toggle and the picked count", rows.some((r) => /space/.test(r) && /toggle/.test(r) && /1 picked/.test(r)));
-    ok("no multi row exceeds width", rows.every((r) => r.length <= 60));
+    ok("renders ◉/○ checkboxes", rows.some((r) => r.includes("◉")) && rows.some((r) => r.includes("○")));
+    ok("Submit row shows the selected count", rows.some((r) => /Submit \(1 selected\)/.test(r)));
+    ok("multi footer mentions space-toggle", rows.some((r) => /space/.test(r) && /toggle/.test(r)));
+    ok("no multi box row exceeds width", rows.every((r) => r.length <= 60));
   }
 
   group("ask — free-text input mode");
@@ -2640,6 +2649,11 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("shows a placeholder when empty", empty.some((r) => /type your answer/.test(r)));
     ok("shows the typed text with a caret", filled.some((r) => r.includes("scan") && r.includes("█")));
     ok("input footer says enter submits", filled.some((r) => /enter submit/.test(r)));
+    // ---- the "type a different answer" transition on an option prompt ----
+    const optAsk = { question: "Pick one", options: ["A", "B"], sel: 2 }; // sel 2 = Type row (0,1 opts, 2 type, 3 submit)
+    ok("enter on the Type row asks the host to switch to typing", askKey(optAsk, "\r").typing === true);
+    ok("once in type mode, a submitted answer is flagged typed", (() => { const r = askKey({ question: "Pick one", options: ["A", "B"], input: true, typed: true, text: "custom" }, "\r"); return r.done && r.value === "custom" && r.typed === true; })());
+    ok("a pure free-text prompt is NOT flagged typed", (() => { const r = askKey({ question: "name?", input: true, text: "x" }, "\r"); return r.done && r.value === "x" && !r.typed; })());
   }
 
   group("api-server input validation (shell-out routes reject injection)");
