@@ -2172,11 +2172,7 @@ async function deviceTool(name, a, cwd) {
   const rp = (p) => Jail.assertInJail(p == null ? "." : p, cwd); // sandbox all device-tool file ops to cwd (symlink/dot-dot safe)
   const SKIP = /(^|\/)(\.git|node_modules|dist|build|\.nexus|\.cache)(\/|$)/;
   if (name === "search" || name === "grep") return require("./lib/nexus/search").searchTool(a, cwd, rp);
-  if (name === "find" || name === "find_files" || name === "glob") {
-    const q = String(a.glob || a.pattern || a.name || "").toLowerCase(); const out = [];
-    const walk = (d) => { if (out.length >= 300) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(fp)) continue; if (e.isDirectory()) walk(fp); else if (!q || e.name.toLowerCase().includes(q)) { out.push(path.relative(cwd, fp)); if (out.length >= 300) return; } } };
-    walk(rp(a.path || ".")); return { files: out };
-  }
+  if (name === "find" || name === "find_files" || name === "glob") return require("./lib/nexus/search").findTool(a, cwd, rp);
   if (name === "http_fetch" || name === "web_fetch" || name === "fetch_url" || name === "http") {
     const url = a.url; if (!url) return { error: "http_fetch needs a url" };
     if (_ssrfLocal(url)) return { error: "http_fetch blocked: refusing to reach a local/private/link-local address (SSRF guard — protects cloud metadata and internal services). If you intend to hit a local service, use run_command (e.g. curl) so it passes through the shell guard." };

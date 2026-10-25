@@ -3243,6 +3243,24 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  group("find — real globs (it used to substring-match the glob text, so **/*.js found nothing)");
+  {
+    const SR = require("../lib/nexus/search");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-")), rp = (p) => path.resolve(dir, p);
+    fs.mkdirSync(path.join(dir, "src/ui"), { recursive: true }); fs.mkdirSync(path.join(dir, "node_modules"));
+    for (const f of ["src/a.js", "src/ui/b.jsx", "src/ui/c.ts", "README.md", "node_modules/x.js"]) fs.writeFileSync(path.join(dir, f), "x");
+    const f = (args) => SR.findTool(args, dir, rp);
+    eq("**/*.js", f({ glob: "**/*.js" }).files, ["src/a.js"]);
+    eq("brace glob", f({ glob: "src/**/*.{jsx,ts}" }).files, ["src/ui/b.jsx", "src/ui/c.ts"]);
+    eq("bare *.md matches by file name anywhere", f({ glob: "*.md" }).files, ["README.md"]);
+    eq("no glob chars = name substring", f({ glob: "ui" }).files, []);
+    eq("substring of a file name", f({ glob: "b.js" }).files, ["src/ui/b.jsx"]);
+    const past = Date.now() / 1000 - 1000; fs.utimesSync(path.join(dir, "src/a.js"), past, past);
+    eq("sort recent = newest first", f({ glob: "src/**", sort: "recent" }).files.slice(-1), ["src/a.js"]);
+    ok("truncation reported", /showing 1 of 4/.test(f({ glob: "**/*", max_results: 1 }).truncated));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
