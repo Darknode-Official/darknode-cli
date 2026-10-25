@@ -3447,59 +3447,58 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let claudeCostSid = "", claudeCostBase = 0; // claude's result.total_cost_usd is CUMULATIVE per session across --continue, so charge only the per-turn delta (reset when the session id changes)
     let oneShotRan = false; // a claude one-shot ran since the last main turn → resume the tracked
                             // session id next turn instead of letting --continue pick the one-shot
-    const btwWrap = (s, w) => {
-      const out = [];
-      for (const para of String(s).split("\n")) {
-        if (!para) { out.push(""); continue; }
-        let line = "";
-        for (const tok of para.split(/(\s+)/)) {
-          if (!tok) continue;
-          if ((line + tok).length <= w) { line += tok; continue; }
-          if (line.trim()) out.push(line.replace(/\s+$/, ""));
-          if (tok.length > w) { let t = tok; while (t.length > w) { out.push(t.slice(0, w)); t = t.slice(w); } line = t; }
-          else line = tok.replace(/^\s+/, "");
-        }
-        out.push(line.replace(/\s+$/, ""));
-      }
-      return out;
-    };
     const renderBtw = (C, R, st) => {
-      const w = Math.max(12, C - 4);
-      const avail = Math.max(8, R - 4); // leave the top spacer + footer row
+      // A framed card: question, the answer (markdown-coloured like the chat),
+      // then a follow-up field — type and Enter to ask again without closing.
+      const W = Math.max(24, C - 2), w = W - 4; // outer width, inner text width ("│ " … " │")
       const cur = st.list[st.i] || { q: "", a: null };
-      const head = [];
-      head.push(cur.kind === "cmd" ? " " + bold("Side panel") + gray("  — " + cur.q + " · not part of the conversation") : " " + bold("Side question") + gray("  — from the conversation so far; not saved to history"));
-      const earlier = st.list.slice(0, st.i), shownE = earlier.slice(-3);
-      if (earlier.length > shownE.length) head.push(" " + dim("   +" + (earlier.length - shownE.length) + " earlier"));
-      for (const e of shownE) head.push(" " + dim("   · " + e.q.replace(/\s+/g, " ").slice(0, w - 5)));
-      head.push("");
-      if (cur.kind !== "cmd") { for (const ql of btwWrap("❯ " + cur.q, w)) head.push(" " + cyan(ql)); head.push(""); }
-      const hintLn = st.flash ? (" " + green("   " + st.flash)) : (" " + gray("enter/esc close · ↑↓ scroll · " + (st.list.length > 1 ? "[ ] prev/next · " : "") + "c copy · x clear"));
-      const bodyMax = Math.max(2, avail - head.length - 3);
-      const ans = cur.a == null ? [gray(st.loading ? "thinking…" : "…")] : cur.kind === "cmd" ? ansiWrap(cur.a, w) : btwWrap(cur.a, w);
+      const isCmd = cur.kind === "cmd";
+      const row = (txt) => cyan("│") + " " + txt + " ".repeat(Math.max(0, w - strWidth(txt))) + " " + cyan("│");
+      const rule = (l, r, left, right) => { left = left || ""; right = right || ""; const fill = Math.max(1, W - 2 - strWidth(left) - strWidth(right)); return cyan(l) + left + cyan("─".repeat(fill)) + right + cyan(r); };
+      const secs = (ms) => (ms / 1000).toFixed(1) + "s";
+      const meta = cur.a == null ? (cur.t0 ? yellow(spin[Math.floor(Date.now() / 90) % spin.length] + " " + secs(Date.now() - cur.t0)) : "") : cur.ms != null ? gray((cur.eng ? cur.eng + " · " : "") + secs(cur.ms)) : "";
+      const pos = st.list.length > 1 ? gray((st.i + 1) + "/" + st.list.length) : "";
+      const title = " " + bold(cyan(isCmd ? "◇ side panel" : "◇ side question")) + (isCmd ? gray(" " + cur.q) : "") + " ";
+      const right = [pos, meta].filter(Boolean).join(gray(" · "));
+      const head = [rule("╭", "╮", title, right ? " " + right + " " : "")];
+      if (!isCmd) { ansiWrap(cur.q, Math.max(1, w - 2)).forEach((ql, k) => head.push(row((k ? "  " : bold("❯ ")) + ql))); head.push(row("")); }
+      let ans;
+      if (cur.a == null) ans = [gray(st.loading ? "thinking… answering from the conversation so far" : "…")];
+      else if (isCmd) ans = ansiWrap(cur.a, w);
+      else { ans = []; let inCode = false; for (const ln of ansiWrap(cur.a, w)) { if (/^```/.test(ln.trim())) { inCode = !inCode; ans.push(gray(ln)); continue; } ans.push(colorMd(ln, inCode)); } }
+      while (ans.length > 1 && !stripA(ans[ans.length - 1]).trim()) ans.pop();
+      const foot = 4; // rule + input + bottom + hint
+      const bodyMax = Math.max(3, Math.min(ans.length, R - 4 - head.length - foot));
       const maxSc = Math.max(0, ans.length - bodyMax);
       if (st.scroll > maxSc) st.scroll = maxSc;
       if (st.scroll < 0) st.scroll = 0;
-      const vis = ans.slice(st.scroll, st.scroll + bodyMax);
-      const rows = head.concat(vis.map((l) => "  " + l));
-      if (ans.length > bodyMax) rows.push(" " + gray("   … " + Math.min(ans.length, st.scroll + bodyMax) + "/" + ans.length + " lines"));
-      rows.push("");
-      rows.push(hintLn);
+      const rows = head.concat(ans.slice(st.scroll, st.scroll + bodyMax).map(row));
+      const more = ans.length > bodyMax ? gray(" " + (st.scroll ? "↑ " : "") + Math.min(ans.length, st.scroll + bodyMax) + "/" + ans.length + " lines" + (st.scroll < maxSc ? " ↓" : "") + " ") : "";
+      rows.push(rule("├", "┤", "", more));
+      const inp = st.input || "";
+      const iw = Math.max(1, w - 4);
+      let shownIn = inp; if (strWidth(inp) > iw) { const g = [...inp]; let v = 0, k = g.length; while (k > 0 && v + charWidth(g[k - 1]) <= iw - 1) v += charWidth(g[--k]); shownIn = "…" + g.slice(k).join(""); }
+      rows.push(row(cyan("› ") + (inp ? shownIn + cyan("█") : cyan("█") + gray(" ask a follow-up…"))));
+      rows.push(cyan("╰" + "─".repeat(W - 2) + "╯"));
+      let hintTxt = ""; for (const h of [inp ? "enter send · esc clear" : "enter/esc close", ans.length > bodyMax ? "↑↓ scroll" : "", st.list.length > 1 && !inp ? "←→ history" : "", "ctrl+y copy", "ctrl+x clear all", "not saved to the conversation"]) if (h && strWidth(hintTxt + " · " + h) <= W - 2) hintTxt += (hintTxt ? " · " : "") + h; // drop the least important hints first when narrow
+      const hint = st.flash ? green(st.flash) : gray(hintTxt);
+      rows.push(" " + hint);
       return rows;
     };
     const askBtw = (q) => {
       q = (q || "").trim();
-      if (!q) { if (btwLog.length) { btw = { list: btwLog, i: btwLog.length - 1, scroll: 0, loading: !btwLog[btwLog.length - 1].a }; render(); } else transcript.push({ role: "system", text: "usage: /btw <question> — a quick side question answered from the conversation so far; the answer is NOT added to the conversation history" }); return; }
-      const entry = { q, a: null };
+      if (!q) { if (btwLog.length) { btw = { list: btwLog, i: btwLog.length - 1, scroll: 0, loading: !btwLog[btwLog.length - 1].a, input: "" }; render(); } else transcript.push({ role: "system", text: "usage: /btw <question> — a quick side question answered from the conversation so far; the answer is NOT added to the conversation history" }); return; }
+      const entry = { q, a: null, t0: Date.now() };
       btwLog.push(entry);
-      btw = { list: btwLog, i: btwLog.length - 1, scroll: 0, loading: true };
+      btw = { list: btwLog, i: btwLog.length - 1, scroll: 0, loading: true, input: "" };
       render();
       const ctx = buildCarryNote(transcript);
       const earlierQ = btwLog.slice(0, -1).filter((e) => e.kind !== "cmd").slice(-20).filter((e) => e.a).map((e) => "Q: " + e.q + "\nA: " + e.a).join("\n\n");
       const prompt = "You are answering a quick SIDE QUESTION about an ongoing coding session. Answer ONLY from the conversation context below plus general knowledge. You have NO tools — do not try to read files, run commands, or search; if answering would require that, say so briefly. Be concise and direct.\n\n=== CONVERSATION SO FAR ===\n" + (ctx || "(nothing yet)") + (earlierQ ? "\n\n=== EARLIER SIDE QUESTIONS ===\n" + earlierQ : "") + "\n\n=== SIDE QUESTION ===\n" + q;
       const e = offline ? "ollama" : engine;
       const bctl = makeCtl();
-      const done = (a) => { entry.a = a; if (btw && btw.list[btw.i] === entry) btw.loading = false; try { render(); } catch (_) {} };
+      const tk = setInterval(() => { if (btw && btw.list[btw.i] === entry) render(); }, 100); // live spinner + elapsed while it thinks
+      const done = (a) => { clearInterval(tk); entry.a = a; entry.ms = Date.now() - entry.t0; entry.eng = e; if (btw && btw.list[btw.i] === entry) btw.loading = false; try { render(); } catch (_) {} };
       (async () => {
         try {
           let out;
@@ -3634,7 +3633,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (cardRows) {
         // ---- a full-width card (the model's ask_user question, or the /effort
         // slider) owns the bottom of the screen until the user picks (key loop).
-        for (const r of cardRows) frame.push(r);
+        for (const r of cardRows) frame.push(clip(r, C));
       } else {
       // ---- composer: two full-width horizontal rules (top & bottom) that run
       // edge to edge — no corners, no side walls — with the "❯ " input floating
@@ -5988,17 +5987,24 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
 
       // ---- the /btw side-question overlay owns the keyboard while open ----
       if (btw) {
-        if (isMouse) return;
-        if (btw.flash && s !== "c" && s !== "C") btw.flash = "";
+        const nav = (d) => { const j = btw.i + d; if (j >= 0 && j < btw.list.length) { btw.i = j; btw.scroll = 0; btw.loading = !btw.list[j].a; render(); } };
+        if (isMouse) { const mm = /^\x1b\[<(\d+);/.exec(s); if (mm && (+mm[1] & ~3) === 64) { btw.scroll = Math.max(0, btw.scroll + ((+mm[1] & 1) ? 3 : -3)); render(); } return; } // wheel scrolls the answer
+        if (btw.flash) btw.flash = "";
         if (s === "\x1b[A" || s === "\x1bOA") { btw.scroll = Math.max(0, btw.scroll - 1); render(); return; } // up
         if (s === "\x1b[B" || s === "\x1bOB") { btw.scroll++; render(); return; }                            // down
         if (s === "\x1b[5~") { btw.scroll = Math.max(0, btw.scroll - 10); render(); return; }                 // pgup
         if (s === "\x1b[6~") { btw.scroll += 10; render(); return; }                                          // pgdn
-        if (s === "[" || s === "\x1b[D" || s === "\x1bOD") { if (btw.i > 0) { btw.i--; btw.scroll = 0; btw.loading = !btw.list[btw.i].a; render(); } return; } // prev answer
-        if (s === "]" || s === "\x1b[C" || s === "\x1bOC") { if (btw.i < btw.list.length - 1) { btw.i++; btw.scroll = 0; btw.loading = !btw.list[btw.i].a; render(); } return; } // next answer
-        if (s === "c" || s === "C") { const a = btw.list[btw.i] && btw.list[btw.i].a; if (a) { try { out.write("\x1b]52;c;" + Buffer.from(a).toString("base64") + "\x07"); } catch (_) {} btw.flash = "copied to clipboard"; render(); } return; }
-        if (s === "x" || s === "X") { btwLog.length = 0; btw = null; render(); return; }
-        if (s === "\r" || s === "\n" || s === " " || s === "\x1b" || s === "\x03") { btw = null; render(); return; }
+        if (s === "\x1b[D" || s === "\x1bOD") { if (!btw.input) nav(-1); return; } // ← previous answer
+        if (s === "\x1b[C" || s === "\x1bOC") { if (!btw.input) nav(1); return; }  // → next answer
+        if (s === "\x19") { const a = btw.list[btw.i] && btw.list[btw.i].a; if (a) { try { out.write("\x1b]52;c;" + Buffer.from(a).toString("base64") + "\x07"); } catch (_) {} btw.flash = "copied the answer to the clipboard"; render(); } return; } // ctrl+y
+        if (s === "\x18") { btwLog.length = 0; btw = null; render(); return; } // ctrl+x: forget every side question
+        if (s === "\x15") { btw.input = ""; render(); return; }                 // ctrl+u
+        if (s === "\x7f" || s === "\b") { btw.input = [...(btw.input || "")].slice(0, -1).join(""); render(); return; }
+        if (s === "\r" || s === "\n") { const q = (btw.input || "").trim(); if (q) askBtw(q); else { btw = null; render(); } return; } // send the follow-up, or close
+        if (s === "\x1b") { if (btw.input) btw.input = ""; else btw = null; render(); return; }
+        if (s === "\x03") { btw = null; render(); return; }
+        const typed = s.replace(/\x1b\[20[01]~/g, "").replace(/[\r\n\t]+/g, " "); // typed text or a paste → the follow-up field
+        if (typed && !/[\x00-\x1f\x7f]/.test(typed)) { btw.input = (btw.input || "") + typed; render(); }
         return; // overlay owns the keyboard
       }
       // ---- the Agents transcript overlay owns the keyboard while open ----
