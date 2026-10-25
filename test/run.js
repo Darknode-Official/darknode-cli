@@ -1794,7 +1794,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     // output-size cap enforced (tiny budget so a single result overflows)
     const bigDispatch = async () => ({ content: "Z".repeat(5000) });
     const sized = await BA.runBatch([{ op: "read", path: "big1" }, { op: "read", path: "big2" }], bigDispatch, { maxOpChars: 4000, maxTotalChars: 4500 });
-    ok("batch caps per-op output length", sized.results[0].output.length === 4000 && sized.results[0].truncated === true);
+    ok("batch caps per-op output length", sized.results[0].output.length === 4000 && /showing lines 1-1 — read again with start:2/.test(sized.results[0].truncated));
+    const lineDispatch = async () => ({ content: Array.from({ length: 900 }, (_, k) => "line " + (k + 1)).join("\n"), from: 100 });
+    const cut = await BA.runBatch([{ op: "read", path: "f", start: 100 }], lineDispatch, { maxOpChars: 120 });
+    ok("a cut read ends on a whole line and says where to continue", /^line 1\n/.test(cut.results[0].output) && !/\n$/.test(cut.results[0].output) && /showing lines 100-\d+ — read again with start:\d+/.test(cut.results[0].truncated));
     ok("batch caps total output across ops", (sized.results[0].output.length + sized.results[1].output.length) <= 4500 && sized.truncated === true);
 
     // an invalid op is reported without failing the whole batch

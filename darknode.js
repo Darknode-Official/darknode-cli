@@ -2226,7 +2226,17 @@ async function deviceTool(name, a, cwd) {
     return { ok: true, count: AGENT_TODOS.length, done: AGENT_TODOS.filter((t) => t.status === "done").length, todos: AGENT_TODOS, rendered };
   }
   if (name === "todo_read" || name === "read_todos" || name === "get_todos") return { todos: AGENT_TODOS, count: AGENT_TODOS.length };
-  if (name === "read_file" || name === "read") { try { return { content: fs.readFileSync(rp(a.path || a.file), "utf8").slice(0, 16000) }; } catch (e) { return { error: e.message }; } }
+  if (name === "read_file" || name === "read") { // line range first, then a cap at a line boundary that SAYS so (a silent cut invites a rewrite from a partial read)
+    try {
+      const ls = fs.readFileSync(rp(a.path || a.file), "utf8").split("\n"); if (ls.length > 1 && ls[ls.length - 1] === "") ls.pop(); const off = Math.max(1, +(a.offset || a.start || 1) | 0);
+      const last = Math.min(ls.length, a.limit ? off - 1 + Math.max(1, +a.limit | 0) : a.end ? Math.max(off, +a.end | 0) : ls.length);
+      let body = ls.slice(off - 1, last).join("\n"), shownTo = last, note;
+      if (body.length > 16000) { const cut = body.slice(0, 16000), nl = cut.lastIndexOf("\n"); body = nl > 0 ? cut.slice(0, nl) : cut; shownTo = off - 1 + body.split("\n").length; }
+      if (shownTo < last) note = "showing lines " + off + "-" + shownTo + " of " + ls.length + " — read again with offset " + (shownTo + 1) + " for the rest; do NOT rewrite this file from a partial read";
+      else if (off > 1 || last < ls.length) note = "lines " + off + "-" + last + " of " + ls.length;
+      return Object.assign({ content: body, from: off }, note ? { note } : {});
+    } catch (e) { return { error: e.message }; }
+  }
   if (name === "list_dir" || name === "list" || name === "ls") return require("./lib/nexus/fs-tools").listDirTool(a, cwd, rp);
   // batch: run several READ-ONLY lookups (read_file/search/find/list_dir) in ONE call, routed
   // through this same dispatcher, so the agent investigates in one round-trip instead of many
