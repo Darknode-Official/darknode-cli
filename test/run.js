@@ -3330,6 +3330,20 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     srv.close();
   }
 
+  group("edit failures say WHY — closest line, already applied, where the duplicates are");
+  {
+    const E = require("../lib/nexus/edit");
+    const src = "function login(user) {\n  if (!user) return null;\n  return check(user.password);\n}\nx\nx\n";
+    ok("typo → closest line with its number", /closest line 3: return check\(user\.password\);/.test(E.applyEditsFlexible(src, [{ find: "  return check(user.passwrd);", replace: "y" }]).error));
+    ok("already applied is detected", /already applied/.test(E.applyEditsFlexible(src, [{ find: "check(user.pw)", replace: "return check(user.password);" }]).error));
+    ok("ambiguous lists the lines", /matches 2 places \(lines 5, 6\)/.test(E.applyEditsFlexible(src, [{ find: "x", replace: "y" }]).error));
+    ok("curly quotes called out", /curly quotes/.test(E.applyEditsFlexible("say(\"hi\")\n", [{ find: "say(“hi”)", replace: "z" }]).error));
+    ok("no hint when nothing is close", /not present \(even ignoring whitespace\)$/.test(E.applyEditsFlexible(src, [{ find: "totally unrelated text here", replace: "z" }]).error));
+    ok("patch context miss gets the hint too", /closest line/.test(E.applyHunks(src, [{ before: ["  return check(user.passwrd);"], after: ["  return 1;"] }]).error));
+    eq("whereLines", E.whereLines("a\nb\na\na", "a"), [1, 3, 4]);
+    ok("dice similarity", E.dice("hello world", "hello wrld") > 0.8 && E.dice("abc", "xyz") === 0);
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
