@@ -1549,7 +1549,7 @@ async function aiCoder(argv) {
   const fs = require("fs"), path = require("path");
   const cwd = process.cwd();
   // ---- parse flags ----
-  const arr = Array.isArray(argv) ? argv.slice() : String(argv || "").split(/\s+/).filter(Boolean);
+  const arr = [].concat(...(Array.isArray(argv) ? argv.slice() : String(argv || "").split(/\s+/).filter(Boolean)).map((a) => { const m = /^(--model|--engine|-m|-e)=(.*)$/.exec(a); return m ? [m[1], m[2]] : [a]; })); // --model=x / --engine=x == --model x
   let autoApprove = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, resumeFlag = false, leanFlag = false, parts = [];
   const unknownFlags = [];
   for (let i = 0; i < arr.length; i++) {
@@ -1579,13 +1579,19 @@ async function aiCoder(argv) {
   // "api" is an alias for the local tool loop pointed at the configured API.
   if (enginePref === "api") { enginePref = "ollama"; if (!apiConfigured() && !cfg.apiModel) console.log("  " + yellow("note: no API configured — set DARKNODE_API_BASE (+ DARKNODE_API_KEY) or run /api <url> [model]")); }
   // Default to Claude headless when installed, fall back to Ollama.
+  if (enginePref && !ENGINES[enginePref]) { console.error("  " + red("unknown engine '" + enginePref + "'") + gray(" — choose one of: " + ENGINE_ORDER.join(", ") + " (or api)")); process.exitCode = 2; return; }
   let engine = enginePref || cfg.engine || (avail.claude ? "claude" : "ollama");
-  if (engine !== "ollama" && !avail[engine]) engine = avail.claude ? "claude" : "ollama";
+  if (!ENGINES[engine]) engine = avail.claude ? "claude" : "ollama"; // a stale/invalid config.json engine
+  if (engine !== "ollama" && !avail[engine]) { const fb = avail.claude ? "claude" : "ollama"; console.error("  " + yellow("note: the " + engine + " engine isn't installed — using " + fb + " instead") + gray(" (install it, or pick one with -e)")); engine = fb; }
   // The full-screen TUI is the default interactive experience now — the old
   // line-based `darknode nexus` REPL has been retired for interactive use. Fall
   // through to the non-TUI path only for a one-shot task (`darknode nexus
   // "..."`), --print, or a non-interactive stdout.
   if (parts[0] === "serve") return nexusServe(parts.slice(1), { engine });
+  if (printMode && !parts.length) {
+    if (!process.stdin.isTTY) { const piped = await new Promise((res) => { let b = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (d) => { b += d; }); process.stdin.on("end", () => res(b)); process.stdin.on("error", () => res(b)); }); if (piped.trim()) parts.push(piped.trim()); }
+    if (!parts.length) { console.error("  " + red("--print needs a task") + gray(" — e.g. nexus --print \"add tests for utils.js\"  (or pipe it in: echo task | nexus --print)")); process.exitCode = 2; return; }
+  }
   const oneShot = parts.length > 0;
   if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag === "new" ? false : (resumeFlag ? "restart" : "launch")); // like `claude -c`: the last chat comes back on every launch; --new starts blank
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
@@ -2648,7 +2654,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let turnLog = []; // one entry per finished paid/local turn this session — feeds /turns + /cheaper (never persisted, no prompt text beyond a short label)
     const cacheWarm = { lastAt: 0, ttl: 0 }; // when a claude call last touched the prompt cache + which TTL it wrote (status chip + /warm)
     let bypassCacheOnce = false; // /retry sets this so the next send skips the exact-repeat cache and really re-runs
-    let aliases = {}; try { const _a = settingsStore.get("aliases"); if (_a && typeof _a === "object") aliases = _a; } catch (_) {}
+    let aliases = {}; // loaded from ~/.nexus/settings.json once the settings store exists (below)
     const AGENTS_MAX = 24; // cap the registry; drop the oldest FINISHED agents past this
     const addAgent = (task, opts) => { const a = Object.assign({ id: "ag_" + Date.now().toString(36) + "_" + agents.length, task: String(task || "").slice(0, 300), status: "run", start: Date.now(), result: "", native: true }, opts || {}); agents.push(a); if (agents.length > AGENTS_MAX) { const keep = agents.filter((x) => x.status === "run"); const fin = agents.filter((x) => x.status !== "run"); agents = fin.slice(Math.max(0, fin.length - (AGENTS_MAX - keep.length))).concat(keep).sort((x, y) => x.start - y.start); } return a; };
     // An agent's conversation as chat messages (rendered by bodyLines like the
@@ -2714,6 +2720,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const settingsStore = nexusSettings.createStore(NHOME);
     const S = settingsStore.value, Ssrc = settingsStore.source;
     const saveSetting = (k, v) => { try { settingsStore.set(k, v); } catch (_) {} };
+    if (settingsStore.corrupt) transcript.push({ role: "system", text: "your settings file (~/.nexus/settings.json) was unreadable, so Nexus started with defaults. The old file was kept as " + settingsStore.corrupt + " — fix it and copy it back to restore your settings." });
+    try { const _a = settingsStore.getSaved("aliases"); if (_a && typeof _a === "object" && !Array.isArray(_a)) aliases = _a; } catch (_) {}
     // Per-project command history, loaded from disk (dedup + capped) and driven
     // by the pure ComposerModel. `history`/`hIdx` stay as compatibility mirrors.
     const history = Composer.loadHistory(cwd, Composer.HISTORY_CAP, NHOME); let hIdx = history.length;
@@ -2767,7 +2775,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     };
     const nexusLearn = (query, answer) => { if (learnMod) try { learnMod.learnFromInteraction(cwd, query, answer, {}); } catch (_) {} };
     // @path inlines a file's contents into the prompt sent to the engine (display keeps the @mention)
-    const inlineAts = (t) => t.replace(/(^|\s)@(\S+)/g, (m, pre, f) => { try { const c = fs.readFileSync(path.resolve(cwd, f), "utf8"); return pre + "\n\n--- " + f + " ---\n" + c.slice(0, 6000) + "\n--- end " + f + " ---\n"; } catch (_) { return m; } });
+    const inlineAts = (t) => t.replace(/(^|\s)@(?:"([^"]+)"|(\S+))/g, (m, pre, fq, fu) => { const f = fq || fu; try { const c = fs.readFileSync(path.resolve(cwd, f), "utf8"); return pre + "\n\n--- " + f + " ---\n" + c.slice(0, 6000) + "\n--- end " + f + " ---\n"; } catch (_) { return m; } });
     // !cmd runs a shell command directly (Claude-Code-style passthrough); output shown inline
     // ! bash escape. Output is shown to the user AND buffered (bangLog) so the
     // next prompt carries it into the model's context — like Claude Code's bash
@@ -2886,7 +2894,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     }
     const _refs = {}; let _refKey = "";
     const nexusRef = (brief) => { const k = Object.keys(customCmds).join(",") + "|" + Object.keys(aliases).join(","); if (_refKey !== k) { _refKey = k; _refs.full = _refs.brief = null; } const slot = brief ? "brief" : "full"; if (!_refs[slot]) { _refs[slot] = NexusDocs.buildReference({ brief: !!brief, cmds: CMDS, help: HELP_SECTIONS, keys: KEY_SECTIONS, side: [...SIDE_CMDS], topics: NEXUS_DOCS, topicOrder: DOC_ORDER, custom: Object.keys(customCmds).map((n) => [n, customCmds[n].desc]).concat(Object.keys(aliases).map((n) => [n, "your alias for: " + aliases[n]])) }); } return _refs[slot]; };
-    const allCmds = () => CMDS.concat(Object.keys(customCmds).map((k) => [k, customCmds[k].desc]));
+    const allCmds = () => { const base = CMDS.concat(Object.keys(customCmds).map((k) => [k, customCmds[k].desc])); const have = new Set(base.map((c) => c[0])); return base.concat(Object.keys(aliases).filter((k) => !have.has(k)).map((k) => [k, "alias → " + aliases[k]])); }; // aliases show in the menu, so typing one + Enter runs it (not a fuzzy neighbour)
     // Re-scan .nexus/commands + .claude/commands into customCmds (used after /feature
     // create|remove so a new feature is usable immediately, without a restart).
     const reloadCustomCmds = () => {
@@ -3984,7 +3992,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const preText = text.replace(/\[Image#(\d+)\]/g, (mm, n) => {
         const fp = imgPaths.get(+n); if (!fp) return mm;
         try { if (fs.statSync(fp).size > 6 * 1024 * 1024) return fp; const ext = fp.split(".").pop().toLowerCase(); const name = path.relative(cwd, fp).startsWith("..") ? fp : path.relative(cwd, fp); if (ext !== "svg") imgAttach.push({ b64: fs.readFileSync(fp).toString("base64"), mime: "image/" + (ext === "jpg" ? "jpeg" : ext), name }); return "[attached image: " + name + "]"; } catch (_) { return mm; }
-      }).replace(/(^|\s)@(\S+\.(?:png|jpe?g|gif|webp|bmp))\b/gi, (mm, pre, p) => {
+      }).replace(/(^|\s)@(?:"([^"]+\.(?:png|jpe?g|gif|webp|bmp))"|(\S+\.(?:png|jpe?g|gif|webp|bmp))\b)/gi, (mm, pre, pq, pu) => { const p = pq || pu;
         try { const fp = path.resolve(cwd, p); if (fs.statSync(fp).size > 6 * 1024 * 1024) return mm; const ext = p.split(".").pop().toLowerCase(); imgAttach.push({ b64: fs.readFileSync(fp).toString("base64"), mime: "image/" + (ext === "jpg" ? "jpeg" : ext), name: p }); return pre + "[attached image: " + p + "]"; } catch (_) { return mm; }
       });
       if (imgAttach.length) transcript.push({ role: "system", text: "attached " + imgAttach.length + " image" + (imgAttach.length > 1 ? "s" : "") });
@@ -4760,7 +4768,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // only reads state, so it is safe to run while the agent is working.
     const SIDE_CMDS = new Set(["/cost", "/status", "/context", "/turns", "/ledger", "/cheaper", "/tokens", "/warm", "/savings", "/impact", "/session", "/activity", "/keys", "/compat", "/estimate", "/recent", "/tree", "/stats", "/pins", "/help", "/docs"]);
     const sideName = (t) => { const m = /^\/[^\s]+/.exec(String(t || "").trim()); return m ? m[0].toLowerCase() : ""; };
-    const isInstant = (t) => { const c = sideName(t); return c === "/btw" || SIDE_CMDS.has(c); };
+    const isInstant = (t) => { const c = sideName(t); if (aliases[c] || customCmds[c]) return false; return c === "/btw" || SIDE_CMDS.has(c); }; // your alias/custom command of the same name wins (it may start a turn)
     let _inSide = false;
     const runSide = (t) => {
       const n0 = transcript.length;
@@ -4772,6 +4780,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       btw = { list: btwLog, i: btwLog.length - 1, scroll: 0, loading: false };
       render();
     };
+    let _aliasDepth = 0;
     const handleSlash = (t) => {
       if (!_inSide && SIDE_CMDS.has(sideName(t)) && !aliases[sideName(t)] && !customCmds[sideName(t)]) { runSide(t); return; }
       const sp = t.indexOf(" ");
@@ -4780,7 +4789,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const arg = argstr.split(/\s+/)[0];
       // Any command other than a repeated /clear cancels a pending clear confirmation.
       const clearWasPending = clearPending; if (cmd !== "/clear" && cmd !== "/new") clearPending = false;
-      if (aliases[cmd]) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") handleSlash(body.trim()); else submit(body.trim()); return; }
+      if (aliases[cmd]) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") { if (_aliasDepth >= 5) { transcript.push({ role: "system", text: "alias " + cmd + " loops back on itself (aliases calling aliases more than 5 deep) — fix it with /alias" }); return; } _aliasDepth++; try { handleSlash(body.trim()); } finally { _aliasDepth--; } } else submit(body.trim()); return; }
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
       if (cmd === "/help") {
         const HS = HELP_SECTIONS;
@@ -5946,6 +5955,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       input = composer.text; curPos = composer.cursor; hIdx = composer.histIndex; recalled = composer.histIndex < history.length ? input : null; menuSel = 0;
     };
     const arrowVert = (dir) => { if (recalled !== null && input === recalled && composer.histIndex < history.length) histStep(dir); else if (!visualMove(dir)) histStep(dir); render(); };
+    let _pasteBuf = null, _pasteT = null; // a bracketed paste still arriving (see below)
     process.stdin.on("data", (d) => { try {
       if (loading) { finishBoot(); return; }   // any key skips the intro
       if (pasteNotice) pasteNotice = "";        // a paste preflight notice lasts until the next key
@@ -5973,6 +5983,26 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       } else if (s === "\x1b" && !_escFlushing) {
         _escHold = true; _escTimer = setTimeout(() => { _escHold = false; _escTimer = null; try { _escFlushing = true; process.stdin.emit("data", "\x1b"); } finally { _escFlushing = false; } }, 40);
         return;
+      }
+      // Bracketed paste split across reads: a big paste arrives as "\x1b[200~part1",
+      // "part2", … "partN\x1b[201~" (the end marker itself can be split). Without
+      // buffering, each piece was handled on its own — several paste markers, and
+      // a middle piece ending in a newline looked like typed text + Enter and SENT
+      // the half-pasted prompt. Collect everything up to the end marker and replay
+      // it as ONE paste. A paste whose end never arrives is flushed after 600ms.
+      if (_pasteBuf !== null) {
+        _pasteBuf += s; if (_pasteT) clearTimeout(_pasteT);
+        const e = _pasteBuf.indexOf("\x1b[201~");
+        if (e < 0) { _pasteT = setTimeout(() => { const w = _pasteBuf; _pasteBuf = null; _pasteT = null; if (w) process.stdin.emit("data", "\x1b[200~" + w + "\x1b[201~"); }, 600); return; }
+        const whole = _pasteBuf.slice(0, e), rest = _pasteBuf.slice(e + 6); _pasteBuf = null; _pasteT = null;
+        process.stdin.emit("data", "\x1b[200~" + whole + "\x1b[201~"); if (rest) process.stdin.emit("data", rest); return;
+      }
+      { const ps = s.indexOf("\x1b[200~"); if (ps >= 0 && s.indexOf("\x1b[201~", ps) < 0) { const before = s.slice(0, ps); _pasteBuf = ""; if (before) { const b0 = _pasteBuf; _pasteBuf = null; process.stdin.emit("data", before); _pasteBuf = b0; } process.stdin.emit("data", s.slice(ps + 6)); return; } }
+      // One chunk mixing typed text with escape keys ("ab\x1b[D", fast typing over
+      // ssh) — every handler matches one exact key, so split it into keys.
+      if (/\x1b/.test(s) && !/[\r\n]/.test(s) && !/\[20[01]~|\x1b\[</.test(s)) {
+        const toks = s.match(/\x1b\[[0-9;?]*[A-Za-z~]|\x1bO[A-Z]|\x1b[\s\S]|[\x00-\x1f\x7f]|[^\x00-\x1f\x7f\x1b]+/g) || [];
+        if (toks.length > 1 && toks.some((k) => k[0] !== "\x1b" && k.charCodeAt(0) >= 32)) { for (const k of toks) process.stdin.emit("data", k); return; }
       }
       // A wheel notch in alt-screen scroll mode (?1007) arrives as a burst of arrow
       // keys in ONE chunk, often in SS3 form (ESC O A). Replay a burst key by key
@@ -6217,8 +6247,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (s === "\t") {
         const mm = slashMatches(); if (mm.length) { input = (mm[menuSel] || mm[0])[0] + " "; curPos = input.length; menuSel = 0; refreshArgCache(); render(); return; }
         const am = argMatches(); if (am.length) { const sp = input.indexOf(" "); const cmd = input.slice(0, sp); input = cmd + " " + (am[menuSel] || am[0])[0] + " "; curPos = input.length; menuSel = 0; render(); return; }
-        const at = input.match(/@([^\s]*)$/);
-        if (at) { try { const pt = at[1]; const dir = pt.includes("/") ? pt.slice(0, pt.lastIndexOf("/") + 1) : ""; const bpart = pt.includes("/") ? pt.slice(pt.lastIndexOf("/") + 1) : pt; const matches = fs.readdirSync(path.resolve(cwd, dir || ".")).filter((e) => e.startsWith(bpart)).sort(); const r = completePath(matches, bpart); if (r) { let suffix = ""; if (r.unique) { const isDir = fs.statSync(path.resolve(cwd, dir + r.value)).isDirectory(); suffix = isDir ? "/" : " "; } input = input.slice(0, at.index) + "@" + dir + r.value + suffix; curPos = input.length; } } catch (_) {} render(); }
+        // @path completion at the CARET (mid-line works), with quoting for spaces:
+        // @my<Tab> → @"my dir/   (a name with a space is written @"…", which the
+        // @-expansion understands), and a unique file closes the quote.
+        const _pre = input.slice(0, curPos);
+        const at = _pre.match(/@"([^"]*)$/) || _pre.match(/@([^\s"]*)$/);
+        if (at) { try { const quoted = at[0][1] === '"'; const pt = at[1]; const dir = pt.includes("/") ? pt.slice(0, pt.lastIndexOf("/") + 1) : ""; const bpart = pt.includes("/") ? pt.slice(pt.lastIndexOf("/") + 1) : pt; const matches = fs.readdirSync(path.resolve(cwd, dir || ".")).filter((e) => e.startsWith(bpart)).sort(); const r = completePath(matches, bpart); if (r) { const full = dir + r.value; const q = quoted || /\s/.test(full); let tok = "@" + (q ? '"' : "") + full; if (r.unique) { const isDir = fs.statSync(path.resolve(cwd, full)).isDirectory(); tok += isDir ? "/" : (q ? '"' : "") + (input[curPos] === " " ? "" : " "); } input = _pre.slice(0, at.index) + tok + input.slice(curPos); curPos = at.index + tok.length; } } catch (_) {} render(); }
         return;
       }
 
@@ -6242,7 +6276,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         case "exit-confirm": transcript.push({ role: "system", text: "Press Ctrl+C again to exit" }); render(); return;
         case "confirm-submit": pasteNotice = "shell-looking paste — press Enter again to send"; render(); return;
         case "submit": {
-          const t = (eff.text || "").trim(); input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; const pick = menuSel; menuSel = 0;
+          const _am = argMatches(), _part = input.indexOf(" ") > 0 ? input.slice(input.indexOf(" ") + 1).trim() : ""; // the argument menu as the user saw it
+          let t = (eff.text || "").trim(); input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; const pick = menuSel; menuSel = 0;
+          if (_am.length && !/\s/.test(_part) && (pick > 0 || (_part && !_am.some((it) => it[0].toLowerCase() === _part.toLowerCase())))) t = t.slice(0, t.indexOf(" ")) + " " + (_am[pick] || _am[0])[0]; // Enter takes the highlighted argument (typed "/engine gem" runs gemini), unless what you typed is already exact
           curTurnFromQueue = false; // a directly-typed action is never a drained queued prompt (keeps Ctrl+X able to interrupt it)
           if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; }
           if (t.startsWith("/")) { let cmd = t; if (!/\s/.test(t)) { const mm = fuzzyCmds(t); if (mm.length) cmd = (mm[pick] || mm[0])[0]; } handleSlash(cmd); render(); return; }

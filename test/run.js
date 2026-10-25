@@ -2948,6 +2948,23 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("forPrompt marks the reference as this-question-only", /Use it only for this question/.test(ND.forPrompt("x")));
   }
 
+  group("settings store — saved extra keys + corrupt-file safety");
+  {
+    const NS = require("../lib/cli/nexus-settings");
+    const h = fs.mkdtempSync(path.join(os.tmpdir(), "nxset-")); fs.mkdirSync(path.join(h, ".nexus"));
+    fs.writeFileSync(path.join(h, ".nexus", "settings.json"), JSON.stringify({ aliases: { "/co": "/cost" } }));
+    const st = NS.createStore(h, {});
+    ok("getSaved reads a saved key outside DEFAULTS (aliases)", st.getSaved("aliases") && st.getSaved("aliases")["/co"] === "/cost" && st.corrupt === null);
+    fs.writeFileSync(path.join(h, ".nexus", "settings.json"), "{ broken");
+    const st2 = NS.createStore(h, {});
+    const left = fs.readdirSync(path.join(h, ".nexus"));
+    ok("a corrupt settings file is moved aside, not silently overwritten", !!st2.corrupt && left.some((f) => /^settings\.json\.corrupt-\d+$/.test(f)) && fs.readFileSync(st2.corrupt, "utf8") === "{ broken");
+    st2.set("recap", false);
+    ok("the next save writes a fresh file; the backup is untouched", JSON.parse(fs.readFileSync(path.join(h, ".nexus", "settings.json"), "utf8")).recap === false && fs.readFileSync(st2.corrupt, "utf8") === "{ broken");
+    fs.writeFileSync(path.join(h, ".nexus", "settings.json"), "   ");
+    ok("an empty settings file is just empty (no backup)", NS.createStore(h, {}).corrupt === null);
+  }
+
   group("engine MCP bridge — external engines get the Nexus ask_user popup");
   {
     const { buildEngineMcpServers, writeMcpConfigFile, codexMcpArgs, toOpencodeConfig, writeEngineConfigFile } = require("../lib/nexus/engine-mcp");
