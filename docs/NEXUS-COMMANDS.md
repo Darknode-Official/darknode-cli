@@ -32,6 +32,8 @@ Pasting an image path or attaching one with @ shows 'attached N image(s)' and se
 
 /btw <question> asks a quick side question answered from the conversation so far. It opens a framed card and is NOT saved to the chat history.
 
+/pager opens the newest tool output in full inside the TUI (the transcript only previews it): j/k or arrows scroll, space/b page, g/G jump to top/end, / searches (smart case), n/N step through matches, q closes. /pager 2 opens the one before; /pager answer pages the last answer. /less is the same command.
+
 In the card: type a follow-up and press Enter to ask it · Enter or Esc on an empty field closes · Esc clears a typed follow-up · Left/Right step through earlier side answers · Up/Down, PgUp/PgDn and the mouse wheel scroll · Ctrl+Y copies the answer · Ctrl+X forgets all side questions. /btw with no question reopens the last one.
 
 Read-only lookups open in the same card instantly, even mid-turn, without touching the chat: /activity /cheaper /compat /context /cost /docs /estimate /help /impact /keys /ledger /pins /recent /savings /session /stats /status /tokens /tree /turns /warm.
@@ -188,6 +190,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/autoupdate` — auto-update on launch: /autoupdate on | check | off
 - `/next` — queue a prompt after the current turn (Ctrl+X / Ctrl+S runs it now; clear / rm <n> to manage)
 - `/btw` — side question — answered from context, never saved to history
+- `/pager` — read the newest tool output in full: /pager [n] | answer (j/k, space, g/G, / search, q)
 - `/compat` — which features this model supports (nothing is hidden) (opens in the side panel)
 - `/mode` — capability preset: /mode power|cost|speed|reset (model-compatible only)
 - `/god-prompt` — arm max-quality mode for your NEXT message only (gold border, auto-reverts)

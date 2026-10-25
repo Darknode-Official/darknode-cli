@@ -55,8 +55,9 @@ const { frameDiff, wordHi, wordFlags } = require("./lib/cli/diff"); // terminal 
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
 const { renderMd } = require("./lib/cli/md-render");
-const { findLinks, openLink } = require("./lib/cli/links"); // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
-const { sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
+const { findLinks, openLink } = require("./lib/cli/links");
+const Pager = require("./lib/cli/pager"); // /pager: read a whole tool output in-place (less-style keys + search) // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
+const { asText, sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
 const CompactAnim = require("./lib/cli/compact-anim");
@@ -2831,6 +2832,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/autoupdate", "auto-update on launch: /autoupdate on | check | off"],
       ["/next", "queue a prompt after the current turn (Ctrl+X / Ctrl+S runs it now; clear / rm <n> to manage)"],
       ["/btw", "side question — answered from context, never saved to history"],
+      ["/pager", "read the newest tool output in full: /pager [n] | answer (j/k, space, g/G, / search, q)"],
       ["/compat", "which features this model supports (nothing is hidden)"],
       ["/mode", "capability preset: /mode power|cost|speed|reset (model-compatible only)"],
       ["/god-prompt", "arm max-quality mode for your NEXT message only (gold border, auto-reverts)"],
@@ -3213,7 +3215,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
                 if (ln.k === "todo") { L.push(pre() + (ln.s === "done" ? gray("☒ ") + dim(strike(ln.text)) : ln.s === "active" ? bold("☐ " + ln.text) : "☐ " + ln.text)); continue; }
                 for (const w of wrap(stripA(ln.text)).slice(0, expanded ? 40 : 2)) L.push(pre() + (ln.k === "err" ? red(w) : ln.k === "out" ? w : gray(w)));
               }
-              if (v.more) L.push(gray("     … +" + v.more + " line" + (v.more > 1 ? "s" : "") + " (ctrl+o to expand)"));
+              if (v.more) L.push(gray("     … +" + v.more + " line" + (v.more > 1 ? "s" : "") + " (ctrl+o to expand · /pager to read all)"));
             } else if (it.status === "run" && (it.name === "Bash" || it.name === "run_command")) {
               L.push("  " + gray("⎿") + "  " + gray("Running…"));
             } else if (it.detail && (done || expanded)) {
@@ -3462,6 +3464,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // from the conversation so far, shown in a dismissible card, and NEVER added
     // to the conversation history. Runs independently (even mid-turn) on its own
     // controller. Works on any engine.
+    let pager = null;       // /pager overlay state (lib/cli/pager.js) while open
     let btw = null;         // { list, i, scroll, loading, flash } while the overlay is open
     const btwLog = [];      // prior side questions this session (in-memory only, newest last)
     let claudeSid = "";     // most recent claude CLI session id (from the stream init)
@@ -3597,10 +3600,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // When the model is asking a question, its card replaces the composer + menu.
       const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green, mag }) : null;
       const effortRows = (!askRows && pendingEffort) ? renderEffortPicker(C, pendingEffort.sel) : null;
-      const btwRows = (!askRows && !effortRows && btw) ? renderBtw(C, R, btw) : null;
-      const _av = (!askRows && !effortRows && !btwRows && agentView && agents[agentView.i]) ? agents[agentView.i] : null; // an open agent: its conversation replaces the chat
+      const pagerRows = (!askRows && !effortRows && pager) ? Pager.pagerView(pager, C, Math.max(5, R - 4), { border: cyan, gray, bold, yellow, hit: (x) => useColor ? "\x1b[7m" + x + "\x1b[27m" : "[" + x + "]", cur: (x) => useColor ? "\x1b[1;7;33m" + x + "\x1b[22;27;39m" : "{" + x + "}" }) : null;
+      const btwRows = (!askRows && !effortRows && !pagerRows && btw) ? renderBtw(C, R, btw) : null;
+      const _av = (!askRows && !effortRows && !pagerRows && !btwRows && agentView && agents[agentView.i]) ? agents[agentView.i] : null; // an open agent: its conversation replaces the chat
       const agentViewRows = _av ? Agents.viewBar(_av, agentView.i, agents.length, C, { cyan, gray, bold, dim, green, red, yellow, mag }, Date.now()) : null;
-      let cardRows = askRows || effortRows || btwRows || agentViewRows; // a full-width card replaces the composer + menu
+      let cardRows = askRows || effortRows || pagerRows || btwRows || agentViewRows; // a full-width card replaces the composer + menu
       if (cardRows && cardRows.length > R - 2) cardRows = cardRows.slice(0, Math.max(1, R - 2)); // never build a card taller than the screen (would overflow the diff'd frame)
       // breathing room below the footer so the composer floats off the terminal
       // floor (matches Claude Code, which leaves a margin under its prompt).
@@ -4799,7 +4803,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // only reads state, so it is safe to run while the agent is working.
     const SIDE_CMDS = new Set(["/cost", "/status", "/context", "/turns", "/ledger", "/cheaper", "/tokens", "/warm", "/savings", "/impact", "/session", "/activity", "/keys", "/compat", "/estimate", "/recent", "/tree", "/stats", "/pins", "/help", "/docs"]);
     const sideName = (t) => { const m = /^\/[^\s]+/.exec(String(t || "").trim()); return m ? m[0].toLowerCase() : ""; };
-    const isInstant = (t) => { const c = sideName(t); if (aliases[c] || customCmds[c]) return false; return c === "/btw" || SIDE_CMDS.has(c); }; // your alias/custom command of the same name wins (it may start a turn)
+    const isInstant = (t) => { const c = sideName(t); if (aliases[c] || customCmds[c]) return false; return c === "/btw" || c === "/pager" || c === "/less" || SIDE_CMDS.has(c); }; // your alias/custom command of the same name wins (it may start a turn)
     let _inSide = false;
     const runSide = (t) => {
       const n0 = transcript.length;
@@ -5238,6 +5242,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/lean") { lean = !lean; saveSetting("lean", lean); transcript.push({ role: "system", text: "lean mode " + (lean ? "ON — saves tokens:\n  • minimal output (no preamble/recap)\n  • agent steps capped at 12 per turn\n  • tool output truncated to 8K chars\n  • read_file capped at 8K chars\n  • @file inline capped at 3K chars\n  • per-turn output budget: 8K tokens\n  • history pruned to last 4 messages\n  • claude --max-turns 8\n  toggle off with /lean" : "OFF — full power, no token limits") }); }
       else if (cmd === "/style") { if (arg && styleMap[arg] !== undefined) { style = arg; saveSetting("style", arg); transcript.push({ role: "system", text: "output style: " + bold(arg) + (arg === "default" ? "" : " — " + styleDir(arg)) + gray("  (applies to every engine)") }); } else transcript.push({ role: "system", text: "output styles (shape HOW the AI works — add your own as .nexus/styles/<name>.md):\n" + Object.keys(styleMap).map((n) => "  " + (n === style ? cyan("● " + n) : "  " + n) + gray(n === "default" ? "" : "  " + styleDir(n).slice(0, 60))).join("\n") + "\n  usage: /style <name>" }); }
       else if (cmd === "/btw") { askBtw(argstr); }
+      else if (cmd === "/pager" || cmd === "/less") {
+        // Newest first: every finished tool result, plus Nexus answers for "/pager answer".
+        const a = (argstr || "").trim().toLowerCase(), want = a === "answer" ? "text" : "tool", n = Math.max(1, parseInt(a, 10) || 1);
+        const found = [];
+        for (let bi = transcript.length - 1; bi >= 0 && found.length < n; bi--) { const its = transcript[bi].items || []; for (let ii = its.length - 1; ii >= 0 && found.length < n; ii--) { const it = its[ii]; if (want === "text" ? it.type === "text" && it.full : it.type === "tool" && it.result !== undefined) found.push(it); } }
+        const it = found[n - 1];
+        if (!it) transcript.push({ role: "system", text: want === "text" ? "no answer to page yet" : found.length ? "only " + found.length + " tool output" + (found.length > 1 ? "s" : "") + " so far — /pager 1 is the newest" : "no tool output yet — /pager opens the newest tool result (/pager 2 the one before, /pager answer the last answer)" });
+        else { const txt = want === "text" ? it.full : asText(it.result); pager = Pager.createPager(txt || "(empty)", want === "text" ? "answer" : (it.label || it.name || "output")); }
+      }
       else if (cmd === "/compat") {
         const curM = modelLabel(shownModel()) || engine;
         const lines = ["feature compatibility — current model: " + bold(curM) + gray("  (engine: " + engine + ")"), ""];
@@ -6105,6 +6118,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const page = Math.max(1, rows() - 6);
       const isMouse = s.charCodeAt(0) === 27 && s[1] === "[" && s[2] === "<";
 
+      // ---- the /pager overlay owns the keyboard while open (body height = card - 2 borders) ----
+      if (pager && !pendingAsk && !pendingEffort) {
+        const ph = Math.max(5, rows() - 4) - 2;
+        if (isMouse) { const mm = /^\x1b\[<(\d+);/.exec(s); if (mm && (+mm[1] & ~3) === 64) { Pager.scrollBy(pager, (+mm[1] & 1) ? 3 : -3, ph); render(); } return; }
+        if (Pager.pagerKey(pager, s, ph) === "close") pager = null;
+        render(); return;
+      }
       // ---- the /btw side-question overlay owns the keyboard while open ----
       if (btw) {
         const nav = (d) => { const j = btw.i + d; if (j >= 0 && j < btw.list.length) { btw.i = j; btw.scroll = 0; btw.loading = !btw.list[j].a; render(); } };
