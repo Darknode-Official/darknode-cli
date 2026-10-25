@@ -3062,6 +3062,40 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
         try { shim.kill(); } catch (_) {} srv.close(); resolve();
       }, 800);
     });
+
+    // --- the engine dies mid-question: the host is told (link.onGone) so it can withdraw the popup ---
+    await new Promise((resolve) => {
+      let goneFired = false, asked = false;
+      const srv = createAskServer((req, link) => { asked = true; link.onGone(() => { goneFired = true; }); return new Promise(() => {}); }); // user never answers
+      const c = require("net").connect(srv.sockPath, () => c.write(JSON.stringify({ id: 1, question: "Pick", options: ["a", "b"], multi: true }) + "\n"));
+      setTimeout(() => c.destroy(), 150); // engine killed while the popup is open
+      setTimeout(() => {
+        ok("bridge: onAsk gets a link", asked);
+        ok("bridge: engine disconnect mid-question fires onGone (popup can be withdrawn)", goneFired);
+        srv.close(); resolve();
+      }, 400);
+    });
+  }
+
+  group("engine watchdog — idle-based, paused while the user answers");
+  {
+    const { idleWatchdog } = require("../lib/nexus/engine-watchdog");
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    let killed = 0; const waits = { n: 0 };
+    let w = idleWatchdog(() => killed++, 60, waits);
+    await wait(30); w.touch(); await wait(40); // output keeps arriving: 70ms total, never 60ms silent
+    ok("output resets the idle timer (a long busy turn is not killed)", killed === 0);
+    await wait(40);
+    ok("silence past the limit kills a hung engine", killed === 1);
+    killed = 0; waits.n = 1; w = idleWatchdog(() => killed++, 40, waits);
+    await wait(130);
+    ok("never kills while the engine waits on the user's popup", killed === 0);
+    waits.n = 0; await wait(70);
+    ok("…and resumes guarding once the popup is answered", killed === 1);
+    killed = 0; w = idleWatchdog(() => killed++, 40, waits); w.clear(); await wait(70);
+    ok("clear() on exit stops the timer", killed === 0);
+    const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+    ok("no wall-clock 40-minute SIGKILL left on engine turns", !/setTimeout\(\(\) => killGroup\([a-z]+, "SIGKILL"\), 40 \* 60 \* 1000\)/.test(src));
   }
 
   group("/cheap v2 savers — repeat-line collapse + read-only call memo");

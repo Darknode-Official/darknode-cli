@@ -62,6 +62,7 @@ const Ledger = require("./lib/cli/ledger");
 const TokCount = require("./lib/cli/tokcount"); // pure /tokens estimator — price files before @-attaching them (lib/cli/tokcount.js) // pure per-session cost ledger (/turns) + lossless cost advisor (/cheaper) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
 const CacheWarm = require("./lib/cli/cachewarm"); // pure prompt-cache TTL countdown for the status chip + /warm (lib/cli/cachewarm.js)
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
+const { idleWatchdog, engineWaits } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based, paused while the user answers a popup
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
 const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
 const ASK_MCP_PATH = require("path").join(__dirname, "lib", "nexus", "ask-mcp.js"); // stdio MCP shim spawned by the engine
@@ -1830,15 +1831,15 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
     let out = "";
     const spawnEnv = (extra && extra.env) ? Object.assign({}, process.env, extra.env) : process.env; // e.g. $OPENCODE_CONFIG pointing at the Nexus ask bridge
     const p = _cp.spawn(cmd, args, { cwd, env: spawnEnv, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree
+    const to = idleWatchdog(() => killGroup(p, "SIGKILL"));
     let killed = false, err = "";
     if (ctl && ctl.kids) ctl.kids.push(() => { killed = true; killGroup(p, "SIGINT"); setTimeout(() => killGroup(p, "SIGKILL"), 1200); }); // ctrl+c kills this child and everything it spawned
     try { p.stdin.end(); } catch (_) {} // signal EOF so the CLI doesn't wait on stdin
     p.stdout.setEncoding("utf8"); p.stderr.setEncoding("utf8"); // StringDecoder: a multi-byte char split across chunks isn't mangled into U+FFFD
-    p.stdout.on("data", (s) => { out += s; if (out.length > 400000) out = out.slice(-400000); if (onChunk) onChunk(s); else if (!tuiActive) process.stdout.write(gray("    " + s.replace(/\n/g, "\n    "))); });
-    p.stderr.on("data", (d) => { err += d; if (err.length > 20000) err = err.slice(-20000); }); // kept apart: stderr chatter ("Loaded cached credentials.") must not corrupt JSON stdout
-    const to = setTimeout(() => killGroup(p, "SIGKILL"), 40 * 60 * 1000);
-    p.on("close", (code) => { clearTimeout(to); resolve({ ok: code === 0 && !killed, interrupted: killed, output: out.trim() ? out : err.slice(-12000) }); });
-    p.on("error", (e) => { clearTimeout(to); resolve({ ok: false, output: "engine spawn error: " + e.message + " (is '" + engine + "' installed & logged in?)" }); });
+    p.stdout.on("data", (s) => { to.touch(); out += s; if (out.length > 400000) out = out.slice(-400000); if (onChunk) onChunk(s); else if (!tuiActive) process.stdout.write(gray("    " + s.replace(/\n/g, "\n    "))); });
+    p.stderr.on("data", (d) => { to.touch(); err += d; if (err.length > 20000) err = err.slice(-20000); }); // kept apart: stderr chatter ("Loaded cached credentials.") must not corrupt JSON stdout
+    p.on("close", (code) => { to.clear(); resolve({ ok: code === 0 && !killed, interrupted: killed, output: out.trim() ? out : err.slice(-12000) }); });
+    p.on("error", (e) => { to.clear(); resolve({ ok: false, output: "engine spawn error: " + e.message + " (is '" + engine + "' installed & logged in?)" }); });
   });
 }
 // Claude Code stream-json driver — parses NDJSON events so the TUI can render
@@ -1863,12 +1864,13 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath); // give claude the Nexus ask bridge (+ any .nexus/mcp.json servers); no --strict so claude keeps its own servers too
     const env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
     const cp = _cp.spawn("claude", args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
+    const to = idleWatchdog(() => killGroup(cp, "SIGKILL"));
     try { cp.stdin.end(); } catch (_) {} // signal EOF so claude doesn't wait on stdin
     let buf = "", finalText = "", res = null, killed = false;
     if (ctl) ctl.kill = () => { killed = true; killGroup(cp, "SIGINT"); setTimeout(() => killGroup(cp, "SIGKILL"), 1500); };
     cp.stdout.setEncoding("utf8");
     cp.stdout.on("data", (d) => {
-      buf += d;
+      to.touch(); buf += d;
       let nl;
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
@@ -1896,10 +1898,9 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
         else if (ev.type === "result") { res = ev; if (ev.result && !finalText.trim()) finalText = ev.result; h.onResult && h.onResult(ev); }
       }
     });
-    cp.stderr.on("data", () => {});
-    const to = setTimeout(() => killGroup(cp, "SIGKILL"), 40 * 60 * 1000);
-    cp.on("close", (code) => { clearTimeout(to); resolve({ ok: code === 0 && !killed, interrupted: killed, output: finalText, result: res }); });
-    cp.on("error", (e) => { clearTimeout(to); resolve({ ok: false, output: "engine spawn error: " + e.message + " (is claude installed & logged in?)" }); });
+    cp.stderr.on("data", () => { to.touch(); });
+    cp.on("close", (code) => { to.clear(); resolve({ ok: code === 0 && !killed, interrupted: killed, output: finalText, result: res }); });
+    cp.on("error", (e) => { to.clear(); resolve({ ok: false, output: "engine spawn error: " + e.message + " (is claude installed & logged in?)" }); });
   });
 }
 // Safe, non-destructive git checkpoint (captures tracked + untracked into a tree
@@ -3760,10 +3761,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // MCP shim (lib/nexus/ask-mcp.js) connects to askBridge.sockPath and forwards
     // the question here, where handleBridgeAsk shows the real card and answers. ----
     let askBridge = null;
-    const handleBridgeAsk = async (req) => {
+    const handleBridgeAsk = async (req, link) => {
       const q = String((req && req.question) || "");
       if (!q) return { skipped: true };
       transcript.push({ role: "system", text: gray("the model is asking: ") + oneline(q, 60) }); render();
+      // Tag this request's popup; if the engine disconnects before the user answers,
+      // withdraw it (with a notice) rather than accept an answer that goes nowhere.
+      const tok = {};
+      const tagAsk = (qq, oo, ex) => { const pr = askUser(qq, oo, ex); if (pendingAsk) pendingAsk._bridge = tok; return pr; };
+      if (link && link.onGone) link.onGone(() => { if (pendingAsk && pendingAsk._bridge === tok) { const p = pendingAsk; pendingAsk = null; transcript.push({ role: "system", text: yellow("the engine stopped before you answered — the question was withdrawn (your answer was not sent)") }); p.resolve({ cancelled: true }); render(); } });
+      engineWaits.n++; // the engine is silent while it waits on the user — never treat that as hung
+      try { return await answerBridgeAsk(req, q, tagAsk); } finally { engineWaits.n--; }
+    };
+    const answerBridgeAsk = async (req, q, askUser) => {
       if (req.input) { const ans = await askUser(q, [], { input: true, placeholder: req.placeholder }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
       const norm = Ask.normOptions(Array.isArray(req.options) ? req.options : []);
       if (!norm.length) { const ans = await askUser(q, [], { input: true }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
