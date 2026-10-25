@@ -3435,6 +3435,51 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("backoff without Retry-After grows and caps", await (() => { const w = []; let k = 0; return R.withRetry(async () => { if (++k < 4) throw err(503); return 1; }, null, { sleep: async (ms) => w.push(ms) }).then(() => w[0] >= 2000 && w[1] >= 4000 && w[2] >= 8000 && w.every((x) => x <= 60000)); })());
   }
 
+  // ── read ranges: every spelling a model uses resolves to the same lines ──
+  {
+    const { lineRange } = require("../lib/nexus/line-range");
+    eq("offset/limit", lineRange({ offset: 301, limit: 300 }), { off: 301, lim: 300 });
+    eq("start/end", lineRange({ start: 301, end: 600 }), { off: 301, lim: 300 });
+    eq("start_line/end_line", lineRange({ start_line: "10", end_line: "12" }), { off: 10, lim: 3 });
+    eq("lines string", lineRange({ lines: "120-180" }), { off: 120, lim: 61 });
+    eq("lines open-ended", lineRange({ lines: "50:" }), { off: 50, lim: null });
+    eq("nothing = whole file", lineRange({}), { off: 1, lim: null });
+    eq("end before start → one line", lineRange({ start: 9, end: 3 }), { off: 9, lim: 1 });
+  }
+
+  // ── supersede is range-aware: chunked reads keep every chunk ──
+  {
+    const { supersedeReread } = require("../lib/nexus/costsave");
+    const big = (t) => ({ role: "tool", content: t + "x".repeat(300) });
+    const msgs = [big("c1"), big("c2"), big("c3")], snap = new Map();
+    supersedeReread(msgs, snap, "/f", "f", 0, "1-300");
+    supersedeReread(msgs, snap, "/f", "f", 1, "301-600");
+    ok("a different range does not erase the earlier chunk", msgs[0].content.startsWith("c1"));
+    supersedeReread(msgs, snap, "/f", "f", 2, "1-300");
+    ok("the same range re-read supersedes the old copy", /^\[superseded .* lines 1-300/.test(msgs[0].content) && msgs[1].content.startsWith("c2"));
+    msgs.push(big("full"));
+    supersedeReread(msgs, snap, "/f", "f", 3);
+    ok("a full read supersedes every earlier partial", msgs.slice(0, 3).every((m) => m.content.startsWith("[superseded")) && msgs[3].content.startsWith("full"));
+    msgs.push(big("p"));
+    supersedeReread(msgs, snap, "/f", "f", 4, "10-20");
+    ok("a partial read after a full one keeps the full copy", msgs[3].content.startsWith("full"));
+  }
+
+  // ── fitWindow: oldest tool results give way before the request outgrows the window ──
+  {
+    const { fitWindow } = require("../lib/nexus/costsave");
+    const call = (p, st) => ({ role: "assistant", content: JSON.stringify({ action: "tool", tool: "read_file", args: { path: p, start: st } }) });
+    const res = (t) => ({ role: "tool", content: t + "y".repeat(5000) });
+    const mk = () => [{ role: "system", content: "S".repeat(3000) }, { role: "user", content: "the task" }, call("big.js", 1), res("r1"), call("big.js", 301), res("r2"), call("big.js", 601), res("r3"), call("big.js", 901), res("r4")];
+    const m1 = mk();
+    eq("fits already → untouched", fitWindow(m1, 1e6), 0);
+    const m2 = mk(), removed = fitWindow(m2, 15000, 2);
+    ok("over budget → oldest results stubbed", removed > 0 && /^\[earlier read_file big\.js from line 1 result removed/.test(m2[3].content));
+    ok("stub names the exact call to redo", /from line 301/.test(m2[5].content));
+    ok("system, task and the last 2 results kept", m2[0].content.length === 3000 && m2[1].content === "the task" && m2[7].content.startsWith("r3") && m2[9].content.startsWith("r4"));
+    ok("only removes as much as needed", (() => { const m = mk(); fitWindow(m, 20000, 2); return m[3].content.startsWith("[earlier") && m[5].content.startsWith("r2"); })());
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();

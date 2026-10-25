@@ -449,5 +449,6 @@ A git checkpoint is taken before every file-changing turn.
   DARKNODE_MODEL   default local model for the ollama engine
   OLLAMA_HOST / OLLAMA_PORT   point at a remote Ollama (default 127.0.0.1:11434)
   OLLAMA_TIMEOUT   local request timeout ms (default 300000)
+  OLLAMA_NUM_CTX   local context window in tokens (default 16384; more = more memory)
   NO_COLOR=1       disable colored output
 ```

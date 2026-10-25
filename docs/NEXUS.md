@@ -626,5 +626,6 @@ These are always active. `/lean` and `/cheap` add more aggressive caps on top.
 | `OLLAMA_HOST` | Ollama host (default: 127.0.0.1) |
 | `OLLAMA_PORT` | Ollama port (default: 11434) |
 | `OLLAMA_TIMEOUT` | Model timeout in ms (default: 300000) |
+| `OLLAMA_NUM_CTX` | Local model context window in tokens (default: 16384; larger uses more memory) |
 
 Legacy `SENTINEL_*` variants are checked as fallbacks.

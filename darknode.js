@@ -1392,7 +1392,7 @@ async function nexusSetup(opts) {
 }
 
 // ---------- AI coder (terminal AI coding agent, local Ollama, dependency-free) ----------
-const { ollamaChat, ollamaTags, pickCoderModel, apiConfigured, ensureDarknodeModel, ensureCoderModel, chooseCoderToPull, API_BASE, hasAnthropic } = require("./lib/nexus/ollama"); // local/any-model client (lib/ollama.js)
+const { NUM_CTX, ollamaChat, ollamaTags, pickCoderModel, apiConfigured, ensureDarknodeModel, ensureCoderModel, chooseCoderToPull, API_BASE, hasAnthropic } = require("./lib/nexus/ollama"); // local/any-model client (lib/ollama.js)
 let darknodeAutoTried = false; // module-level guard: attempt the first-run darknode auto-install at most once per process
 const CODER_SCHEMA = { type: "object", properties: { thought: { type: "string" }, action: { type: "string", enum: ["tool", "final"] }, tool: { type: "string" }, args: { type: "object" }, final: { type: "string" } }, required: ["thought", "action"] };
 // Weak local models routinely mangle the tool schema — packing args into the
@@ -1408,6 +1408,7 @@ const KNOWN_TOOLS = new Set(["read_file", "write_file", "edit_file", "list_dir",
 const SHELL_CMD = /^(sudo\s+)?(ls|cat|grep|egrep|fgrep|echo|cd|pwd|whoami|id|uname|hostname|ps|top|df|du|free|date|env|printenv|which|type|find|locate|head|tail|awk|sed|cut|tr|sort|uniq|wc|xargs|tee|curl|wget|ping|traceroute|nmap|nc|ncat|dig|host|nslookup|ip|ifconfig|iwconfig|netstat|ss|arp|route|cp|mv|rm|mkdir|rmdir|touch|ln|stat|file|chmod|chown|tar|gzip|gunzip|zip|unzip|git|make|gcc|python3?|node|npm|npx|pip3?|bash|sh|zsh|kill|pkill|killall|systemctl|service|apt|apt-get|dpkg|ssh|scp|rsync|darknode|sentinel|nexus|nikto|sqlmap|hydra|john|hashcat|gobuster|ffuf|masscan|whatweb|searchsploit|msfconsole)(\s|$)/i;
 function looksLikeCommand(s) { s = String(s || "").trim(); return SHELL_CMD.test(s) || /^\.{0,2}\//.test(s) || (/\s/.test(s) && /[\/*.~|>]/.test(s)); }
 const PR = require("./lib/nexus/proto-reply");
+const { lineRange } = require("./lib/nexus/line-range");
 function normalizeToolCall(o) {
   let name = o && o.tool, a = o && o.args;
   if (name == null) return { name, a: (a && typeof a === "object") ? a : {} };
@@ -1486,7 +1487,7 @@ const NEXUS_DOCS = {
   config: { title: "Project config (.nexus/)", body:
     "  NEXUS.md        project instructions loaded every session (given to ALL engines)\n  config.json     { engine, model }\n  mcp.json        MCP servers: { mcpServers: { name: { command, args } } }\n  hooks.json      shell hooks: UserPromptSubmit · PreToolUse · PostToolUse · Stop\n  commands/*.md   custom /commands (body = prompt, $ARGUMENTS substituted)\n  snippets.json · plan.json · index.json · session.json   (auto-managed; gitignored)" },
   env: { title: "Environment", body:
-    "  DARKNODE_MODEL   default local model for the ollama engine\n  OLLAMA_HOST / OLLAMA_PORT   point at a remote Ollama (default 127.0.0.1:11434)\n  OLLAMA_TIMEOUT   local request timeout ms (default 300000)\n  NO_COLOR=1       disable colored output" },
+    "  DARKNODE_MODEL   default local model for the ollama engine\n  OLLAMA_HOST / OLLAMA_PORT   point at a remote Ollama (default 127.0.0.1:11434)\n  OLLAMA_TIMEOUT   local request timeout ms (default 300000)\n  OLLAMA_NUM_CTX   local context window in tokens (default 16384; more = more memory)\n  NO_COLOR=1       disable colored output" },
 };
 const DOC_ORDER = ["overview", "quickstart", "engines", "cost", "multiengine", "build", "git", "safety", "context", "session", "keys", "config", "env"];
 function docList() { return DOC_ORDER.map((k) => "  " + k.padEnd(12) + gray(NEXUS_DOCS[k].title)).join("\n"); }
@@ -2136,7 +2137,7 @@ const { autoReview } = require("./lib/nexus/code-review-auto"); // fast rule-bas
 const { explainDiff } = require("./lib/nexus/code-diff-explain"); // semantic diff explainer
 const { generateTests } = require("./lib/nexus/smart-test"); // structure-aware test scaffolder
 const { MCP_CATALOG, catalogGet, isBundled, bundledSpecs, addServerToConfig, removeServerFromConfig } = require("./lib/nexus/mcp-catalog"); // one-command + bundled MCP servers (lib/mcp-catalog.js)
-const { squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats, supersedeReread, collapseToolOutput, createToolMemo, collapseRepeats } = require("./lib/nexus/costsave"); // extra cost savers (lib/costsave.js)
+const { fitWindow, squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats, supersedeReread, collapseToolOutput, createToolMemo, collapseRepeats } = require("./lib/nexus/costsave"); // extra cost savers (lib/costsave.js)
 const CACHE_TTL = 24 * 3600 * 1000; // response-cache entries expire after 24h
 const { TAGS: TODO_TAGS, scanTree: scanTodos, summarizeTodos, rankTodos } = require("./lib/nexus/todos"); // tech-debt marker scanner (lib/nexus/todos.js)
 const { summarizeStats, rankedLangs, scanStats } = require("./lib/nexus/codestats"); // codebase overview (lib/nexus/codestats.js)
@@ -2188,8 +2189,8 @@ async function deviceTool(name, a, cwd) {
   if (name === "todo_read" || name === "read_todos" || name === "get_todos") return { todos: AGENT_TODOS, count: AGENT_TODOS.length };
   if (name === "read_file" || name === "read") { // line range first, then a cap at a line boundary that SAYS so (a silent cut invites a rewrite from a partial read)
     try {
-      const ls = fs.readFileSync(rp(a.path || a.file), "utf8").split("\n"); if (ls.length > 1 && ls[ls.length - 1] === "") ls.pop(); const off = Math.max(1, +(a.offset || a.start || 1) | 0);
-      const last = Math.min(ls.length, a.limit ? off - 1 + Math.max(1, +a.limit | 0) : a.end ? Math.max(off, +a.end | 0) : ls.length);
+      const ls = fs.readFileSync(rp(a.path || a.file), "utf8").split("\n"); if (ls.length > 1 && ls[ls.length - 1] === "") ls.pop(); const _rg = lineRange(a), off = _rg.off;
+      const last = Math.min(ls.length, _rg.lim ? off - 1 + _rg.lim : ls.length);
       let body = ls.slice(off - 1, last).join("\n"), shownTo = last, note;
       if (body.length > 16000) { const cut = body.slice(0, 16000), nl = cut.lastIndexOf("\n"); body = nl > 0 ? cut.slice(0, nl) : cut; shownTo = off - 1 + body.split("\n").length; }
       if (shownTo < last) note = "showing lines " + off + "-" + shownTo + " of " + ls.length + " — read again with offset " + (shownTo + 1) + " for the rest; do NOT rewrite this file from a partial read";
@@ -4280,7 +4281,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
                 // Never truncate silently: cap at a line boundary and SAY so, with the
                 // offset to continue from (a silent cut let a later full write_file drop
                 // the file's tail). offset/limit (1-based lines) page through big files.
-                const _ls = _c.split("\n"), _off = Math.max(1, parseInt(a.offset, 10) || 1), _lim = Math.max(1, parseInt(a.limit, 10) || _ls.length), CAP = 10000;
+                const _ls = _c.split("\n"), _rg = lineRange(a), _off = _rg.off, _lim = _rg.lim || _ls.length, CAP = 10000;
                 let _end = Math.min(_ls.length, _off - 1 + _lim), _len = 0, _k = _off - 1;
                 for (; _k < _end; _k++) { if (_len + _ls[_k].length + 1 > CAP && _k > _off - 1) break; _len += _ls[_k].length + 1; }
                 const _body = _ls.slice(_off - 1, _k).join("\n");
@@ -4385,7 +4386,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             // oMsgs is only appended to or mutated in place, and the map is cleared on
             // the compaction splice and on /clear.
             if (name === "read_file" && result && typeof result.content === "string" && result.content.length > 200 && !/^\(unchanged since you last read/.test(result.content)) {
-              impact.squeezeTok += supersedeReread(oMsgs, fileSnap, path.resolve(cwd, a.path || ""), relOf(a.path) || a.path);
+              const _rm = typeof result.note === "string" && /showing lines (\d+-\d+)/.exec(result.note); impact.squeezeTok += supersedeReread(oMsgs, fileSnap, path.resolve(cwd, a.path || ""), relOf(a.path) || a.path, undefined, _rm ? _rm[1] : undefined);
+            }
+            { // always-on overflow guard: never let the request outgrow the model's window (Ollama would silently drop the task)
+              const _win = apiConfigured() ? 128000 : (/^claude/i.test(String(mdl)) && hasAnthropic()) ? 200000 : NUM_CTX();
+              if (fitWindow(oMsgs, Math.floor(_win * 2.6), 2) > 0) for (const k of Object.keys(readCache)) delete readCache[k]; // a stubbed read is no longer "still in context"
             }
             if (lean || trimOutput) elideToolHistory(oMsgs, lean ? 16000 : 40000, lean ? 3 : 6); // cap cumulative tool bytes carried within the turn (opt-in /settings trimOutput; always in lean)
             // loop guard: if the agent is stuck repeating or oscillating, warn it; if it keeps
@@ -4678,7 +4683,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
         transcript.push(b);
       }
-      if (s.sess) Object.assign(sess, s.sess); if (s.engine && ENGINES[s.engine]) engine = s.engine;
+      if (s.sess) Object.assign(sess, s.sess); if (s.engine && ENGINES[s.engine]) engine = s.engine; if (engine !== "claude" && CTXW[engine]) sess.ctxWindow = CTXW[engine]; // a saved window is stale for registry-sized engines (only claude learns it from usage)
       sess.liveOut = 0; activeBlock = null; busy = false; scroll = 0; // clear transient run state so the resumed view is clean
       cont = true; carryNote = ""; localReplay = []; oMsgs.length = 1;
       if (engine === "claude") {
@@ -5703,7 +5708,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const bfile = (n) => path.join(bdir, String(n).replace(/[^\w.-]/g, "_") + ".json");
         const listB = () => { try { return fs.readdirSync(bdir).filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, "")); } catch (_) { return []; } };
         const saveB = (n) => { try { fs.mkdirSync(bdir, { recursive: true }); fs.writeFileSync(bfile(n), JSON.stringify({ engine, model: sess.model, transcript, sess, oMsgs, ts: Date.now() })); return true; } catch (_) { return false; } };
-        const loadB = (n) => { try { const s = JSON.parse(fs.readFileSync(bfile(n), "utf8")); transcript.length = 0; for (const b of s.transcript) transcript.push(b); if (s.sess) Object.assign(sess, s.sess); if (Array.isArray(s.oMsgs)) { oMsgs.length = 0; for (const m of s.oMsgs) oMsgs.push(m); } return true; } catch (_) { return false; } };
+        const loadB = (n) => { try { const s = JSON.parse(fs.readFileSync(bfile(n), "utf8")); transcript.length = 0; for (const b of s.transcript) transcript.push(b); if (s.sess) { Object.assign(sess, s.sess); if (engine !== "claude" && CTXW[engine]) sess.ctxWindow = CTXW[engine]; } if (Array.isArray(s.oMsgs)) { oMsgs.length = 0; for (const m of s.oMsgs) oMsgs.push(m); } return true; } catch (_) { return false; } };
         if (!ps.length) { const bs = listB(); if (!bs.includes(curBranch)) bs.unshift(curBranch); transcript.push({ role: "system", text: "conversation branches:\n" + bs.map((b) => "  " + (b === curBranch ? cyan("● " + b) + gray("  (current)") : "  " + b)).join("\n") + "\n  " + gray("/branch new <name>   fork this conversation here") + "\n  " + gray("/branch <name>        switch (auto-saves the current branch first)") + "\n  " + gray("/branch delete <name>") }); }
         else if (ps[0] === "new" && ps[1]) { saveB(curBranch); curBranch = ps[1]; saveB(curBranch); transcript.push({ role: "system", text: "forked → branch " + cyan(curBranch) + gray(" (a copy from here — explore freely; /branch <other> to switch back)") }); }
         else if (ps[0] === "delete" && ps[1]) { if (ps[1] === curBranch) transcript.push({ role: "system", text: "can't delete the current branch — switch away first." }); else { try { fs.unlinkSync(bfile(ps[1])); transcript.push({ role: "system", text: "deleted branch " + ps[1] }); } catch (_) { transcript.push({ role: "system", text: "no branch '" + ps[1] + "'" }); } } }
