@@ -1832,12 +1832,14 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
     let out = "";
     const spawnEnv = (extra && extra.env) ? Object.assign({}, process.env, extra.env) : process.env; // e.g. $OPENCODE_CONFIG pointing at the Nexus ask bridge
     const p = _cp.spawn(cmd, args, { cwd, env: spawnEnv, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree
-    if (ctl && ctl.kids) ctl.kids.push(() => { killGroup(p, "SIGINT"); setTimeout(() => killGroup(p, "SIGKILL"), 1200); }); // ctrl+c kills this child and everything it spawned
+    let killed = false, err = "";
+    if (ctl && ctl.kids) ctl.kids.push(() => { killed = true; killGroup(p, "SIGINT"); setTimeout(() => killGroup(p, "SIGKILL"), 1200); }); // ctrl+c kills this child and everything it spawned
     try { p.stdin.end(); } catch (_) {} // signal EOF so the CLI doesn't wait on stdin
-    p.stdout.on("data", (d) => { const s = d.toString(); out += s; if (onChunk) onChunk(s); else if (!tuiActive) process.stdout.write(gray("    " + s.replace(/\n/g, "\n    "))); });
-    p.stderr.on("data", (d) => (out += d.toString()));
+    p.stdout.setEncoding("utf8"); p.stderr.setEncoding("utf8"); // StringDecoder: a multi-byte char split across chunks isn't mangled into U+FFFD
+    p.stdout.on("data", (s) => { out += s; if (out.length > 400000) out = out.slice(-400000); if (onChunk) onChunk(s); else if (!tuiActive) process.stdout.write(gray("    " + s.replace(/\n/g, "\n    "))); });
+    p.stderr.on("data", (d) => { err += d; if (err.length > 20000) err = err.slice(-20000); }); // kept apart: stderr chatter ("Loaded cached credentials.") must not corrupt JSON stdout
     const to = setTimeout(() => killGroup(p, "SIGKILL"), 40 * 60 * 1000);
-    p.on("close", (code) => { clearTimeout(to); resolve({ ok: code === 0, output: out.slice(-12000) }); });
+    p.on("close", (code) => { clearTimeout(to); resolve({ ok: code === 0 && !killed, interrupted: killed, output: out.trim() ? out : err.slice(-12000) }); });
     p.on("error", (e) => { clearTimeout(to); resolve({ ok: false, output: "engine spawn error: " + e.message + " (is '" + engine + "' installed & logged in?)" }); });
   });
 }
@@ -1866,8 +1868,9 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     try { cp.stdin.end(); } catch (_) {} // signal EOF so claude doesn't wait on stdin
     let buf = "", finalText = "", res = null, killed = false;
     if (ctl) ctl.kill = () => { killed = true; killGroup(cp, "SIGINT"); setTimeout(() => killGroup(cp, "SIGKILL"), 1500); };
+    cp.stdout.setEncoding("utf8");
     cp.stdout.on("data", (d) => {
-      buf += d.toString();
+      buf += d;
       let nl;
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
@@ -1962,7 +1965,7 @@ function mcpConnect(name, spec, cwd) {
   return new Promise((resolve) => {
     let cp; try { cp = _cp.spawn(spec.command, spec.args || [], { cwd, env: Object.assign({}, process.env, spec.env || {}), stdio: ["pipe", "pipe", "ignore"] }); } catch (e) { return resolve({ name, error: e.message }); }
     let buf = "", idc = 0; const pending = Object.create(null); // null-proto: a server reply with id "__proto__"/"toString" can't resolve an inherited member (crash / silent mis-route)
-    cp.stdout.on("data", (d) => { buf += d.toString(); let nl; while ((nl = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); if (!line.trim()) continue; let m; try { m = JSON.parse(line); } catch (_) { continue; } if (m.id != null) { const cb = pending[m.id]; if (typeof cb === "function") { delete pending[m.id]; cb(m); } } } });
+    cp.stdout.setEncoding("utf8"); cp.stdout.on("data", (d) => { buf += d; let nl; while ((nl = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); if (!line.trim()) continue; let m; try { m = JSON.parse(line); } catch (_) { continue; } if (m.id != null) { const cb = pending[m.id]; if (typeof cb === "function") { delete pending[m.id]; cb(m); } } } });
     cp.on("error", () => {});
     const call = (method, params) => new Promise((res, rej) => { const id = ++idc; pending[id] = (m) => m.error ? rej(new Error(m.error.message || "mcp error")) : res(m.result); try { cp.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params: params || {} }) + "\n"); } catch (e) { return rej(e); } setTimeout(() => { if (pending[id]) { delete pending[id]; rej(new Error("mcp timeout")); } }, 20000); });
     const notify = (method, params) => { try { cp.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params: params || {} }) + "\n"); } catch (_) {} };
@@ -3439,6 +3442,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let btw = null;         // { list, i, scroll, loading, flash } while the overlay is open
     const btwLog = [];      // prior side questions this session (in-memory only, newest last)
     let claudeSid = "";     // most recent claude CLI session id (from the stream init)
+    let claudeMuSid = "", claudeMuBase = {}; // result.modelUsage is ALSO cumulative across --continue/--resume: keep the last snapshot per session and charge only the delta
     let claudeCostSid = "", claudeCostBase = 0; // claude's result.total_cost_usd is CUMULATIVE per session across --continue, so charge only the per-turn delta (reset when the session id changes)
     let oneShotRan = false; // a claude one-shot ran since the last main turn → resume the tracked
                             // session id next turn instead of letting --continue pick the one-shot
@@ -3976,7 +3980,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // Response cache: an EXACT repeat of a READ-ONLY answer is served FREE. The key
       // includes the inlined context, so a changed file yields a new key and re-runs
       // (never a stale answer). /cache off to disable, /cache clear to wipe.
-      const ckey = (cacheOn && !bypassCacheOnce) ? cacheKey(engine, sess.model || engine, promptText) : null; bypassCacheOnce = false;
+      // Only cache what is a pure function of the prompt: CLI engines act on files
+      // we can't see, and a continuing claude conversation answers from history
+      // (a bare "yes" means something different every time) — neither is cached.
+      const _cacheable = cacheOn && !bypassCacheOnce && (ENGINES[engine] || {}).kind !== "cli" && !(engine === "claude" && cont);
+      const ckey = _cacheable ? cacheKey(engine, shownModel() || engine, promptText) : null; bypassCacheOnce = false;
       if (ckey) { const hit = cacheGet(cwd, ckey, CACHE_TTL); if (hit && hit.readonly && hit.text) {
         const blk = { role: "nexus", items: [{ type: "text", full: hit.text, shown: hit.text.length }] };
         blk.summary = green("cache hit — free") + gray("  ·  saved " + ((PAID[engine] && hit.cost) ? "$" + hit.cost.toFixed(4) + " · " : "") + "↑" + fmtK(hit.inTok || 0) + " ↓" + fmtK(hit.outTok || 0) + " tok  ·  /cache off to disable");
@@ -4019,9 +4027,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         { const cw = sess.ctxWindow || 200000; bits.push(Math.min(100, Math.round((sess.ctxUsed / cw) * 100)) + "% ctx"); }
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); try { bisectPersist(cwd, ckObj); } catch (_) {} } // persist the turn snapshot so `bisect` can search the timeline later
         const clock = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
-        block.summary = (recap.length ? recap.join(". ") + "." + gray(" · ") : "") + bits.join(" · ") + gray(" · done " + clock);
+        block.summary = (recap.length ? recap.join(". ") + "." + gray(" · ") : "") + bits.join(" · ") + gray(" · " + (res && res.interrupted ? "interrupted " : "done ") + clock);
         // Cache read-only answers (no file/command side-effects) so an exact repeat is free.
-        if (ckey && !(res && res.interrupted) && stat.files.size === 0 && stat.cmds === 0) { try { const ft = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").trim(); if (ft && ft !== "(no output)") cachePut(cwd, ckey, { text: ft, inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), readonly: true, hits: 0, ts: Date.now() }); } catch (_) {} }
+        // no tool at all: an answer built from a Read/grep goes stale when the file changes
+        if (ckey && !(res && (res.interrupted || res.ok === false)) && stat.files.size === 0 && stat.cmds === 0 && !block.items.some((i) => i.type === "tool")) { try { const ft = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").trim(); if (ft && ft !== "(no output)") cachePut(cwd, ckey, { text: ft, inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), readonly: true, hits: 0, ts: Date.now() }); } catch (_) {} }
         if (!(res && res.interrupted)) { try { const answerText = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").slice(0, 2000); nexusLearn(text, answerText); } catch (_) {} }
         for (const it of block.items) if (it.type === "text") it.shown = it.full.length; // turn's done: show the whole reply at once (typewriter is for live streaming only)
         activeBlock = null;
@@ -4096,7 +4105,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             sess.outTok += u.output_tokens || 0;
             sess.ctxUsed = lastCtx || (newIn + cacheIn + (u.output_tokens || 0)); // result usage is SUMMED over every call in the turn (30 tool calls = 30x the context), so prefer the last call's
             if (typeof ev.total_cost_usd === "number") { const sid = ev.session_id || claudeSid; if (sid !== claudeCostSid) { claudeCostSid = sid; claudeCostBase = 0; } sess.cost += Math.max(0, ev.total_cost_usd - claudeCostBase); claudeCostBase = ev.total_cost_usd; } // total_cost_usd is the session's running total; add only what this turn added
-            addUsage(ev.modelUsage, u, sess.resolvedModel || sess.model);
+            let _mu = ev.modelUsage;
+            if (_mu && typeof _mu === "object") { const sid = ev.session_id || claudeSid; if (sid !== claudeMuSid) { claudeMuSid = sid; claudeMuBase = {}; } const d = {}; for (const n of Object.keys(_mu)) { const m = _mu[n] || {}, b = claudeMuBase[n] || {}; d[n] = {}; for (const k of ["inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"]) d[n][k] = Math.max(0, (m[k] || 0) - (b[k] || 0)); claudeMuBase[n] = Object.assign({}, m); } _mu = d; }
+            addUsage(_mu, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
         }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
@@ -4874,7 +4885,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed" : "the working tree")) : "rewind failed (git error)" }); } } }
       else if (cmd === "/clear" || cmd === "/new") {
         const hasContent = oMsgs.length > 1 || transcript.some((m) => m.role === "user" || m.role === "nexus");
-        const doClear = () => { clearPending = false; transcript.length = 0; transcript.push({ role: "art" }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); render(); };
+        const doClear = () => { clearPending = false; transcript.length = 0; transcript.push({ role: "art" }); cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; cacheWarm.lastAt = 0; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); render(); };
         if (!hasContent) doClear(); // nothing to lose — just reset
         else askUser("Clear the whole conversation? This wipes the chat and the model's memory of it.", ["Keep it", "Clear everything"]).then((ans) => {
           if (!ans.cancelled && ans.index === 1) doClear();
@@ -5661,7 +5672,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         locals = locals || [];
         const opts = [];
         // switching AI starts a fresh conversation + resets the cost/context meters (like /engine)
-        const reset = () => { sess.userModel = false; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; oMsgs.length = 1; };
+        const reset = () => { sess.userModel = false; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; oMsgs.length = 1; };
         locals.forEach((m) => opts.push({ name: m, note: "local · free", paid: false, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = CTXW.ollama || 32768; reset(); } }));
         if (hasAnthropic()) ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"].forEach((m) => opts.push({ name: m, note: "Claude · API — BILLED to your Anthropic key", paid: true, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = 200000; reset(); } }));
         if (API_BASE()) opts.push({ name: (sess.model && sess.model !== engine && !/^claude/i.test(sess.model) ? sess.model : "api-model"), note: API_BASE() + " · likely billed", paid: true, apply: () => { engine = "ollama"; if (!sess.model || /^claude/i.test(sess.model) || sess.model === engine) sess.model = ""; reset(); } });
@@ -5683,7 +5694,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         else if (!ENGINES[arg]) transcript.push({ role: "system", text: "unknown engine '" + arg + "' — options: " + ENGINE_ORDER.join(", ") });
         else if (offline && ENGINES[arg].kind !== "local") transcript.push({ role: "system", text: "offline lock is ON — cloud engines are blocked. Turn it off with /offline first." });
         else if (!engineAvail(arg)) transcript.push({ role: "system", text: "'" + arg + "' (" + ENGINES[arg].label + ") isn't installed — install its CLI, then /engine " + arg });
-        else { engine = arg; sess.model = arg; sess.userModel = false; sess.ctxWindow = CTXW[arg] || 200000; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; oMsgs.length = 1; transcript.push({ role: "system", text: "engine switched to " + arg + " (" + ENGINES[arg].label + ") — cost meter now tracks " + (PAID[arg] ? arg + " (billed)" : arg + " (local · free)") + "; fresh conversation" }); }
+        else { engine = arg; sess.model = arg; sess.userModel = false; sess.ctxWindow = CTXW[arg] || 200000; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; oMsgs.length = 1; transcript.push({ role: "system", text: "engine switched to " + arg + " (" + ENGINES[arg].label + ") — cost meter now tracks " + (PAID[arg] ? arg + " (billed)" : arg + " (local · free)") + "; fresh conversation" }); }
       }
       else if (documentedVerbs().has(cmd.slice(1)) && !NEXUS_NO_BRIDGE.has(cmd.slice(1))) {
         // Bridge: run any documented `darknode <verb>` as an in-Nexus /command, so
