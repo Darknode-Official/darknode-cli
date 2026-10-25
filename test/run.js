@@ -1794,7 +1794,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     // output-size cap enforced (tiny budget so a single result overflows)
     const bigDispatch = async () => ({ content: "Z".repeat(5000) });
     const sized = await BA.runBatch([{ op: "read", path: "big1" }, { op: "read", path: "big2" }], bigDispatch, { maxOpChars: 4000, maxTotalChars: 4500 });
-    ok("batch caps per-op output length", sized.results[0].output.length === 4000 && sized.results[0].truncated === true);
+    ok("batch caps per-op output length", sized.results[0].output.length === 4000 && /showing lines 1-1 — read again with start:2/.test(sized.results[0].truncated));
+    const lineDispatch = async () => ({ content: Array.from({ length: 900 }, (_, k) => "line " + (k + 1)).join("\n"), from: 100 });
+    const cut = await BA.runBatch([{ op: "read", path: "f", start: 100 }], lineDispatch, { maxOpChars: 120 });
+    ok("a cut read ends on a whole line and says where to continue", /^line 1\n/.test(cut.results[0].output) && !/\n$/.test(cut.results[0].output) && /showing lines 100-\d+ — read again with start:\d+/.test(cut.results[0].truncated));
     ok("batch caps total output across ops", (sized.results[0].output.length + sized.results[1].output.length) <= 4500 && sized.truncated === true);
 
     // an invalid op is reported without failing the whole batch
@@ -3033,6 +3036,298 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
         try { shim.kill(); } catch (_) {} srv.close(); resolve();
       }, 800);
     });
+  }
+
+  group("/cheap v2 savers — repeat-line collapse + read-only call memo");
+  {
+    const CS = require("../lib/nexus/costsave");
+    const L = "waiting for the database to accept connections";
+    const r = CS.collapseRepeats(["start", L, L, L, L, L, "end"].join("\n"));
+    eq("5 identical lines → 1 + exact count", r.text, ["start", L, "[previous line repeated 4 more times]", "end"].join("\n"));
+    eq("never lengthens: short lines whose note would be longer stay", CS.collapseRepeats("a\nok\nok\nok\nok\nb").text, "a\nok\nok\nok\nok\nb");
+    ok("reports tokens saved", r.saved > 0);
+    eq("3 repeats are left alone (below the threshold)", CS.collapseRepeats("a\nx\nx\nx\nb").text, "a\nx\nx\nx\nb");
+    eq("blank-line runs are left alone", CS.collapseRepeats("a\n\n\n\n\nb").text, "a\n\n\n\n\nb");
+    const res = { stdout: "ok\n" + "warn: x\n".repeat(10), content: "same\nsame\nsame\nsame\nsame" };
+    ok("collapseToolOutput shrinks command output", CS.collapseToolOutput(res) > 0 && /repeated 9 more/.test(res.stdout));
+    eq("file contents are never collapsed (edits need exact text)", res.content, "same\nsame\nsame\nsame\nsame");
+    const memo = CS.createToolMemo(), msgs = [], big = JSON.stringify({ hits: "x".repeat(300) });
+    eq("first read-only call passes through", memo.lookup("search", { pattern: "foo" }, big, msgs), null);
+    msgs.push({ role: "tool", content: big });
+    ok("identical repeat → pointer", /identical to the earlier search/.test(memo.lookup("search", { pattern: "foo" }, big, msgs) || ""));
+    eq("different args → no pointer", memo.lookup("search", { pattern: "bar" }, big, msgs), null);
+    msgs.push({ role: "tool", content: big });
+    memo.lookup("run_command", { command: "touch x" }, "{}", msgs); msgs.push({ role: "tool", content: "{}" });
+    eq("a mutating tool in between invalidates the memo", memo.lookup("search", { pattern: "foo" }, big, msgs), null);
+    msgs.push({ role: "tool", content: big });
+    msgs[msgs.length - 1].content = "[superseded]";
+    eq("earlier copy no longer in history → no pointer", memo.lookup("search", { pattern: "foo" }, big, msgs), null);
+    const small = memo.lookup("list_dir", { path: "." }, "[]", msgs); msgs.push({ role: "tool", content: "[]" });
+    eq("tiny results are never replaced", memo.lookup("list_dir", { path: "." }, "[]", msgs), null);
+    void small;
+  }
+
+  group("read_symbol — one definition instead of the whole file");
+  {
+    const RS = require("../lib/nexus/read-symbol");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rsym-")), rp = (p) => path.resolve(dir, p);
+    fs.writeFileSync(path.join(dir, "a.js"), [
+      "const x = 1;",
+      "// adds things",
+      "function add(a, b) {",
+      "  const re = /[{}]/g; // braces in a regex",
+      "  const s = \"}\";",
+      "  if (a) { return a + b; }",
+      "  return b;",
+      "}",
+      "function other() { return 2; }",
+    ].join("\n"));
+    let r = RS.readSymbolTool({ path: "a.js", name: "add" }, dir, rp);
+    eq("JS: doc comment through closing brace (regex + string braces skipped)", r.lines, "2-8");
+    ok("content is line-numbered", /^2  \/\/ adds things/.test(r.content) && /8  }$/.test(r.content));
+    eq("one-line function", RS.readSymbolTool({ path: "a.js", name: "other" }, dir, rp).lines, "9-9");
+    ok("unknown name suggests similar ones", /similar: add/.test(RS.readSymbolTool({ path: "a.js", name: "ad" }, dir, rp).error || ""));
+    fs.writeFileSync(path.join(dir, "m.py"), "import os\n\n@cache\ndef load(p,\n         q):\n    x = 1\n\n    return x\n\ndef after():\n    pass\n");
+    r = RS.readSymbolTool({ path: "m.py", name: "load" }, dir, rp);
+    eq("Python: decorator + multi-line signature + body by indentation", r.lines, "3-8");
+    ok("needs path and name", /needs \{path, name\}/.test(RS.readSymbolTool({ path: "a.js" }, dir, rp).error));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("json_query — one value from a JSON/JSONC file");
+  {
+    const JQ = require("../lib/nexus/json-query");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jq-")), rp = (p) => path.resolve(dir, p);
+    fs.writeFileSync(path.join(dir, "p.json"), JSON.stringify({ scripts: { test: "node t.js" }, deps: { "@a/b": "1.0.0", c: "2" }, items: [{ n: 1 }, { n: 2 }, { n: 3 }] }));
+    fs.writeFileSync(path.join(dir, "ts.json"), '{\n  // comment\n  "compilerOptions": { "strict": true, /* x */ "url": "http://a//b", },\n}\n');
+    const q = (f, query, extra) => JQ.jsonQueryTool(Object.assign({ path: f, query }, extra || {}), dir, rp);
+    eq("dotted path", q("p.json", "scripts.test").value, '"node t.js"');
+    eq("bracket key with @ and /", q("p.json", 'deps["@a/b"]').value, '"1.0.0"');
+    eq("negative index = from the end", q("p.json", "items[-1].n").value, "3");
+    eq("* maps over elements", JSON.parse(q("p.json", "items.*.n").value), [1, 2, 3]);
+    eq("keys_only lists keys", q("p.json", "deps", { keys_only: true }).keys, ["@a/b", "c"]);
+    ok("missing key lists the keys that exist", /keys there: scripts, deps, items/.test(q("p.json", "nope").error));
+    eq("JSONC: comments + trailing commas, // inside a string kept", q("ts.json", "compilerOptions.url").value, '"http://a//b"');
+    eq("parsePath", JQ.parsePath("a.b[0]['x.y'].*"), ["a", "b", 0, "x.y", "*"]);
+    ok("bad query is reported", /could not parse/.test(q("p.json", "a..b").error || ""));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("undo_edit — take back the agent's own last change to a file");
+  {
+    const { createEditUndo } = require("../lib/nexus/edit-undo");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "undo-")), f = path.join(dir, "x.txt"), g = path.join(dir, "new.txt");
+    fs.writeFileSync(f, "v1");
+    const u = createEditUndo();
+    let s = u.snapshot([f]); fs.writeFileSync(f, "v2"); eq("a real change is recorded", u.commit(s), 1);
+    s = u.snapshot([f]); fs.writeFileSync(f, "v3"); u.commit(s);
+    s = u.snapshot([f]); eq("a no-op write is not recorded", u.commit(s), 0);
+    ok("undo restores the previous version", u.undo(f).ok && fs.readFileSync(f, "utf8") === "v2");
+    ok("undo again steps further back", u.undo(f).ok && fs.readFileSync(f, "utf8") === "v1");
+    ok("nothing left to undo", /no edit of this file/.test(u.undo(f).error));
+    s = u.snapshot([f]); fs.writeFileSync(f, "agent"); u.commit(s); fs.writeFileSync(f, "user edit");
+    ok("refuses when the file changed since", /changed after that edit/.test(u.undo(f).error) && fs.readFileSync(f, "utf8") === "user edit");
+    ok("force restores anyway", u.undo(f, { force: true }).ok && fs.readFileSync(f, "utf8") === "v1");
+    s = u.snapshot([g]); fs.writeFileSync(g, "created"); u.commit(s);
+    ok("undoing a create deletes the file", u.undo(g).ok && !fs.existsSync(g));
+    const TG = require("../lib/nexus/tool-gates");
+    ok("plan mode blocks undo_edit (it writes)", TG.isPlanBlocked("undo_edit"));
+    ok("plan mode allows read_symbol + json_query", !TG.isPlanBlocked("read_symbol") && !TG.isPlanBlocked("json_query"));
+    const NT = require("../lib/nexus/native-tools"), sc = NT.TOOL_SCHEMAS;
+    ok("all three tools have schemas", ["read_symbol", "json_query", "undo_edit"].every((n) => sc[n] && sc[n].description));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("replace_in_files — one find/replace across many files");
+  {
+    const RF = require("../lib/nexus/replace-files");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rif-")), rp = (p) => path.resolve(dir, p);
+    fs.mkdirSync(path.join(dir, "src")); fs.mkdirSync(path.join(dir, "node_modules"));
+    fs.writeFileSync(path.join(dir, "src/a.js"), "getUser(1);\ngetUserAll();\nconst getUser = 1;\n");
+    fs.writeFileSync(path.join(dir, "src/b.ts"), "import { getUser } from './a';\n");
+    fs.writeFileSync(path.join(dir, "node_modules/x.js"), "getUser();\n");
+    fs.writeFileSync(path.join(dir, "price.txt"), "cost: 5\n");
+    const run = (args, deps) => RF.replaceInFilesTool(args, dir, rp, deps);
+    let r = run({ find: "getUser", replace: "fetchUser", word: true, dry_run: true });
+    eq("dry run: counts whole-word matches only (getUserAll untouched)", [r.files, r.replacements, r.dry_run], [2, 3, true]);
+    ok("dry run writes nothing", fs.readFileSync(path.join(dir, "src/a.js"), "utf8").startsWith("getUser(1)"));
+    ok("samples show before → after", /getUser\(1\);  →  fetchUser\(1\);/.test(r.changed.find((c) => c.file === "src/a.js").samples[0]));
+    const seen = [];
+    r = run({ find: "getUser", replace: "fetchUser", word: true }, { onWrite: (f) => seen.push(f) });
+    eq("applied", fs.readFileSync(path.join(dir, "src/a.js"), "utf8"), "fetchUser(1);\ngetUserAll();\nconst fetchUser = 1;\n");
+    ok("node_modules skipped", fs.readFileSync(path.join(dir, "node_modules/x.js"), "utf8") === "getUser();\n");
+    eq("onWrite called once per changed file (undo snapshots)", seen.length, 2);
+    r = run({ find: "fetchUser", replace: "X", glob: "**/*.ts" });
+    eq("glob limits files", r.changed.map((c) => c.file), ["src/b.ts"]);
+    r = run({ find: "5", replace: "$1.00" });
+    eq("literal mode: $ in the replacement is literal", fs.readFileSync(path.join(dir, "price.txt"), "utf8"), "cost: $1.00\n");
+    r = run({ find: "cost: (\\S+)", replace: "price=$1", regex: true });
+    eq("regex mode: $1 groups", fs.readFileSync(path.join(dir, "price.txt"), "utf8"), "price=$1.00\n");
+    r = run({ find: "price", replace: "p" }, { check: (rel) => rel === "price.txt" ? "BLOCKED by policy: protected path" : null });
+    ok("policy check skips + reports the file", r.files === 0 && /protected/.test(r.skipped[0].reason) && fs.readFileSync(path.join(dir, "price.txt"), "utf8").startsWith("price"));
+    ok("no matches is a note, not an error", /no matches/.test(run({ find: "zzz_nope", replace: "y" }).note));
+    ok("bad regex reported", /invalid regex/.test(run({ find: "(", replace: "", regex: true }).error));
+    ok("brace globs", RF.globToRe("src/**/*.{js,ts}").test("src/x/y.ts") && !RF.globToRe("src/**/*.{js,ts}").test("src/y.py"));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("background jobs — new-output-only polling + stdin");
+  {
+    const B = require("../lib/nexus/bgjobs").createBgJobs();
+    const id = B.start("srv", null, 0);
+    B.append(id, "booting\n");
+    eq("first read returns everything", B.readNew(id).text, "booting\n");
+    B.append(id, "ready on 3000\n");
+    const n = B.readNew(id);
+    eq("next read returns only the new part", [n.text, n.earlier], ["ready on 3000\n", 8]);
+    eq("nothing new → empty", B.readNew(id).text, "");
+    ok("write to a job without a child is refused", /not running|no open stdin/.test(B.write(id, "x").error));
+    const { spawn } = require("child_process");
+    const cat = spawn("cat");
+    const id2 = B.start("cat", cat, 0); cat.stdout.on("data", (d) => B.append(id2, d));
+    ok("write to a running job's stdin", B.write(id2, "hello\n").ok);
+    await new Promise((r) => setTimeout(r, 300));
+    eq("echoed back", B.readNew(id2).text, "hello\n");
+    B.stop(id2);
+    const TG = require("../lib/nexus/tool-gates");
+    ok("write_stdin is an exec tool (guarded + plan-blocked)", TG.isExecTool("write_stdin") && TG.isPlanBlocked("write_stdin"));
+    ok("replace_in_files is plan-blocked", TG.isPlanBlocked("replace_in_files"));
+  }
+
+  group("wait_for — ready instead of sleep-guessing");
+  {
+    const WF = require("../lib/nexus/wait-for");
+    const net = require("net");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-")), rp = (p) => path.resolve(dir, p);
+    const srv = net.createServer(() => {}); await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    const port = srv.address().port;
+    let r = await WF.waitForTool({ port }, dir, rp, {});
+    ok("open port → ready", r.ready === true);
+    srv.close();
+    r = await WF.waitForTool({ port, timeout_s: 1 }, dir, rp, {});
+    ok("closed port → times out", r.ready === false && /timed out/.test(r.note));
+    setTimeout(() => fs.writeFileSync(path.join(dir, "flag"), "x"), 200);
+    r = await WF.waitForTool({ file: "flag", timeout_s: 3 }, dir, rp, {});
+    ok("file appears → ready", r.ready === true && r.waited_s < 3);
+    const B = require("../lib/nexus/bgjobs").createBgJobs(), id = B.start("srv", null, 0);
+    setTimeout(() => B.append(id, "compiling\nListening on http://localhost:5173\n"), 200);
+    r = await WF.waitForTool({ job: id, pattern: "listening on", timeout_s: 3 }, dir, rp, { jobs: B });
+    ok("job pattern → ready with the matching line", r.ready === true && /5173/.test(r.line));
+    ok("remote URLs refused (local only)", /only checks local/.test((await WF.waitForTool({ url: "https://example.com" }, dir, rp, {})).error));
+    ok("needs a target", /needs one of/.test((await WF.waitForTool({}, dir, rp, {})).error));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("search — grouped by file, match-centred clipping, context, generated files skipped");
+  {
+    const SR = require("../lib/nexus/search");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "srch-")), rp = (p) => path.resolve(dir, p);
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(path.join(dir, "src/a.js"), "one\ntwo\nconst token = 1;\nfour\nfive\nsix\nseven\nuse(token);\n");
+    fs.writeFileSync(path.join(dir, "src/b.py"), "token = 2\n");
+    fs.writeFileSync(path.join(dir, "app.min.js"), "x".repeat(900) + "token" + "y".repeat(900));
+    fs.writeFileSync(path.join(dir, "package-lock.json"), "{\"token\":1}");
+    fs.writeFileSync(path.join(dir, "img.bin"), Buffer.from([0, 1, 2, 116, 111, 107, 101, 110]));
+    const q = (args) => SR.searchTool(args, dir, rp);
+    let r = q({ pattern: "token" });
+    eq("summary counts matches + files", r.summary, "Found 3 matches in 2 files");
+    ok("path written once per file", r.results.split("\n").filter((l) => l === "src/a.js").length === 1 && /\n  3: const token = 1;/.test(r.results));
+    ok("lockfile + minified skipped and reported", /2 lockfile\/minified/.test(r.skipped_generated));
+    ok("binary skipped", !/img\.bin/.test(r.results));
+    r = q({ pattern: "token", include_generated: true });
+    ok("include_generated searches them; long line cut AROUND the match", /app\.min\.js\n  1: …x+token/.test(r.results) && r.results.split("\n").find((l) => /token/.test(l) && /min/.test(r.results) && l.length < 220));
+    r = q({ pattern: "token", context: 1, glob: "**/*.js" });
+    eq("context lines + separator between distant hits", r.results, "src/a.js\n  2- two\n  3: const token = 1;\n  4- four\n  --\n  7- seven\n  8: use(token);");
+    eq("case_sensitive", q({ pattern: "TOKEN", case_sensitive: true }).summary, "No matches found");
+    eq("literal", q({ pattern: "use(", literal: true }).summary, "Found 1 match in 1 file");
+    ok("max_results truncates and says so", /stopped at 1/.test(q({ pattern: "token", max_results: 1 }).truncated));
+    const TF2 = require("../lib/cli/tui-format");
+    ok("card shows the real count (was always 'Found 1 line')", /Found 3 matches/.test(TF2.toolResultView("search", { pattern: "token" }, q({ pattern: "token" }), {}).lines[0].text));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("find — real globs (it used to substring-match the glob text, so **/*.js found nothing)");
+  {
+    const SR = require("../lib/nexus/search");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "find-")), rp = (p) => path.resolve(dir, p);
+    fs.mkdirSync(path.join(dir, "src/ui"), { recursive: true }); fs.mkdirSync(path.join(dir, "node_modules"));
+    for (const f of ["src/a.js", "src/ui/b.jsx", "src/ui/c.ts", "README.md", "node_modules/x.js"]) fs.writeFileSync(path.join(dir, f), "x");
+    const f = (args) => SR.findTool(args, dir, rp);
+    eq("**/*.js", f({ glob: "**/*.js" }).files, ["src/a.js"]);
+    eq("brace glob", f({ glob: "src/**/*.{jsx,ts}" }).files, ["src/ui/b.jsx", "src/ui/c.ts"]);
+    eq("bare *.md matches by file name anywhere", f({ glob: "*.md" }).files, ["README.md"]);
+    eq("no glob chars = name substring", f({ glob: "ui" }).files, []);
+    eq("substring of a file name", f({ glob: "b.js" }).files, ["src/ui/b.jsx"]);
+    const past = Date.now() / 1000 - 1000; fs.utimesSync(path.join(dir, "src/a.js"), past, past);
+    eq("sort recent = newest first", f({ glob: "src/**", sort: "recent" }).files.slice(-1), ["src/a.js"]);
+    ok("truncation reported", /showing 1 of 4/.test(f({ glob: "**/*", max_results: 1 }).truncated));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("fs tools — move/copy never silently overwrite, copy folders, honest delete, list_dir");
+  {
+    const FT = require("../lib/nexus/fs-tools");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fst-")), rp = (p) => path.resolve(dir, p), P = (p) => path.join(dir, p), rd = (p) => fs.readFileSync(P(p), "utf8");
+    fs.mkdirSync(P("src/lib"), { recursive: true }); fs.mkdirSync(P("out"));
+    fs.writeFileSync(P("a.txt"), "A"); fs.writeFileSync(P("b.txt"), "B"); fs.writeFileSync(P("src/lib/x.js"), "X");
+    ok("move onto an existing file is refused (was silent data loss)", /already exists/.test(FT.moveTool({ from: "a.txt", to: "b.txt" }, dir, rp).error) && rd("b.txt") === "B" && rd("a.txt") === "A");
+    ok("overwrite:true replaces", FT.moveTool({ from: "a.txt", to: "b.txt", overwrite: true }, dir, rp).ok && rd("b.txt") === "A" && !fs.existsSync(P("a.txt")));
+    ok("move into an existing folder keeps the name", FT.moveTool({ from: "b.txt", to: "out" }, dir, rp).ok && rd("out/b.txt") === "A");
+    ok("move creates missing parent folders", FT.moveTool({ from: "out/b.txt", to: "new/deep/b.txt" }, dir, rp).ok && rd("new/deep/b.txt") === "A");
+    ok("cannot move a folder into itself", /into itself/.test(FT.moveTool({ from: "src", to: "src/lib/inner" }, dir, rp).error));
+    ok("copy a whole folder (used to fail)", FT.copyTool({ from: "src", to: "src2" }, dir, rp).ok && rd("src2/lib/x.js") === "X");
+    ok("copy onto an existing file is refused", /already exists/.test(FT.copyTool({ from: "src/lib/x.js", to: "src2/lib/x.js" }, dir, rp).error || ""));
+    ok("copy a folder onto an existing folder nests it, like cp", FT.copyTool({ from: "src", to: "src2" }, dir, rp).ok && rd("src2/src/lib/x.js") === "X");
+    ok("delete of a missing path says so (was a plain ok)", /already gone/.test(FT.deleteTool({ path: "nope.txt" }, dir, rp).note));
+    ok("non-empty folder needs recursive", /recursive:true/.test(FT.deleteTool({ path: "src2" }, dir, rp).error) && fs.existsSync(P("src2")));
+    ok("recursive delete works", FT.deleteTool({ path: "src2", recursive: true }, dir, rp).ok && !fs.existsSync(P("src2")));
+    ok("project root is never deleted", /project root/.test(FT.deleteTool({ path: "." }, dir, rp).error));
+    fs.writeFileSync(P("0first.txt"), "12345");
+    let r = FT.listDirTool({}, dir, rp);
+    ok("list_dir: folders first, then files with sizes", r.items[0].endsWith("/") && r.items[r.items.length - 1] === "0first.txt  5 B");
+    r = FT.listDirTool({ depth: 3 }, dir, rp);
+    ok("depth shows a tree", r.items.includes("    x.js  1 B"));
+    r = FT.listDirTool({ max_results: 1 }, dir, rp);
+    ok("cut-off is reported", /showing 1 of/.test(r.truncated));
+    const { createEditUndo } = require("../lib/nexus/edit-undo"), u = createEditUndo();
+    fs.writeFileSync(P("keep.txt"), "precious");
+    const sn = u.snapshot([P("keep.txt")]); FT.deleteTool({ path: "keep.txt" }, dir, rp); u.commit(sn);
+    ok("a deleted file can be restored with undo_edit", u.undo(P("keep.txt")).ok && rd("keep.txt") === "precious");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("http_fetch — redirects re-checked by the SSRF guard, HTML as text, whole UTF-8");
+  {
+    const HF = require("../lib/nexus/http-fetch");
+    const http = require("http");
+    const srv = http.createServer((req, res) => {
+      if (req.url === "/r1") { res.writeHead(302, { location: "/page" }); return res.end(); }
+      if (req.url === "/evil") { res.writeHead(301, { location: "http://blocked.internal/latest/meta-data" }); return res.end(); }
+      if (req.url === "/page") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end("<html><head><title>Page</title><script>x()</script></head><body><p>héllo wörld ✓</p><a href=\"/next\">Next</a></body></html>"); }
+      if (req.url === "/img") { res.writeHead(200, { "content-type": "image/png" }); return res.end(Buffer.alloc(300)); }
+      if (req.url === "/big") { res.writeHead(200, { "content-type": "text/plain" }); return res.end("x".repeat(25000)); }
+      // multi-byte character split across two chunks
+      if (req.url === "/split") { res.writeHead(200, { "content-type": "text/plain" }); const b = Buffer.from("añb"); res.write(b.subarray(0, 2)); setTimeout(() => res.end(b.subarray(2)), 20); return; }
+      res.writeHead(404); res.end();
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    const base = "http://127.0.0.1:" + srv.address().port;
+    const deps = { isLocal: (u) => /blocked\.internal/.test(u) }; // the real guard would also block 127.0.0.1; here only the redirect target is "private"
+    let r = await HF.httpFetchTool({ url: base + "/r1" }, deps);
+    ok("redirect followed to the final page", r.status === 200 && r.finalUrl === base + "/page");
+    ok("HTML → readable text: title, words, absolute link; no script", /^# Page/.test(r.body) && /héllo wörld ✓/.test(r.body) && r.body.includes("[Next](" + base + "/next)") && !/x\(\)/.test(r.body));
+    ok("raw:true keeps the markup", /<script>/.test((await HF.httpFetchTool({ url: base + "/page", raw: true }, deps)).body));
+    r = await HF.httpFetchTool({ url: base + "/evil" }, deps);
+    ok("a redirect to a blocked host is refused (SSRF via redirect)", /blocked/.test(r.error) && /via a redirect/.test(r.error));
+    r = await HF.httpFetchTool({ url: base + "/img" }, deps);
+    ok("binary is described, not dumped", r.binary === true && r.bytes === 300 && r.body === undefined);
+    r = await HF.httpFetchTool({ url: base + "/big" }, deps);
+    ok("a cut body says so", r.body.length === 20000 && /of 25000 chars/.test(r.truncated));
+    eq("UTF-8 split across chunks decodes whole", (await HF.httpFetchTool({ url: base + "/split" }, deps)).body, "añb");
+    ok("non-http schemes refused", /only http/.test((await HF.httpFetchTool({ url: "file:///etc/passwd" }, deps)).error));
+    const { isLocalTarget } = require("../lib/governance/default-guard");
+    ok("the real guard blocks cloud metadata", /SSRF/.test((await HF.httpFetchTool({ url: "http://169.254.169.254/" }, { isLocal: isLocalTarget })).error));
+    srv.close();
   }
 
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
