@@ -3441,16 +3441,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const avail = Math.max(8, R - 4); // leave the top spacer + footer row
       const cur = st.list[st.i] || { q: "", a: null };
       const head = [];
-      head.push(" " + bold("Side question") + gray("  — from the conversation so far; not saved to history"));
+      head.push(cur.kind === "cmd" ? " " + bold("Side panel") + gray("  — " + cur.q + " · not part of the conversation") : " " + bold("Side question") + gray("  — from the conversation so far; not saved to history"));
       const earlier = st.list.slice(0, st.i), shownE = earlier.slice(-3);
       if (earlier.length > shownE.length) head.push(" " + dim("   +" + (earlier.length - shownE.length) + " earlier"));
       for (const e of shownE) head.push(" " + dim("   · " + e.q.replace(/\s+/g, " ").slice(0, w - 5)));
       head.push("");
-      for (const ql of btwWrap("❯ " + cur.q, w)) head.push(" " + cyan(ql));
-      head.push("");
+      if (cur.kind !== "cmd") { for (const ql of btwWrap("❯ " + cur.q, w)) head.push(" " + cyan(ql)); head.push(""); }
       const hintLn = st.flash ? (" " + green("   " + st.flash)) : (" " + gray("enter/esc close · ↑↓ scroll · " + (st.list.length > 1 ? "[ ] prev/next · " : "") + "c copy · x clear"));
       const bodyMax = Math.max(2, avail - head.length - 3);
-      const ans = cur.a == null ? [gray(st.loading ? "thinking…" : "…")] : btwWrap(cur.a, w);
+      const ans = cur.a == null ? [gray(st.loading ? "thinking…" : "…")] : cur.kind === "cmd" ? ansiWrap(cur.a, w) : btwWrap(cur.a, w);
       const maxSc = Math.max(0, ans.length - bodyMax);
       if (st.scroll > maxSc) st.scroll = maxSc;
       if (st.scroll < 0) st.scroll = 0;
@@ -3469,7 +3468,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       btw = { list: btwLog, i: btwLog.length - 1, scroll: 0, loading: true };
       render();
       const ctx = buildCarryNote(transcript);
-      const earlierQ = btwLog.slice(0, -1).slice(-20).filter((e) => e.a).map((e) => "Q: " + e.q + "\nA: " + e.a).join("\n\n");
+      const earlierQ = btwLog.slice(0, -1).filter((e) => e.kind !== "cmd").slice(-20).filter((e) => e.a).map((e) => "Q: " + e.q + "\nA: " + e.a).join("\n\n");
       const prompt = "You are answering a quick SIDE QUESTION about an ongoing coding session. Answer ONLY from the conversation context below plus general knowledge. You have NO tools — do not try to read files, run commands, or search; if answering would require that, say so briefly. Be concise and direct.\n\n=== CONVERSATION SO FAR ===\n" + (ctx || "(nothing yet)") + (earlierQ ? "\n\n=== EARLIER SIDE QUESTIONS ===\n" + earlierQ : "") + "\n\n=== SIDE QUESTION ===\n" + q;
       const e = offline ? "ollama" : engine;
       const bctl = makeCtl();
@@ -4660,7 +4659,26 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       elapsed: Math.round((Date.now() - (sessStart || Date.now())) / 1000),
     });
 
+    // ---- side commands: read-only lookups that never touch the conversation. They
+    // open in the /btw side panel instead of the chat, and run INSTANTLY even mid-
+    // turn (everything else typed during a turn is queued). Each is synchronous and
+    // only reads state, so it is safe to run while the agent is working.
+    const SIDE_CMDS = new Set(["/cost", "/status", "/context", "/turns", "/ledger", "/cheaper", "/tokens", "/warm", "/savings", "/impact", "/session", "/activity", "/keys", "/compat", "/estimate", "/recent", "/tree", "/stats", "/pins", "/help"]);
+    const sideName = (t) => { const m = /^\/[^\s]+/.exec(String(t || "").trim()); return m ? m[0].toLowerCase() : ""; };
+    const isInstant = (t) => { const c = sideName(t); return c === "/btw" || SIDE_CMDS.has(c); };
+    let _inSide = false;
+    const runSide = (t) => {
+      const n0 = transcript.length;
+      _inSide = true; try { handleSlash(t); } finally { _inSide = false; }
+      const added = transcript.splice(n0); // pull its output back OUT of the chat
+      const lines = [];
+      for (const m of added) { if (lines.length) lines.push(""); if (Array.isArray(m.lines)) for (const l of m.lines) lines.push(String(l)); else for (const l of String(m.text == null ? "" : m.text).split("\n")) lines.push(l); }
+      btwLog.push({ q: String(t).trim(), a: lines.join("\n") || "(nothing to show)", kind: "cmd" });
+      btw = { list: btwLog, i: btwLog.length - 1, scroll: 0, loading: false };
+      render();
+    };
     const handleSlash = (t) => {
+      if (!_inSide && SIDE_CMDS.has(sideName(t)) && !aliases[sideName(t)] && !customCmds[sideName(t)]) { runSide(t); return; }
       const sp = t.indexOf(" ");
       const cmd = (sp === -1 ? t : t.slice(0, sp)).toLowerCase();
       const argstr = sp === -1 ? "" : t.slice(sp + 1).trim();
@@ -6078,7 +6096,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // completes, Enter queues the highlighted command to run after the turn
         if (cm.length && s === "\x1b") { input = ""; curPos = 0; menuSel = 0; render(); return; }
         if (cm.length && s === "\t") { if (_mm.length) { input = (_mm[menuSel] || _mm[0])[0] + " "; refreshArgCache(); } else { const sp = input.indexOf(" "); input = input.slice(0, sp) + " " + (_am[menuSel] || _am[0])[0] + " "; } curPos = input.length; menuSel = 0; render(); return; }
-        if (_mm.length && (s === "\r" || s === "\n")) { const t = (_mm[menuSel] || _mm[0])[0]; nextQueue.push(t); input = ""; curPos = 0; menuSel = 0; render(); return; }
+        if (_mm.length && (s === "\r" || s === "\n")) { const t = (_mm[menuSel] || _mm[0])[0]; if (isInstant(t) && t !== "/btw") { input = ""; curPos = 0; menuSel = 0; handleSlash(t); return; } nextQueue.push(t); input = ""; curPos = 0; menuSel = 0; render(); return; }
         if (s === "\x1b" || s === "\x03") { if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); } render(); return; }
         if (isDown && agentSel < 0 && !agentView && agents.length && !input) { agentSel = 0; render(); return; } // Down on an empty prompt drops focus into the Agents panel
         if (isUp || isDown) { arrowVert(isUp ? -1 : 1); return; }       // same as idle: visual row, then history / queued recall
@@ -6086,7 +6104,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // Enter queues the draft instead of sending it.
         const eff = Composer.feed(composer, s, { busy: false }); flush();
         switch (eff.type) {
-          case "submit": { const t = (eff.text || "").trim(); if (t) nextQueue.push(t); input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; composer.histIndex = history.length; composer.draft = ""; menuSel = 0; render(); return; }
+          case "submit": { const t = (eff.text || "").trim(); if (t && isInstant(t)) { input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; composer.histIndex = history.length; composer.draft = ""; menuSel = 0; handleSlash(t); return; } if (t) nextQueue.push(t); input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; composer.histIndex = history.length; composer.draft = ""; menuSel = 0; render(); return; }
           case "confirm-submit": pasteNotice = "shell-looking paste — press Enter again to queue"; render(); return;
           case "home-scroll": scroll += 100000; render(); return;
           case "end-scroll": scroll = 0; render(); return;
