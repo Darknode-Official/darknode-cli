@@ -966,6 +966,15 @@ group("command registry (batch 1)");
   eq("no migrated command still dispatched inline", doubled, []);
 }
 
+group("inline CLI subcommands run (no out-of-scope fs/path)");
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nx-cli-"));
+  const dn = (args) => require("child_process").spawnSync(process.execPath, [path.join(__dirname, "..", "darknode.js")].concat(args), { cwd: tmp, encoding: "utf8", timeout: 30000, env: Object.assign({}, process.env, { HOME: tmp, USERPROFILE: tmp }) });
+  let r = dn(["marketplace"]); ok("darknode marketplace lists (empty)", r.status === 0 && /no marketplace packages installed/.test(r.stdout) && !/is not defined/.test(r.stdout + r.stderr));
+  r = dn(["cron"]); ok("darknode cron lists (empty)", r.status === 0 && /no scheduled jobs/.test(r.stdout) && !/is not defined/.test(r.stdout + r.stderr));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 group("no dead lib imports in darknode.js");
 {
   const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");

@@ -1123,6 +1123,7 @@ async function cliRun(args, gate) {
     const oi = rest.indexOf("--out"); if (oi >= 0 && rest[oi + 1]) { try { fs.writeFileSync(rest[oi + 1], JSON.stringify(b, null, 2)); console.log(gray("  written: " + rest[oi + 1])); } catch (e) { console.log(red("  write failed: " + (e && e.message || e))); } }
   }
   else if (cmd === "marketplace") {
+    const fs = require("fs"), path = require("path");
     const sub = (rest[0] || "").toLowerCase();
     const globalMp = path.join(os.homedir(), ".darknode", "marketplace");
     if (sub === "list" || sub === "ls" || !sub) {
@@ -1133,6 +1134,7 @@ async function cliRun(args, gate) {
     } else console.log("  " + gray("usage: darknode marketplace [list|install|init]  — or use /marketplace in the TUI"));
   }
   else if (cmd === "cron") {
+    const fs = require("fs"), path = require("path");
     const cronFile = path.join(process.cwd(), ".nexus", "cron.json");
     try { const jobs = JSON.parse(fs.readFileSync(cronFile, "utf8"));
     if (!jobs.length) console.log("  " + gray("no scheduled jobs"));
