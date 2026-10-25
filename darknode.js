@@ -54,7 +54,7 @@ const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint
 const { frameDiff, wordHi, wordFlags } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
-const { sanitizeTerm, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
+const { sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
 const CompactAnim = require("./lib/cli/compact-anim");
@@ -2762,7 +2762,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const addMemory = (line) => { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; c += "- " + line + "\n"; fs.writeFileSync(md, c); transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + line }); } catch (e) { transcript.push({ role: "system", text: "could not save note: " + e.message }); } };
     // ---- ansi-aware width helpers ----
     const stripA = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, "");
-    const clip = (s, n) => { if (n <= 0) return ""; let o = "", v = 0, hasColor = false; for (const part of String(s).split(/(\x1b\[[0-9;]*m)/)) { if (/^\x1b/.test(part)) { o += part; hasColor = true; continue; } for (const ch of part) { if (v >= n) return o + (hasColor ? "\x1b[0m" : ""); o += ch; v++; } } return o; };
+    const clip = (s, n) => { if (n <= 0) return ""; let o = "", v = 0, hasColor = false; for (const part of String(s).split(/(\x1b\[[0-9;]*m)/)) { if (/^\x1b/.test(part)) { o += part; hasColor = true; continue; } for (const ch of part) { const cw = charWidth(ch); if (v + cw > n) return o + (hasColor ? "\x1b[0m" : ""); o += ch; v += cw; } } return o; };
     const fmtK = (n) => n >= 100000 ? (n / 1000).toFixed(0) + "k" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : "" + (n | 0);
     const fmtElapsed = (sec) => { if (sec < 60) return sec + "s"; if (sec < 3600) return Math.floor(sec / 60) + "m " + (sec % 60) + "s"; if (sec < 86400) return Math.floor(sec / 3600) + "h " + Math.floor((sec % 3600) / 60) + "m"; return Math.floor(sec / 86400) + "d " + Math.floor((sec % 86400) / 3600) + "h"; };
     const fmtDur = (sec) => sec < 60 ? sec.toFixed(1) + "s" : fmtElapsed(Math.round(sec)); // a measured duration: keep the decimal under a minute, roll into m/h above it
@@ -3124,7 +3124,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // after every reset so the coloured ❯/bold tokens don't punch holes.
           const w = wrap(m.text);
           const _uw = Math.max(0, cols() - 3); // inner width of the grey block (flush-left ❯, Claude-Code look)
-          const chatHl = (c) => "\x1b[48;5;236m" + String(c).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + " ".repeat(Math.max(0, _uw - stripA(c).length)) + " \x1b[0m";
+          const chatHl = (c) => "\x1b[48;5;236m" + String(c).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + " ".repeat(Math.max(0, _uw - strWidth(c))) + " \x1b[0m";
           L.push(chatHl(cyan("❯ ") + bold(w[0] || "")));
           for (let i = 1; i < w.length; i++) L.push(chatHl("  " + bold(w[i])));
           L.push(""); continue;
@@ -3255,11 +3255,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (nextQueue.length) {
         L.push("");
         const _uw = Math.max(0, cols() - 3);
-        const qhl = (c) => "\x1b[48;5;236m" + String(c).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + " ".repeat(Math.max(0, _uw - stripA(c).length)) + " \x1b[0m";
+        const qhl = (c) => "\x1b[48;5;236m" + String(c).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + " ".repeat(Math.max(0, _uw - strWidth(c))) + " \x1b[0m";
         nextQueue.forEach((q, i) => {
           const w = wrap(q);
           const tag = gray("  · queued" + (nextQueue.length > 1 ? " " + (i + 1) + "/" + nextQueue.length : ""));
-          const fits = 2 + stripA(w[w.length - 1] || "").length + stripA(tag).length <= _uw; // a tag that would run past the edge gets its own row instead of being clipped
+          const fits = 2 + strWidth(w[w.length - 1] || "") + strWidth(tag) <= _uw; // a tag that would run past the edge gets its own row instead of being clipped
           L.push(qhl(dim(cyan("❯ ")) + gray(w[0] || "") + (w.length === 1 && fits ? tag : "")));
           for (let k = 1; k < w.length; k++) L.push(qhl("  " + gray(w[k]) + (k === w.length - 1 && fits ? tag : "")));
           if (!fits) L.push(qhl("  " + gray(stripA(tag).trim())));
@@ -3525,7 +3525,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // usable space. Shared by render() and the visual Up/Down caret moves.
     const wrapInput = (txt, iw) => {
       const wrapped = [], wrapOff = []; let _wi = 0;
-      for (const seg of txt.split("\n")) { let s = seg; if (!s.length) { wrapped.push(""); wrapOff.push(_wi); _wi++; continue; } while (s.length > iw) { let w = iw; const brk = s.lastIndexOf(" ", iw - 1); if (brk >= Math.floor(iw * 0.4)) w = brk + 1; else { const cc = s.charCodeAt(w - 1); if (cc >= 0xD800 && cc <= 0xDBFF) w = Math.max(1, w - 1); } wrapped.push(s.slice(0, w)); wrapOff.push(_wi); _wi += w; s = s.slice(w); } wrapped.push(s); wrapOff.push(_wi); _wi += s.length + 1; }
+      for (const seg of txt.split("\n")) { let s = seg; if (!s.length) { wrapped.push(""); wrapOff.push(_wi); _wi++; continue; } while (strWidth(s) > iw) { let w = cutIdx(s, iw); const brk = s.lastIndexOf(" ", w - 1); if (brk >= Math.floor(w * 0.4)) w = brk + 1; wrapped.push(s.slice(0, w)); wrapOff.push(_wi); _wi += w; s = s.slice(w); } wrapped.push(s); wrapOff.push(_wi); _wi += s.length + 1; }
       if (!wrapped.length) { wrapped.push(""); wrapOff.push(0); }
       return { wrapped, wrapOff };
     };
@@ -3553,8 +3553,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (curPos > input.length) curPos = input.length;
       if (curPos < 0) curPos = 0;
       const { wrapped, wrapOff } = wrapInput(input, iw);
-      let _cLine = wrapped.length - 1, _cCol = wrapped[_cLine].length;
-      for (let i = 0; i < wrapped.length; i++) { const end = wrapOff[i] + wrapped[i].length; if (curPos >= wrapOff[i] && curPos <= end) { _cLine = i; _cCol = curPos - wrapOff[i]; break; } }
+      let _cLine = wrapped.length - 1, _cCol = strWidth(wrapped[_cLine]);
+      for (let i = 0; i < wrapped.length; i++) { const end = wrapOff[i] + wrapped[i].length; if (curPos >= wrapOff[i] && curPos <= end) { _cLine = i; _cCol = strWidth(wrapped[i].slice(0, curPos - wrapOff[i])); break; } }
       const menu = slashMatches();
       const amenu = menu.length ? [] : argMatches();
       const combined = menu.length ? menu : amenu;
