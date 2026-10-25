@@ -2601,17 +2601,17 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("an unrelated key is a no-op that keeps focus", (() => { const r = askKey({ ...ask, sel: 1 }, "x"); return !r.done && !r.cancelled && r.sel === 1; })());
     // ---- renderAsk: layout + content (plain, colors identity) ----
     const rows = renderAsk({ ...ask, sel: 1 }, 60);
-    ok("draws a rounded box (corners + walls)", rows[0].includes("╭") && rows[0].includes("╮") && rows.some((r) => r.includes("╰") && r.includes("╯")) && rows.some((r) => r.includes("│")));
+    ok("draws the Nexus card (tab header, rail, foot)", rows[0].includes("┏━") && rows[0].includes("◆ nexus asks") && rows.some((r) => r.includes("┃")) && rows[rows.length - 1].includes("┗━"));
     ok("shows the question text", rows.some((r) => r.includes("Which database")));
-    ok("numbers every option", rows.some((r) => /1\. PostgreSQL/.test(r)) && rows.some((r) => /2\. SQLite/.test(r)) && rows.some((r) => /3\. MySQL/.test(r)));
-    ok("marks the focused option with ❯", rows.some((r) => r.includes("❯") && r.includes("SQLite")));
+    ok("keycaps every option", rows.some((r) => /\[1\] PostgreSQL/.test(r)) && rows.some((r) => /\[2\] SQLite/.test(r)) && rows.some((r) => /\[3\] MySQL/.test(r)));
+    ok("marks the focused option with ▸", rows.some((r) => r.includes("▸") && r.includes("SQLite")) && !rows.some((r) => r.includes("▸") && r.includes("MySQL")));
     ok("renders a hint when provided", rows.some((r) => r.includes("zero-config")));
-    ok("offers a Type-a-different-answer row", rows.some((r) => /Type a different answer/.test(r)));
+    ok("offers a write-my-own-answer row", rows.some((r) => /write my own answer/.test(r)));
     ok("offers a Submit row", rows.some((r) => /Submit/.test(r)));
     ok("has a key-legend footer", rows.some((r) => /enter select/.test(r) && /esc skip/.test(r)));
-    ok("every box row is exactly the requested width (plain)", rows.filter((r) => r.includes("│")).every((r) => r.length === 60));
+    ok("the tab header spans exactly the requested width (plain)", rows[0].length === 60);
     ok("no row exceeds the requested width (plain)", rows.every((r) => r.length <= 60));
-    ok("allowType:false drops the Type row", !renderAsk({ ...ask, allowType: false }, 60).some((r) => /Type a different answer/.test(r)));
+    ok("allowType:false drops the Type row", !renderAsk({ ...ask, allowType: false }, 60).some((r) => /write my own answer/.test(r)));
     ok("empty options + esc still cancels (no crash)", askKey({ question: "q", options: [], sel: 0 }, "\x1b").cancelled === true);
     ok("renderAsk tolerates no options", Array.isArray(renderAsk({ question: "q", options: [] }, 40)));
   }
@@ -2629,8 +2629,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("enter on Submit with nothing picked confirms an empty set", (() => { const r = askKey({ ...base, sel: 5, picked: [] }, "\r"); return r.done && JSON.stringify(r.indices) === JSON.stringify([]); })());
     ok("esc still cancels in multi mode", askKey(base, "\x1b").cancelled === true);
     const rows = renderAsk({ ...base, picked: [1] }, 60);
-    ok("renders ◉/○ checkboxes", rows.some((r) => r.includes("◉")) && rows.some((r) => r.includes("○")));
-    ok("Submit row shows the selected count", rows.some((r) => /Submit \(1 selected\)/.test(r)));
+    ok("renders ■/□ checkboxes", rows.some((r) => r.includes("■")) && rows.some((r) => r.includes("□")));
+    ok("multi card is tabbed \"pick any\"", rows[0].includes("pick any"));
+    ok("Submit button shows the selected count", rows.some((r) => /\[ Submit · 1 selected \]/.test(r)));
     ok("multi footer mentions space-toggle", rows.some((r) => /space/.test(r) && /toggle/.test(r)));
     ok("no multi box row exceeds width", rows.every((r) => r.length <= 60));
   }
@@ -2680,10 +2681,17 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("idle header hints how to select", /to select/.test(idle[0]));
     ok("lists each agent's task", idle.some((r) => /add unit tests/.test(r)) && idle.some((r) => /write the API docs/.test(r)) && idle.some((r) => /fix the lint errors/.test(r)));
     ok("shows elapsed per agent", idle.some((r) => /1m03s/.test(r)) && idle.some((r) => /5s/.test(r)));
-    ok("idle panel shows no ❯ cursor", !idle.slice(1).some((r) => r.includes("❯")));
+    ok("idle panel shows no ▶ cursor", !idle.slice(1).some((r) => r.includes("▶")));
     const foc = A.panelRows(agents, { now, sel: 1, width: 70 });
     ok("focused header hints open/stop/back", /enter open/.test(foc[0]) && /stop/.test(foc[0]) && /esc back/.test(foc[0]));
-    ok("focused row carries the ❯ cursor on the selected task", foc.some((r) => r.includes("❯") && /write the API docs/.test(r)));
+    ok("lanes are drawn as a tree (├─ … └─)", idle.some((r) => r.includes("├─")) && idle[idle.length - 1].includes("└─"));
+    ok("finished lanes show a status badge", idle.some((r) => /done/.test(r) && /add unit tests/.test(r)) && idle.some((r) => /failed/.test(r)));
+    ok("status column is aligned across lanes", (() => { const ends = idle.slice(1).map((r) => r.length); return ends.every((n) => n === ends[0]); })());
+    ok("no lane exceeds the width", foc.every((r) => r.length <= 70));
+    ok("a running lane animates (spinner + meter change over time)", A.panelRows(agents, { now, width: 70 })[2] !== A.panelRows(agents, { now: now + 300, width: 70 })[2]);
+    eq("meter lights two adjacent cells", (A.meter(0).match(/▰/g) || []).length, 2);
+    ok("meter bounces back (never runs off the end)", Array.from({ length: 40 }, (_, k) => A.meter(k * 140)).every((m) => m.length === 5 && /▰▰/.test(m)));
+    ok("focused lane carries the ▶ cursor on the selected task", foc.some((r) => r.includes("▶") && /write the API docs/.test(r)));
     ok("long task is truncated with an ellipsis at a narrow width", A.panelRows([{ task: "x".repeat(200), status: "run", start: now }], { now, width: 40 }).some((r) => r.includes("…")));
     const many = Array.from({ length: 9 }, (_, i) => ({ id: "a" + i, task: "task " + i, status: "run", start: now }));
     const win = A.panelRows(many, { now, sel: -1, width: 70, max: 4 });
@@ -2714,6 +2722,25 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("view of a running agent with no output says running", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /running/.test(r)));
     ok("running view offers a stop key; finished view does not", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /s stop/.test(r)) && !A.viewRows(agents[0], 70, 24, 0, null, now).some((r) => /s stop/.test(r)));
     ok("view never crashes on a bare agent", Array.isArray(A.viewRows({ task: "x", status: "run", start: now }, 40, 12, 99, null, now)));
+  }
+
+  group("compaction condenser animation");
+  {
+    const CA = require("../lib/cli/compact-anim");
+    const f0 = CA.squeezeBar(0, 21).plain, fEnd = CA.squeezeBar(CA.CYCLE_MS - 10, 21).plain;
+    ok("the core ◆ sits dead center", f0[10] === "◆" && fEnd[10] === "◆");
+    ok("jaws start at the edges", f0[0] === "▸" && f0[20] === "◂");
+    ok("jaws close in on the core over the cycle", fEnd.indexOf("▸") > f0.indexOf("▸") && fEnd.indexOf("◂") < f0.indexOf("◂"));
+    ok("folded-away cells become dots", /^·+▸/.test(fEnd));
+    ok("the bar loops (frame at one full cycle == frame 0)", CA.squeezeBar(CA.CYCLE_MS, 21).plain === f0);
+    ok("bar width is honored", CA.squeezeBar(700, 15).plain.length === 15);
+    const rows = CA.compactRows({ now: 13000, start: 1000, tok: 1234, before: 48200, width: 80 });
+    ok("title says Condensing conversation with elapsed + tokens + esc", /Condensing conversation/.test(rows[0]) && /12s/.test(rows[0]) && /1\.2k tokens/.test(rows[0]) && /esc to interrupt/.test(rows[0]));
+    ok("bar row shows the context being folded", /48\.2k tokens → folding/.test(rows[1]));
+    ok("rows stay within the width", rows.every((r) => r.length <= 80));
+    ok("a narrow terminal still renders", CA.compactRows({ now: 5, start: 0, width: 24 }).every((r) => typeof r === "string"));
+    ok("done marker is the closed frame + folded size", /^▸◆◂ condensed 48\.2k tokens/.test(CA.doneRow({ before: 48200 })));
+    ok("done marker notes auto + the summary toggle", /auto-condensed/.test(CA.doneRow({ before: 1, auto: true })) && /ctrl\+o shows the summary/.test(CA.doneRow({ hasSummary: true })) && /hides/.test(CA.doneRow({ hasSummary: true, expanded: true })));
   }
 
   group("api-server input validation (shell-out routes reject injection)");

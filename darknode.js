@@ -53,6 +53,7 @@ const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command regist
 const { toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
+const CompactAnim = require("./lib/cli/compact-anim"); // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
 const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
@@ -3051,8 +3052,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // short one-line notice stays an indented dim line. The rail is the same 2 columns the old
         // indent used, so wrap/clip widths are unchanged.
         if (m.role === "compacted") {
-          L.push(gray("✻ Conversation compacted" + (m.auto && m.before ? " (auto, at " + fmtK(m.before) + " tokens)" : "")) + (m.summary ? gray(" · ctrl+o " + (expanded ? "to hide summary" : "for summary")) : ""));
-          if (expanded && m.summary) for (const ln of wrap(m.summary)) L.push("  " + gray(ln));
+          L.push(CompactAnim.doneRow({ before: m.before, auto: m.auto, hasSummary: !!m.summary, expanded, colors: { cyan, gray, bold, dim, mag } })); // the condenser's closed frame ▸◆◂
+          if (expanded && m.summary) for (const ln of wrap(m.summary)) L.push(mag("┃ ") + gray(ln));
           L.push(""); continue;
         }
         if (m.role === "recap") { recapLines(m.text).forEach((x) => L.push(x)); L.push(""); continue; }
@@ -3204,11 +3205,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         });
         if (busy) L.push(gray("  Ctrl+X / Ctrl+S runs " + (nextQueue.length > 1 ? "the next one" : "it") + " now"));
       }
-      // live compaction line, styled like the working line (Claude Code's "Compacting conversation…")
+      // live compaction: the Nexus "condenser" — a bar squeezed from both ends into a core (lib/cli/compact-anim.js)
       if (compact.on) {
-        const el = Math.round((Date.now() - compact.start) / 1000);
         L.push("");
-        L.push(workGlyph() + " " + cyan("Compacting conversation…") + gray("  (" + fmtElapsed(el) + (compact.tok ? " · ↓ " + fmtK(compact.tok) + " tokens" : "") + " · esc to interrupt)"));
+        for (const r of CompactAnim.compactRows({ now: Date.now(), start: compact.start, tok: compact.tok, before: compact.cur && compact.cur.before, width: cols() - 2, colors: { cyan, gray, bold, dim, mag } })) L.push(r);
       }
       if (_sig !== null) { _blCache = L; _blSig = _sig; }
       return L;
@@ -3512,7 +3512,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const menuStart = combined.length > menuRows ? Math.max(0, Math.min(menuSel - (menuRows >> 1), combined.length - menuRows)) : 0;
       const inRows = Math.max(1, Math.min(wrapped.length, 8, Math.max(1, avail - menuReserve - 1)));
       // When the model is asking a question, its card replaces the composer + menu.
-      const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green }) : null;
+      const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green, mag }) : null;
       const effortRows = (!askRows && pendingEffort) ? renderEffortPicker(C, pendingEffort.sel) : null;
       const btwRows = (!askRows && !effortRows && btw) ? renderBtw(C, R, btw) : null;
       const agentViewRows = (!askRows && !effortRows && !btwRows && agentView && agents[agentView.i]) ? Agents.viewRows(agents[agentView.i], C, R, agentView.scroll, { cyan, gray, bold, dim, green, red, yellow, mag }, Date.now()) : null;
