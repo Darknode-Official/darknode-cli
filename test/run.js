@@ -3480,6 +3480,22 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("only removes as much as needed", (() => { const m = mk(); fitWindow(m, 20000, 2); return m[3].content.startsWith("[earlier") && m[5].content.startsWith("r2"); })());
   }
 
+  // ── edit results show the changed lines; "already applied" needs a distinctive replacement ──
+  {
+    const E = require("../lib/nexus/edit");
+    const src = "const x = 1;\nfunction add(a, b) {\n  return b;\n}\n";
+    const r = E.changedRegion(src, src.replace("return b;", "return a + b;"));
+    ok("changed line numbered with context", r.lines === "3" && /    3  \s*return a \+ b;/.test(r.now) && /    2  function add/.test(r.now) && /    4  }/.test(r.now));
+    eq("no change → null", E.changedRegion(src, src), null);
+    ok("deletion reported", /deleted at line 3/.test(E.changedRegion(src, src.replace("  return b;\n", "")).now));
+    const long = Array.from({ length: 60 }, (_, i) => "l" + i).join("\n");
+    const lr = E.changedRegion(long, long.replace(/l(\d+)/g, (m, d) => d >= 10 && d < 50 ? "X" + d : m), 12);
+    ok("big change is summarized", lr.lines === "11-50" && /more changed lines/.test(lr.now) && lr.now.split("\n").length === 13);
+    const after = "const x = 1;\nfunction add(a, b) {\n  return a + b;\n}\n";
+    ok("short replacement that occurs by chance is NOT 'already applied'", !/already applied/.test(E.applyEditsFlexible(after, [{ find: "return a - b;", replace: "x" }]).error));
+    ok("a real already-applied edit still says so", /already applied/.test(E.applyEditsFlexible(after, [{ find: "  return b;", replace: "  return a + b;" }]).error));
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
