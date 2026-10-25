@@ -3918,7 +3918,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }).replace(/(^|\s)@(\S+\.(?:png|jpe?g|gif|webp|bmp))\b/gi, (mm, pre, p) => {
         try { const fp = path.resolve(cwd, p); if (fs.statSync(fp).size > 6 * 1024 * 1024) return mm; const ext = p.split(".").pop().toLowerCase(); imgAttach.push({ b64: fs.readFileSync(fp).toString("base64"), mime: "image/" + (ext === "jpg" ? "jpeg" : ext), name: p }); return pre + "[attached image: " + p + "]"; } catch (_) { return mm; }
       });
-      if (imgAttach.length) transcript.push({ role: "system", text: "attached " + imgAttach.length + " image" + (imgAttach.length > 1 ? "s" : "") + (engine === "ollama" ? (apiConfigured() ? " → sent to the API model (needs a vision model)" : " → sent to the local model (needs a vision model, e.g. llama3.2-vision)") : "") });
+      if (imgAttach.length) transcript.push({ role: "system", text: "attached " + imgAttach.length + " image" + (imgAttach.length > 1 ? "s" : "") });
       let sendText = inlineAts(preText);
       if (pinned.size) { let pre = ""; for (const f of pinned) { try { pre += "\n\n--- pinned: " + f + " ---\n" + fs.readFileSync(path.resolve(cwd, f), "utf8").slice(0, 4000) + "\n--- end " + f + " ---"; } catch (_) {} } if (pre) sendText = pre + "\n\n" + sendText; }
       // Shell commands the user ran with ! since the last turn become context for
