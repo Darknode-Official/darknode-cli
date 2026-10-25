@@ -2170,29 +2170,7 @@ async function deviceTool(name, a, cwd) {
   if (name === "move" || name === "rename" || name === "move_file") return require("./lib/nexus/fs-tools").moveTool(a, cwd, rp);
   if (name === "copy" || name === "copy_file") return require("./lib/nexus/fs-tools").copyTool(a, cwd, rp);
   if (name === "delete" || name === "delete_file" || name === "rm") return require("./lib/nexus/fs-tools").deleteTool(a, cwd, rp);
-  if (name === "web_search" || name === "search_web" || name === "google") {
-    const q = a.query || a.q || a.pattern; if (!q) return { error: "web_search needs a query" };
-    return await new Promise((resolve) => {
-      try {
-        const https = require("https");
-        const req = https.request({ host: "html.duckduckgo.com", path: "/html/?q=" + encodeURIComponent(q), method: "GET", headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Nexus", "Accept": "text/html" }, timeout: 15000 }, (res) => {
-          let d = ""; res.on("data", (c) => { if (d.length < 400000) d += c; });
-          res.on("end", () => {
-            const strip = (s) => s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
-            const deref = (u) => { const mm = /[?&]uddg=([^&]+)/.exec(u); return mm ? decodeURIComponent(mm[1]) : (u.startsWith("//") ? "https:" + u : u); };
-            const results = []; let m; const re = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-            while ((m = re.exec(d)) && results.length < 6) results.push({ title: strip(m[2]), url: deref(m[1]) });
-            const sn = []; let s2; const sre = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-            while ((s2 = sre.exec(d)) && sn.length < 6) sn.push(strip(s2[1]).slice(0, 220));
-            results.forEach((r, i) => { if (sn[i]) r.snippet = sn[i]; });
-            resolve(results.length ? { query: q, results } : { query: q, results: [], note: "no parseable results — try http_fetch on a specific URL" });
-          });
-        });
-        req.on("timeout", () => { req.destroy(); resolve({ error: "search timeout" }); });
-        req.on("error", (e) => resolve({ error: e.message })); req.end();
-      } catch (e) { resolve({ error: e.message }); }
-    });
-  }
+  if (name === "web_search" || name === "search_web" || name === "google") return await require("./lib/nexus/web-search").webSearchTool(a);
   if (name === "todo_write" || name === "todos" || name === "todo_list" || name === "write_todos") {
     const items = Array.isArray(a.todos) ? a.todos : Array.isArray(a.items) ? a.items : Array.isArray(a.tasks) ? a.tasks : [];
     AGENT_TODOS.length = 0;
@@ -4335,8 +4313,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
               else if (name === "discover") { result = { tools: discoverTools(a.query || a.q || "", TOOL_CATALOG.concat(mcpToolList().map((m) => [m.full, m.desc]))) }; }
               else if (name === "repo_map" || name === "repomap" || name === "map") { const rm = getRepoMap({ fresh: !!a.fresh }); result = rm && rm.map ? { map: rm.text, files: rm.map.fileCount, symbols: rm.map.symbolCount } : { error: "could not build a repo map here" }; }
               else if (name === "find_symbol" || name === "symbol" || name === "goto") { const rm = getRepoMap(); const q = a.name || a.symbol || a.query || a.q || ""; const hits = rm && rm.map ? findSymbol(rm.map, q, { limit: 20 }) : []; result = hits.length ? { symbol: q, definitions: hits } : { symbol: q, definitions: [], note: "no definition found in the repo map — try search{pattern} for usages" }; }
-              else if (name === "verify" || name === "run_tests" || name === "test_project") { const cmds = detectVerify(); const kind = (a.kind || "").toLowerCase(); const chosen = (kind && cmds[kind]) ? { kind, cmd: cmds[kind] } : (a.command ? { kind: "custom", cmd: String(a.command) } : pickVerify(cmds)); if (!chosen) { result = { error: "no test/build command detected for this project — pass command to run a specific one", detected: cmds }; } else { const r = await coderShell(chosen.cmd, cwd); const _vout = compactOutput(r.output, lean ? 2500 : (trimOutput ? 6000 : 1e9)); const _vd = r.code !== 0 ? diagnose(_vout, r.code, chosen.cmd) : null; result = { ran: chosen.cmd, kind: chosen.kind, code: r.code, ok: r.code === 0, output: _vout + diagAnnotate(_vd) }; if (_vd) result.diagnosis = _vd.category; } }
-              else if (name === "remember") { const note = a.text || a.note || a.content || ""; let md0 = ""; try { md0 = fs.readFileSync(path.join(cwd, ".nexus", "NEXUS.md"), "utf8"); } catch (_) {} const rr = mergeMemory(md0, note); if (rr.added) { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "NEXUS.md"), rr.md); result = { ok: true, remembered: true }; transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + oneline(note, 60) }); } else result = { ok: true, remembered: false, note: rr.reason || "already known" }; }
+              else if (name === "verify" || name === "run_tests" || name === "test_project") { const cmds = detectVerify(); const kind = (a.kind || "").toLowerCase(); const chosen = (kind && cmds[kind]) ? { kind, cmd: cmds[kind] } : (a.command ? { kind: "custom", cmd: String(a.command) } : pickVerify(cmds)); if (!chosen) { result = { error: "no test/build command detected for this project — pass command to run a specific one", detected: cmds }; } else { const r = await coderShell(chosen.cmd, cwd, { ctl, timeoutMs: (+a.timeout_s || 600) * 1000 }); const _vout = compactOutput(r.output, lean ? 2500 : (trimOutput ? 6000 : 1e9)); const _vd = r.code !== 0 ? diagnose(_vout, r.code, chosen.cmd) : null; result = { ran: chosen.cmd, kind: chosen.kind, code: r.code, ok: r.code === 0, output: _vout + diagAnnotate(_vd) }; if (_vd) result.diagnosis = _vd.category; } }
+              else if (name === "remember") { const note = a.text || a.note || a.content || a.fact || a.memory || ""; let md0 = ""; try { md0 = fs.readFileSync(path.join(cwd, ".nexus", "NEXUS.md"), "utf8"); } catch (_) {} const rr = mergeMemory(md0, note); if (rr.added) { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "NEXUS.md"), rr.md); result = { ok: true, remembered: true }; transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + oneline(note, 60) }); } else result = { ok: true, remembered: false, note: rr.reason || "already known" }; }
               else if (name === "ask_user" || name === "ask_question" || name === "ask") {
                 // Pause the loop and ask the user a multiple-choice question,
                 // rendered exactly like the Claude-Code "pick one" prompt. The

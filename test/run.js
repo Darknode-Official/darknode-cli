@@ -3378,6 +3378,21 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("long command clipped", P.formatRows([{ pid: 1, ppid: 0, cpu: 0, mem: 0, age: "1", cmd: "x".repeat(400) }], 5).length < 260);
   }
 
+  // ── web_search: per-block parsing (no snippet drift), ads dropped, captcha reported ──
+  {
+    const W = require("../lib/nexus/web-search");
+    const blk = (cls, href, title, snip) => '<div class="result ' + cls + '"><h2><a rel="nofollow" class="result__a" href="' + href + '">' + title + '</a></h2>' + (snip ? '<a class="result__snippet" href="x">' + snip + '</a>' : '') + '</div>';
+    const html = blk("result--ad", "https://duckduckgo.com/y.js?ad=1", "AD", "buy") + blk("web-result", "//duckduckgo.com/l/?uddg=" + encodeURIComponent("https://a.dev/x?y=1&z=2") + "&rut=1", "A &amp; <b>B</b>", "") + blk("web-result", "https://c.dev/", "C&#x27;s", "snip &#39;c&#39;");
+    const r = W.parseDdg(html, 8);
+    eq("ads dropped, uddg decoded", r.map((x) => x.url), ["https://a.dev/x?y=1&z=2", "https://c.dev/"]);
+    ok("missing snippet does not shift the next one", r[0].snippet === undefined && r[1].snippet === "snip 'c'");
+    eq("entities decoded", r.map((x) => x.title), ["A & B", "C's"]);
+    ok("captcha page detected", W.isBlocked(202, "") && W.isBlocked(200, '<div class="anomaly-modal__title">') && !W.isBlocked(200, html));
+    ok("captcha → clear error", /rate-limiting/.test((await W.webSearchTool({ query: "x" }, { get: (cb) => cb(null, 202, "") })).error));
+    ok("no results note", /no results/.test((await W.webSearchTool({ query: "x" }, { get: (cb) => cb(null, 200, "<div>No  results.</div>") })).note));
+    eq("max_results honored", (await W.webSearchTool({ query: "x", max_results: 1 }, { get: (cb) => cb(null, 200, html) })).results.length, 1);
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
