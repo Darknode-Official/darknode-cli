@@ -586,5 +586,22 @@ group("vim modal editing (/vim)");
   }
 }
 
+group("graphemes — backspace/arrows treat emoji clusters as one character");
+{
+  const flag = "\u{1F1EE}\u{1F1F3}", thumb = "\u{1F44D}\u{1F3FD}", fam = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}", e = "e\u0301";
+  for (const [name, g] of [["skin tone", thumb], ["flag", flag], ["ZWJ family", fam], ["combining accent", e]]) {
+    const t = "a" + g + "b";
+    eq(name + ": prevGrapheme skips the whole cluster", C.prevGrapheme(t, 1 + g.length), 1);
+    eq(name + ": nextGrapheme skips the whole cluster", C.nextGrapheme(t, 1), 1 + g.length);
+    const m = new C.ComposerModel({}); typeStr(m, t); C.feed(m, "\x1b[D", {}); C.feed(m, "\x7f", {});
+    eq(name + ": Backspace removes it in one press", m.text, "ab");
+  }
+  eq("strWidth: skin-tone emoji = 2 cells", TF.strWidth(thumb), 2);
+  eq("strWidth: flag = 2 cells", TF.strWidth(flag), 2);
+  eq("strWidth: ZWJ family = 2 cells", TF.strWidth(fam), 2);
+  eq("strWidth: combining accent = 1 cell", TF.strWidth(e), 1);
+  eq("strWidth: CJK = 2 cells each", TF.strWidth("\u4e2d\u6587"), 4);
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (composer + settings)");
 process.exit(fail ? 1 : 0);
