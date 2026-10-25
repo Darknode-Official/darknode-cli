@@ -3059,7 +3059,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (!m || m._live || m.role === "art" || m.role === "plan" || (busy && m === cur())) return null;
       let sg = g + "|" + (m.role || "") + "|" + (m.text == null ? -1 : String(m.text).length) + "|" + (Array.isArray(m.lines) ? m.lines.length + ":" + m.lines.join("").length : "") + "|" + (m.summary ? String(m.summary).length : 0) + "|" + (m.recap ? JSON.stringify(m.recap).length : 0) + "|" + (m.auto ? 1 : 0) + "|" + (m.before || 0);
       if (m.items) for (const it of m.items) {
-        if (it.status === "run" || it.status === "wait" || (it.full != null && (it.shown | 0) < String(it.full).length)) return null; // still live
+        if (it.status === "run" || it.status === "wait" || (it.type === "text" && it.full != null && (it.shown | 0) < String(it.full).length)) return null; // still live (only text items typewrite; thinking has no `shown`)
         sg += "," + (it.type || "") + "." + (it.status || "") + "." + (it.full != null ? String(it.full).length : 0) + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? String(it.detail).length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0) + "." + (it.end || 0) + "." + (it.interrupted ? 1 : 0) + "." + (it.input ? JSON.stringify(it.input).length : 0);
       }
       return sg;

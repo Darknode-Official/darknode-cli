@@ -966,6 +966,17 @@ group("command registry (batch 1)");
   eq("no migrated command still dispatched inline", doubled, []);
 }
 
+group("render cache: only text items count as still revealing");
+{
+  // thinking items carry `full` but never `shown` (no typewriter); treating them as
+  // "still revealing" made every message with thinking uncacheable — a 300-message
+  // session re-rendered 22k lines per keystroke (~58ms; typed keys batched and lagged).
+  const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+  const sig = (src.match(/const _msgSig = \(m, g\) => \{[\s\S]*?\n    \};/) || [""])[0];
+  ok("_msgSig found", sig.length > 0);
+  ok("reveal check is gated on it.type === \"text\"", /it\.type === "text" && it\.full != null && \(it\.shown \| 0\) < String\(it\.full\)\.length/.test(sig));
+}
+
 group("inline CLI subcommands run (no out-of-scope fs/path)");
 {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nx-cli-"));
@@ -2670,6 +2681,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("enter submits the typed answer", (() => { const r = askKey({ ...base, text: "scan now" }, "\r"); return r.done && r.value === "scan now"; })());
     ok("esc cancels the input", askKey({ ...base, text: "x" }, "\x1b").cancelled === true);
     ok("a control byte (not backspace) is ignored", askKey({ ...base, text: "ab" }, "\x02").text === "ab");
+    ok("a batched multi-char chunk (fast typing) is kept, not dropped", askKey({ ...base, text: "lea" }, "ve the") .text === "leave the");
+    ok("a pasted chunk keeps its text; newlines become spaces, no submit", (() => { const r = askKey({ ...base, text: "" }, "first line\nsecond"); return !r.done && r.text === "first line second"; })());
+    ok("bracketed-paste markers are stripped", askKey({ ...base, text: "" }, "\x1b[200~pasted\x1b[201~").text === "pasted");
+    ok("backspaces inside a chunk apply in order", askKey({ ...base, text: "ab" }, "cd\x7f\x7fx").text === "abx");
+    ok("non-ASCII and emoji are kept, backspace removes a whole emoji", (() => { const t = askKey({ ...base, text: "" }, "café 🔒").text; return t === "café 🔒" && askKey({ ...base, text: t }, "\x7f").text === "café "; })());
+    ok("arrow keys don't insert text", askKey({ ...base, text: "ab" }, "\x1b[D").text === "ab");
     const empty = renderAsk(base, 50), filled = renderAsk({ ...base, text: "scan" }, 50);
     ok("shows a placeholder when empty", empty.some((r) => /type your answer/.test(r)));
     ok("shows the typed text with a caret", filled.some((r) => r.includes("scan") && r.includes("█")));
