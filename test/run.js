@@ -3330,6 +3330,69 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     srv.close();
   }
 
+  group("edit failures say WHY — closest line, already applied, where the duplicates are");
+  {
+    const E = require("../lib/nexus/edit");
+    const src = "function login(user) {\n  if (!user) return null;\n  return check(user.password);\n}\nx\nx\n";
+    ok("typo → closest line with its number", /closest line 3: return check\(user\.password\);/.test(E.applyEditsFlexible(src, [{ find: "  return check(user.passwrd);", replace: "y" }]).error));
+    ok("already applied is detected", /already applied/.test(E.applyEditsFlexible(src, [{ find: "check(user.pw)", replace: "return check(user.password);" }]).error));
+    ok("ambiguous lists the lines", /matches 2 places \(lines 5, 6\)/.test(E.applyEditsFlexible(src, [{ find: "x", replace: "y" }]).error));
+    ok("curly quotes called out", /curly quotes/.test(E.applyEditsFlexible("say(\"hi\")\n", [{ find: "say(“hi”)", replace: "z" }]).error));
+    ok("no hint when nothing is close", /not present \(even ignoring whitespace\)$/.test(E.applyEditsFlexible(src, [{ find: "totally unrelated text here", replace: "z" }]).error));
+    ok("patch context miss gets the hint too", /closest line/.test(E.applyHunks(src, [{ before: ["  return check(user.passwrd);"], after: ["  return 1;"] }]).error));
+    eq("whereLines", E.whereLines("a\nb\na\na", "a"), [1, 3, 4]);
+    ok("dice similarity", E.dice("hello world", "hello wrld") > 0.8 && E.dice("abc", "xyz") === 0);
+  }
+
+  // ── coderShell: closed stdin, tree kill on timeout/interrupt, utf8, exit codes ──
+  if (process.platform !== "win32") {
+    const { coderShell } = require("../lib/nexus/shell-run");
+    const os = require("os");
+    const r1 = await coderShell("read x; echo got:[$x]", os.tmpdir());
+    ok("stdin is closed — a prompt gets EOF, no hang", r1.code === 0 && /got:\[\]/.test(r1.output));
+    const t0 = Date.now();
+    const r2 = await coderShell("sleep 30 & echo started; wait", os.tmpdir(), { timeoutMs: 1000 });
+    ok("timeout returns promptly even with a child holding the pipe", Date.now() - t0 < 5000 && r2.timedOut === true && r2.code === 124);
+    ok("timeout note keeps the output and points at run_background", /^started/.test(r2.output) && /timed out after 1s/.test(r2.output) && /run_background/.test(r2.output));
+    const ctl = { stopped: false }; setTimeout(() => { ctl.stopped = true; }, 300);
+    const r3 = await coderShell("sleep 30", os.tmpdir(), { ctl });
+    ok("interrupt via ctl kills it", r3.interrupted === true && r3.code === 130 && /interrupted/.test(r3.output));
+    eq("exit code passes through", (await coderShell("exit 3", os.tmpdir())).code, 3);
+    ok("utf8 survives chunking", /héllo — ✓/.test((await coderShell("printf 'h\\303\\251llo \\342\\200\\224 \\342\\234\\223'", os.tmpdir())).output));
+    ok("git never prompts", /^0$/m.test((await coderShell("echo $GIT_TERMINAL_PROMPT", os.tmpdir())).output));
+  }
+
+  // ── list_processes: busiest first, kernel threads dropped, filter/pid/port ──
+  {
+    const P = require("../lib/nexus/procs");
+    const ps = "  PID  PPID %CPU %MEM     ELAPSED COMMAND\n    1     0  0.0  0.1  9-00:00:00 /sbin/init\n    2     0  0.0  0.0  9-00:00:00 [kthreadd]\n  500     1 45.5  2.0       10:00 node server.js --port 3000\n  600     1  3.0  9.0       01:00 python worker.py\n  700   500  0.0  0.0       00:00 ps -Ao pid,ppid,pcpu,pmem,etime,args\n";
+    eq("parsePs rows", P.parsePs(ps).length, 5);
+    const r = P.listProcessesTool({}, { ps });
+    ok("sorted by cpu, kernel thread + own ps dropped", r.count === 3 && /^500 /m.test(r.processes.split("\n")[1]) && !/kthreadd|ps -Ao/.test(r.processes));
+    ok("filter by name", /worker\.py/.test(P.listProcessesTool({ filter: "WORKER" }, { ps }).processes));
+    eq("filter by pid", P.listProcessesTool({ filter: "500" }, { ps }).count, 1);
+    ok("no match says so", /no running process matches/.test(P.listProcessesTool({ filter: "nginx" }, { ps }).note));
+    ok("port → owning process", /server\.js/.test(P.listProcessesTool({ port: 3000 }, { ps, portLookup: () => ({ pids: new Set([500]), listening: true }) }).processes));
+    ok("free port", /nothing is listening on :3001/.test(P.listProcessesTool({ port: 3001 }, { ps, portLookup: () => ({ pids: new Set(), listening: false }) }).note));
+    ok("max truncates with a hint", /showing the 1 busiest of 3/.test(P.listProcessesTool({ max: 1 }, { ps }).truncated));
+    ok("long command clipped", P.formatRows([{ pid: 1, ppid: 0, cpu: 0, mem: 0, age: "1", cmd: "x".repeat(400) }], 5).length < 260);
+  }
+
+  // ── web_search: per-block parsing (no snippet drift), ads dropped, captcha reported ──
+  {
+    const W = require("../lib/nexus/web-search");
+    const blk = (cls, href, title, snip) => '<div class="result ' + cls + '"><h2><a rel="nofollow" class="result__a" href="' + href + '">' + title + '</a></h2>' + (snip ? '<a class="result__snippet" href="x">' + snip + '</a>' : '') + '</div>';
+    const html = blk("result--ad", "https://duckduckgo.com/y.js?ad=1", "AD", "buy") + blk("web-result", "//duckduckgo.com/l/?uddg=" + encodeURIComponent("https://a.dev/x?y=1&z=2") + "&rut=1", "A &amp; <b>B</b>", "") + blk("web-result", "https://c.dev/", "C&#x27;s", "snip &#39;c&#39;");
+    const r = W.parseDdg(html, 8);
+    eq("ads dropped, uddg decoded", r.map((x) => x.url), ["https://a.dev/x?y=1&z=2", "https://c.dev/"]);
+    ok("missing snippet does not shift the next one", r[0].snippet === undefined && r[1].snippet === "snip 'c'");
+    eq("entities decoded", r.map((x) => x.title), ["A & B", "C's"]);
+    ok("captcha page detected", W.isBlocked(202, "") && W.isBlocked(200, '<div class="anomaly-modal__title">') && !W.isBlocked(200, html));
+    ok("captcha → clear error", /rate-limiting/.test((await W.webSearchTool({ query: "x" }, { get: (cb) => cb(null, 202, "") })).error));
+    ok("no results note", /no results/.test((await W.webSearchTool({ query: "x" }, { get: (cb) => cb(null, 200, "<div>No  results.</div>") })).note));
+    eq("max_results honored", (await W.webSearchTool({ query: "x", max_results: 1 }, { get: (cb) => cb(null, 200, html) })).results.length, 1);
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
