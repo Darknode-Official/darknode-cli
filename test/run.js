@@ -2656,6 +2656,66 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("a pure free-text prompt is NOT flagged typed", (() => { const r = askKey({ question: "name?", input: true, text: "x" }, "\r"); return r.done && r.value === "x" && !r.typed; })());
   }
 
+  group("agents panel (live sub-agent list under the prompt bar)");
+  {
+    const A = require("../lib/cli/agents");
+    const now = 100000;
+    const agents = [
+      { id: "ag0", task: "add unit tests for the parser", status: "ok", start: now - 83000, end: now - 20000, result: "Added 12 tests; all pass." },
+      { id: "ag1", task: "write the API docs", status: "run", start: now - 5000 },
+      { id: "ag2", task: "fix the lint errors", status: "fail", start: now - 60000, end: now - 10000, result: "could not resolve 3 warnings" },
+    ];
+    // ---- fmtDur ----
+    eq("fmtDur seconds", A.fmtDur(5000), "5s");
+    eq("fmtDur minutes+seconds", A.fmtDur(83000), "1m23s");
+    eq("fmtDur hours+minutes", A.fmtDur((2 * 3600 + 4 * 60) * 1000), "2h04m");
+    eq("fmtDur clamps negatives to 0s", A.fmtDur(-5), "0s");
+    // ---- elapsed uses end when finished, now while running ----
+    eq("elapsed of a finished agent uses its end", A.elapsed(agents[0], now), 63000);
+    eq("elapsed of a running agent uses now", A.elapsed(agents[1], now), 5000);
+    // ---- panelRows ----
+    const idle = A.panelRows(agents, { now, sel: -1, width: 70 });
+    ok("empty registry renders nothing", A.panelRows([], { now, width: 70 }).length === 0);
+    ok("header summarises running + done counts", /1 running/.test(idle[0]) && /2 done/.test(idle[0]));
+    ok("idle header hints how to select", /to select/.test(idle[0]));
+    ok("lists each agent's task", idle.some((r) => /add unit tests/.test(r)) && idle.some((r) => /write the API docs/.test(r)) && idle.some((r) => /fix the lint errors/.test(r)));
+    ok("shows elapsed per agent", idle.some((r) => /1m03s/.test(r)) && idle.some((r) => /5s/.test(r)));
+    ok("idle panel shows no ❯ cursor", !idle.slice(1).some((r) => r.includes("❯")));
+    const foc = A.panelRows(agents, { now, sel: 1, width: 70 });
+    ok("focused header hints open/stop/back", /enter open/.test(foc[0]) && /stop/.test(foc[0]) && /esc back/.test(foc[0]));
+    ok("focused row carries the ❯ cursor on the selected task", foc.some((r) => r.includes("❯") && /write the API docs/.test(r)));
+    ok("long task is truncated with an ellipsis at a narrow width", A.panelRows([{ task: "x".repeat(200), status: "run", start: now }], { now, width: 40 }).some((r) => r.includes("…")));
+    const many = Array.from({ length: 9 }, (_, i) => ({ id: "a" + i, task: "task " + i, status: "run", start: now }));
+    const win = A.panelRows(many, { now, sel: -1, width: 70, max: 4 });
+    ok("caps the visible rows and notes the overflow", win.filter((r) => /task \d/.test(r)).length === 4 && win.some((r) => /\+5 more/.test(r)));
+    ok("unfocused window shows the most-recent agents", win.some((r) => /task 8/.test(r)) && !win.some((r) => /task 0\b/.test(r)));
+    // ---- windowStart ----
+    eq("no window when it fits", A.windowStart(3, 1, 5), 0);
+    eq("unfocused window pins to the tail", A.windowStart(9, -1, 4), 5);
+    eq("focused window follows the selection", A.windowStart(9, 7, 4), 5);
+    // ---- panelKey reducer ----
+    eq("down moves selection +1", A.panelKey({ sel: 0 }, "\x1b[B", 3).sel, 1);
+    eq("down clamps at the last agent", A.panelKey({ sel: 2 }, "\x1b[B", 3).sel, 2);
+    eq("up moves selection -1", A.panelKey({ sel: 2 }, "\x1b[A", 3).sel, 1);
+    ok("up off the top row leaves the panel", A.panelKey({ sel: 0 }, "\x1b[A", 3).leave === true);
+    ok("enter opens the selected agent", A.panelKey({ sel: 1 }, "\r", 3).open === 1);
+    ok("a digit opens that agent directly", A.panelKey({ sel: 0 }, "2", 3).open === 1);
+    ok("an out-of-range digit keeps focus (no open)", (() => { const r = A.panelKey({ sel: 0 }, "9", 3); return r.open == null && r.leave == null; })());
+    ok("s stops the selected agent", A.panelKey({ sel: 2 }, "s", 3).stop === 2);
+    ok("x clears the finished agents", A.panelKey({ sel: 0 }, "x", 3).clear === true);
+    ok("esc leaves the panel", A.panelKey({ sel: 1 }, "\x1b", 3).leave === true);
+    ok("an empty registry always leaves", A.panelKey({ sel: 0 }, "\x1b[B", 0).leave === true);
+    ok("an unrelated key keeps focus", (() => { const r = A.panelKey({ sel: 1 }, "z", 3); return r.sel === 1 && r.open == null && r.stop == null; })());
+    // ---- viewRows (transcript overlay) ----
+    const vr = A.viewRows(agents[0], 70, 24, 0, null, now);
+    ok("view shows the task", vr.some((r) => /add unit tests/.test(r)));
+    ok("view shows a done badge + elapsed", vr.some((r) => /done/.test(r)) && vr.some((r) => /1m03s/.test(r)));
+    ok("view shows the agent's result text", vr.some((r) => /Added 12 tests/.test(r)));
+    ok("view of a running agent with no output says running", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /running/.test(r)));
+    ok("running view offers a stop key; finished view does not", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /s stop/.test(r)) && !A.viewRows(agents[0], 70, 24, 0, null, now).some((r) => /s stop/.test(r)));
+    ok("view never crashes on a bare agent", Array.isArray(A.viewRows({ task: "x", status: "run", start: now }, 40, 12, 99, null, now)));
+  }
+
   group("api-server input validation (shell-out routes reject injection)");
   {
     const { isValidHostname, isSafeUrl } = require("../lib/nexus/url-guard");

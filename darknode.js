@@ -53,6 +53,7 @@ const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command regist
 const { toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
+const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
 const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
 const ASK_MCP_PATH = require("path").join(__dirname, "lib", "nexus", "ask-mcp.js"); // stdio MCP shim spawned by the engine
@@ -2014,7 +2015,7 @@ function runHooks(hooks, event, env, cwd) {
 // build an AbortSignal wired to a ctl's kill list (so ctrl+c aborts in-flight ollama requests)
 function ctlSignal(ctl) { if (!ctl || !ctl.kids) return undefined; const ac = new AbortController(); ctl.kids.push(() => { try { ac.abort(); } catch (_) {} }); return ac.signal; }
 // ---------- Parallel sub-agents: fan a list of independent tasks out across the current engine ----------
-async function runSubagents(engine, tasks, cwd, model, onProgress, ctl, pickModel) {
+async function runSubagents(engine, tasks, cwd, model, onProgress, ctl, pickModel, agentCtls) {
   const path = require("path"), fs = require("fs"), os = require("os");
   const results = new Array(tasks.length);
   // Isolate each concurrent agent in its own git worktree so parallel writers can't
@@ -2027,14 +2028,18 @@ async function runSubagents(engine, tasks, cwd, model, onProgress, ctl, pickMode
   const stamp = Date.now().toString(36);
   const removeWt = (wt) => { try { _cp.execSync("git worktree remove --force " + JSON.stringify(wt), { cwd, stdio: "ignore" }); } catch (_) { try { fs.rmSync(wt, { recursive: true, force: true }); } catch (__) {} } };
   const runOne = async (i) => {
-    if (ctl && ctl.stopped) { results[i] = "(interrupted)"; if (onProgress) onProgress(i, "done"); return; }
+    // Each agent may carry its own controller so it can be stopped individually;
+    // link it to the shared controller so a global interrupt still cascades.
+    const actl = (agentCtls && agentCtls[i]) || ctl;
+    if (actl && actl !== ctl && ctl && ctl.kids) ctl.kids.push(() => { try { actl.kill(); } catch (_) {} });
+    if ((ctl && ctl.stopped) || (actl && actl.stopped)) { results[i] = "(interrupted)"; if (onProgress) onProgress(i, "done", results[i]); return; }
     if (onProgress) onProgress(i, "run");
     let dir = cwd;
     if (useWt) { const wt = path.join(os.tmpdir(), "nexus-agent-" + stamp + "-" + i); try { _cp.execSync("git worktree add --detach " + JSON.stringify(wt) + " " + baseCommit, { cwd, stdio: "ignore" }); worktrees[i] = dir = wt; } catch (_) { dir = cwd; } }
     let out;
-    try { if (engine === "ollama") { const r = await ollamaExec(model, tasks[i], "", dir, ctlSignal(ctl)); out = (r.output || "").trim(); } else { const r = await runEngineTask(engine, tasks[i], dir, true, false, null, ctl, pickModel ? pickModel(tasks[i]) : undefined); out = (r.output || "").trim(); } }
+    try { if (engine === "ollama") { const r = await ollamaExec(model, tasks[i], "", dir, ctlSignal(actl)); out = (r.output || "").trim(); } else { const r = await runEngineTask(engine, tasks[i], dir, true, false, null, actl, pickModel ? pickModel(tasks[i]) : undefined); out = (r.output || "").trim(); } }
     catch (e) { out = "error: " + e.message; }
-    results[i] = out; if (onProgress) onProgress(i, "done");
+    results[i] = out; if (onProgress) onProgress(i, "done", out);
   };
   // With isolation, agents run concurrently; without it (no git, or ollama), serialize to avoid corrupting the shared dir.
   const conc = useWt ? Math.max(1, Math.min(4, tasks.length)) : 1;
@@ -2597,7 +2602,24 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // reached 726 turns / 794K context / one context that never reset).
     let carryNote = "";
     let localReplay = []; // ollama history rebuilt from a restored transcript (oMsgs itself is never persisted)
-    let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = false, hack = false; let _lastEscTs = 0; // double-Esc (rewind) detector // mode: 0 normal, 1 auto-accept, 2 plan, 3 bypass (waives the destructive-command guard); scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
+    let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = false, hack = false; let _lastEscTs = 0;
+    // ---- Agents panel (lib/cli/agents.js): a live list of sub-agents under the
+    // prompt bar. `agents` is the registry (one entry per sub-agent, kept after
+    // it finishes); `agentSel` is the focused row while the panel has the
+    // keyboard (-1 = composer has focus); `agentView` is the open transcript
+    // overlay { i, scroll } or null. addAgent/finishAgent feed the registry.
+    let agents = [], agentSel = -1, agentView = null;
+    const AGENTS_MAX = 24; // cap the registry; drop the oldest FINISHED agents past this
+    const addAgent = (task, opts) => { const a = Object.assign({ id: "ag_" + Date.now().toString(36) + "_" + agents.length, task: String(task || "").slice(0, 300), status: "run", start: Date.now(), result: "", native: true }, opts || {}); agents.push(a); if (agents.length > AGENTS_MAX) { const keep = agents.filter((x) => x.status === "run"); const fin = agents.filter((x) => x.status !== "run"); agents = fin.slice(Math.max(0, fin.length - (AGENTS_MAX - keep.length))).concat(keep).sort((x, y) => x.start - y.start); } return a; };
+    const finishAgent = (a, status, result) => { if (!a || a.status !== "run") return; a.status = status || "ok"; a.end = Date.now(); if (result != null) a.result = String(result); };
+    // Stop one running agent. Native sub-agents carry their own controller (a.ctl);
+    // a Claude-engine Task runs inside the main turn and can't be killed on its own,
+    // so point the user at the turn interrupt instead.
+    const stopAgent = (a) => {
+      if (!a || a.status !== "run") return;
+      if (a.ctl && a.ctl.kill) { try { a.ctl.kill(); } catch (_) {} finishAgent(a, "stopped", a.result || "(stopped by you)"); }
+      else transcript.push({ role: "system", text: "can't stop a single Claude sub-agent — press Esc to interrupt the whole turn" });
+    }; // double-Esc (rewind) detector // mode: 0 normal, 1 auto-accept, 2 plan, 3 bypass (waives the destructive-command guard); scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
     let gitBranch = ""; // cached "branch" (+ "*" when the tree is dirty), shown in the status bar
     const refreshGit = async () => { try { const b = await sh(["rev-parse", "--abbrev-ref", "HEAD"]); if (b.err) { gitBranch = ""; return; } const st = await sh(["status", "--porcelain"]); const next = (b.stdout || "").trim() + ((st.stdout || "").trim() ? "*" : ""); if (next !== gitBranch) { gitBranch = next; try { render(); } catch (_) {} } } catch (_) { gitBranch = ""; } };
     // One-shot project pulse (last commit, commit count, tracked file count) for
@@ -3493,13 +3515,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green }) : null;
       const effortRows = (!askRows && pendingEffort) ? renderEffortPicker(C, pendingEffort.sel) : null;
       const btwRows = (!askRows && !effortRows && btw) ? renderBtw(C, R, btw) : null;
-      let cardRows = askRows || effortRows || btwRows; // a full-width card replaces the composer + menu
+      const agentViewRows = (!askRows && !effortRows && !btwRows && agentView && agents[agentView.i]) ? Agents.viewRows(agents[agentView.i], C, R, agentView.scroll, { cyan, gray, bold, dim, green, red, yellow, mag }, Date.now()) : null;
+      let cardRows = askRows || effortRows || btwRows || agentViewRows; // a full-width card replaces the composer + menu
       if (cardRows && cardRows.length > R - 2) cardRows = cardRows.slice(0, Math.max(1, R - 2)); // never build a card taller than the screen (would overflow the diff'd frame)
       // breathing room below the footer so the composer floats off the terminal
       // floor (matches Claude Code, which leaves a margin under its prompt).
       // clamped away on short terminals so it never eats the transcript.
       const bottomMargin = Math.min(5, Math.max(0, R - 16));
-      const chrome = (cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows)) + bottomMargin; // spacer + composer + reserved menu + footer + bottom margin
+      // Agents panel: the live sub-agent list sits between the composer/menu and
+      // the footer (Claude-Code layout). Hidden while a full-width card owns the
+      // bottom. Capped so a long list never crowds out the transcript.
+      const agentPanelRows = (!cardRows && agents.length) ? Agents.panelRows(agents, { now: Date.now(), sel: agentSel, width: C, max: Math.min(6, Math.max(2, (R >> 2))), colors: { cyan, gray, bold, dim, green, red, yellow, mag } }) : [];
+      const chrome = (cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows + agentPanelRows.length)) + bottomMargin; // spacer + composer + reserved menu + agents panel + footer + bottom margin
       const bodyRows = Math.max(0, R - chrome);
       const lines = bodyLines();
       const maxScroll = Math.max(0, lines.length - bodyRows);
@@ -3593,6 +3620,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); frame.push(clip((sel ? cyan(" › ") : "   ") + nmShown + tail + pos, C - 2));
       }
       }
+      for (const r of agentPanelRows) frame.push(clip(r, C)); // the Agents panel, under the prompt bar
       // footer: contextual hint on the left, status on the right. The status
       // menu (cost, savings & more) is the clickable "..." at the far right;
       // when open its buttons take over the row.
@@ -3911,6 +3939,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const finish = (res) => {
         for (const it of block.items) if (it.type === "tool" && it.status === "run") { it.status = res && res.interrupted ? "err" : "ok"; it.interrupted = !!(res && res.interrupted); it.end = Date.now(); }
         runningShells = 0; activeAgents = 0; ctl = null;
+        for (const rg of agents) if (rg.status === "run" && rg.native === false) finishAgent(rg, res && res.interrupted ? "stopped" : "ok"); // any Claude sub-agent still open when the turn ends
         if (!block.items.length || !block.items.some((i) => i.type === "text" && i.full.trim())) { const t = textItem(); if (!t.full.trim()) t.full = res && res.interrupted ? "(interrupted)" : (res && res.output) || "(no output)"; }
         const dt = ((Date.now() - stat.t0) / 1000).toFixed(1);
         const din = sess.inTok - stat.inTok0, dout = sess.outTok - stat.outTok0, dcost = sess.cost - stat.cost0;
@@ -3984,13 +4013,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
             block.items.push(_item);
             if (tu.name === "Bash") { runningShells++; stat.cmds++; }
-            if (tu.name === "Task" || tu.name === "Agent") activeAgents++;
+            if (tu.name === "Task" || tu.name === "Agent") { activeAgents++; const _ag = addAgent((tu.input && (tu.input.description || tu.input.subagent_type || tu.input.prompt)) || "agent", { native: false, engine }); _item._agId = _ag.id; } // mirror a Claude-engine sub-agent into the Agents panel
             if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(tu.name) && (tu.input.file_path || tu.input.notebook_path)) { const fp = tu.input.file_path || tu.input.notebook_path; stat.files.add(base(fp)); const r = relOf(fp); if (r) stat.paths.add(r); }
             render();
           },
           onToolResult: (tr) => {
             const it = block.items.find((x) => x.type === "tool" && x.id === tr.id);
-            if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if ((it.name === "Task" || it.name === "Agent") && activeAgents) activeAgents--; }
+            if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if ((it.name === "Task" || it.name === "Agent") && activeAgents) activeAgents--; if (it._agId) { const rg = agents.find((x) => x.id === it._agId); if (rg && rg.status === "run") finishAgent(rg, tr.isError ? "fail" : "ok", resultText(tr.content)); } }
             render();
           },
           onUsage: (u, _m, sub) => { confOut += (u.output_tokens || 0); estOut = 0; sess.liveOut = confOut; if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // lock in the real output tokens for the message that just finished (each agentic tool round is its own assistant message) and clear the streaming estimate; the next message's estimate climbs on top of this. lastCtx tracks the latest main-thread call's prompt = the real context size
@@ -4141,7 +4170,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
               else if (name === "run_background") { if (!a.command || typeof a.command !== "string") { result = { error: "run_background needs a non-empty command string" }; } else { const p = _cp.spawn(process.platform === "win32" ? "cmd" : "sh", process.platform === "win32" ? ["/c", a.command] : ["-c", a.command], { cwd, env: process.env }); const id = bgJobs.start(a.command, p, Date.now()); p.stdout && p.stdout.on("data", (d) => bgJobs.append(id, d)); p.stderr && p.stderr.on("data", (d) => bgJobs.append(id, d)); p.on("close", (code) => bgJobs.finish(id, code)); p.on("error", (e) => { bgJobs.append(id, "spawn error: " + e.message); bgJobs.finish(id, 1); }); result = { ok: true, jobId: id, status: "running", hint: "poll it with check_background{id:'" + id + "'}, stop it with stop_background{id:'" + id + "'}" }; } }
               else if (name === "check_background") { if (a.id) { const j = bgJobs.get(a.id); result = j ? { id: j.id, status: j.status, code: j.code, output: compactOutput(bgJobs.tail(a.id, 6000), 4000) } : { error: "no such job " + a.id }; } else result = { jobs: bgJobs.list() }; }
               else if (name === "stop_background") { result = a.id ? { ok: bgJobs.stop(a.id), stopped: a.id } : { error: "stop_background needs a job id" }; }
-              else if (name === "spawn_agents") { const tasks = (a.tasks || []).map(String).filter(Boolean).slice(0, 8); const outs = await runSubagents(engine, tasks, cwd, mdl, null, ctl); result = { agents: outs.map((o2, i) => ({ task: tasks[i], result: (o2 || "").slice(0, 1500) })) }; }
+              else if (name === "spawn_agents") { const tasks = (a.tasks || []).map(String).filter(Boolean).slice(0, 8); const actls = tasks.map(() => makeCtl()); const regs = tasks.map((tk, i) => addAgent(tk, { native: engine !== "claude", engine, ctl: actls[i] })); render(); const outs = await runSubagents(engine, tasks, cwd, mdl, (i, phase, out) => { if (phase === "done" && regs[i].status === "run") finishAgent(regs[i], /^error:/.test(String(out || "")) ? "fail" : "ok", out); render(); }, ctl, undefined, actls); regs.forEach((rg, i) => { if (rg.status === "run") finishAgent(rg, "ok", outs[i]); }); result = { agents: outs.map((o2, i) => ({ task: tasks[i], result: (o2 || "").slice(0, 1500) })) }; }
               else if (String(name).startsWith("mcp__")) { const srv = mcpServers.find((s) => !s.error && String(name).slice(5).startsWith(s.name + "__")); if (!srv) result = { error: "MCP tool not connected: " + name }; else { const tool = String(name).slice(5 + srv.name.length + 2); const r = await srv.call("tools/call", { name: tool, arguments: a }); result = { content: resultText((r && r.content) || r) }; } }
               else if (name === "discover") { result = { tools: discoverTools(a.query || a.q || "", TOOL_CATALOG.concat(mcpToolList().map((m) => [m.full, m.desc]))) }; }
               else if (name === "repo_map" || name === "repomap" || name === "map") { const rm = getRepoMap({ fresh: !!a.fresh }); result = rm && rm.map ? { map: rm.text, files: rm.map.fileCount, symbols: rm.map.symbolCount } : { error: "could not build a repo map here" }; }
@@ -4240,17 +4269,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       activeAgents = tasks.length;
       const cards = tasks.map((tk, i) => ({ type: "tool", id: "ag" + i, name: "Task", label: "Task(" + oneline(tk, 30) + ")", status: "run", start: Date.now(), detail: tk }));
       cards.forEach((c) => block.items.push(c));
+      // Mirror each task into the Agents panel (live list under the prompt bar),
+      // each with its own controller so it can be stopped individually.
+      const agentCtls = tasks.map(() => makeCtl());
+      const regs = tasks.map((tk, i) => addAgent(tk, { native: engine !== "claude", engine, ctl: agentCtls[i] }));
       startTick(); render();
-      const agentsCtl = ctl; const pick = (cowork.on && engine === "claude" && cowork.weakKind === "claude") ? ((t) => { const est = Math.ceil(t.length / 4) + 800; if (isMechanical(t) && shouldDelegate(est, est * 4, cowork.strong, cowork.weak)) { impact.delegated++; impact.coworkSaved += (priceOf(cowork.strong).out - priceOf(cowork.weak).out) * (est * 3) / 1e6; return cowork.weak; } return cowork.strong; }) : (cowork.on && engine === "claude" ? ((t) => cowork.strong) : null); (async () => { const mdl = engine === "ollama" ? (sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags())) : sess.model; return runSubagents(engine, tasks, cwd, mdl, (i, phase) => { if (phase === "done") { cards[i].status = "ok"; cards[i].end = Date.now(); activeAgents = Math.max(0, activeAgents - 1); } render(); }, agentsCtl, pick); })()
+      const agentsCtl = ctl; const pick = (cowork.on && engine === "claude" && cowork.weakKind === "claude") ? ((t) => { const est = Math.ceil(t.length / 4) + 800; if (isMechanical(t) && shouldDelegate(est, est * 4, cowork.strong, cowork.weak)) { impact.delegated++; impact.coworkSaved += (priceOf(cowork.strong).out - priceOf(cowork.weak).out) * (est * 3) / 1e6; return cowork.weak; } return cowork.strong; }) : (cowork.on && engine === "claude" ? ((t) => cowork.strong) : null); (async () => { const mdl = engine === "ollama" ? (sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags())) : sess.model; return runSubagents(engine, tasks, cwd, mdl, (i, phase, out) => { if (phase === "done") { cards[i].status = "ok"; cards[i].end = Date.now(); activeAgents = Math.max(0, activeAgents - 1); if (regs[i].status === "run") finishAgent(regs[i], /^error:/.test(String(out || "")) ? "fail" : "ok", out); } render(); }, agentsCtl, pick, agentCtls); })()
         .then((outs) => {
           const t = ensureText(block);
           t.full = outs.map((o, i) => "### agent " + (i + 1) + " — " + oneline(tasks[i], 60) + "\n" + (o || "(no output)")).join("\n\n");
           for (const c of cards) if (c.status === "run") { c.status = "ok"; c.end = Date.now(); }
+          regs.forEach((rg, i) => { if (rg.status === "run") finishAgent(rg, /^error:/.test(String(outs[i] || "")) ? "fail" : "ok", outs[i]); });
           sess.outTok += Math.ceil(outs.join("").length / 4); sess.ctxUsed = sess.inTok + sess.outTok;
           activeAgents = 0; busy = false; ctl = null;
           block.summary = tasks.length + " agents  ·  ↑" + fmtK(sess.inTok - in0) + " ↓" + fmtK(sess.outTok - out0) + " tok  ·  " + fmtDur((Date.now() - t0) / 1000);
           try { saveSession(); } catch (_) {} render();
-        }).catch(() => { activeAgents = 0; busy = false; ctl = null; render(); });
+        }).catch(() => { regs.forEach((rg) => { if (rg.status === "run") finishAgent(rg, "fail", "(failed)"); }); activeAgents = 0; busy = false; ctl = null; render(); });
     };
     // quick TCP connect scan (Nexus ships with the Darknode security toolkit)
     const quickScan = (host, ports) => new Promise((resolve) => {
@@ -5752,7 +5786,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // racing through it three entries a notch.
       const _burst = s.match(/\x1b[[O][AB]/g);
       if (_burst && _burst.length > 1 && _burst.join("") === s) {
-        if (!btw && !pendingAsk && !pendingEffort && !navOpen && !composer.searchMode && !slashMatches().length && !argMatches().length) { const up = s[2] === "A"; scroll = up ? scroll + _burst.length : Math.max(0, scroll - _burst.length); render(); return; }
+        if (!btw && !agentView && agentSel < 0 && !pendingAsk && !pendingEffort && !navOpen && !composer.searchMode && !slashMatches().length && !argMatches().length) { const up = s[2] === "A"; scroll = up ? scroll + _burst.length : Math.max(0, scroll - _burst.length); render(); return; }
         for (const k of _burst) process.stdin.emit("data", k); return;
       }
       // Several keys can land in one chunk (key repeat, a fast typist over ssh):
@@ -5804,6 +5838,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (s === "\r" || s === "\n" || s === " " || s === "\x1b" || s === "\x03") { btw = null; render(); return; }
         return; // overlay owns the keyboard
       }
+      // ---- the Agents transcript overlay owns the keyboard while open ----
+      if (agentView) {
+        if (isMouse) return;
+        const a = agents[agentView.i];
+        if (!a) { agentView = null; render(); return; }
+        if (s === "\x1b[A" || s === "\x1bOA") { agentView.scroll = Math.max(0, agentView.scroll - 1); render(); return; } // up
+        if (s === "\x1b[B" || s === "\x1bOB") { agentView.scroll++; render(); return; }                                 // down
+        if (s === "\x1b[5~") { agentView.scroll = Math.max(0, agentView.scroll - 10); render(); return; }                // pgup
+        if (s === "\x1b[6~") { agentView.scroll += 10; render(); return; }                                              // pgdn
+        if (s === "[" || s === "\x1b[D" || s === "\x1bOD") { if (agentView.i > 0) { agentView.i--; agentView.scroll = 0; } render(); return; } // prev agent
+        if (s === "]" || s === "\x1b[C" || s === "\x1bOC") { if (agentView.i < agents.length - 1) { agentView.i++; agentView.scroll = 0; } render(); return; } // next agent
+        if (s === "c" || s === "C") { const txt = String(a.result || ""); if (txt) { try { out.write("\x1b]52;c;" + Buffer.from(txt).toString("base64") + "\x07"); } catch (_) {} } render(); return; } // copy output
+        if ((s === "s" || s === "S") && a.status === "run") { stopAgent(a); render(); return; }
+        if (s === "\r" || s === "\n" || s === "\x1b" || s === "\x03" || s === "q") { agentView = null; render(); return; }
+        return; // overlay owns the keyboard
+      }
       // ---- the /effort slider owns the keyboard while open ----
       if (pendingEffort) {
         if (isMouse) return;
@@ -5825,6 +5875,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (r.sel != null) pendingAsk.sel = r.sel; if (r.pick != null) pendingAsk.pick = r.pick; if (r.picked) pendingAsk.picked = r.picked; if (r.text != null) pendingAsk.text = r.text;
         render(); return;
       }
+      // ---- Agents panel has the keyboard (arrowed down into it from the composer) ----
+      if (agentSel >= 0 && agents.length) {
+        if (isMouse) return;
+        const r = Agents.panelKey({ sel: agentSel }, s, agents.length);
+        if (r.leave) { agentSel = -1; render(); return; }
+        if (r.open != null) { agentView = { i: r.open, scroll: 0 }; agentSel = -1; render(); return; }
+        if (r.stop != null) { stopAgent(agents[r.stop]); render(); return; }
+        if (r.clear) { agents = agents.filter((a) => a.status === "run"); if (!agents.length) agentSel = -1; else agentSel = Math.min(agentSel, agents.length - 1); render(); return; }
+        if (r.sel != null) agentSel = r.sel;
+        render(); return;
+      }
+      if (agentSel >= 0 && !agents.length) agentSel = -1; // the last agent was cleared out from under the focus
 
       // ---- reverse-i-search owns the keyboard while active (mouse still works) ----
       if (composer.searchMode && !isMouse) {
@@ -5927,6 +5989,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (cm.length && s === "\t") { if (_mm.length) { input = (_mm[menuSel] || _mm[0])[0] + " "; refreshArgCache(); } else { const sp = input.indexOf(" "); input = input.slice(0, sp) + " " + (_am[menuSel] || _am[0])[0] + " "; } curPos = input.length; menuSel = 0; render(); return; }
         if (_mm.length && (s === "\r" || s === "\n")) { const t = (_mm[menuSel] || _mm[0])[0]; nextQueue.push(t); input = ""; curPos = 0; menuSel = 0; render(); return; }
         if (s === "\x1b" || s === "\x03") { if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); } render(); return; }
+        if (isDown && agentSel < 0 && !agentView && agents.length && !input) { agentSel = 0; render(); return; } // Down on an empty prompt drops focus into the Agents panel
         if (isUp || isDown) { arrowVert(isUp ? -1 : 1); return; }       // same as idle: visual row, then history / queued recall
         // Full composer editing mid-turn (arrows, word moves, Ctrl+U/K/W, undo…);
         // Enter queues the draft instead of sending it.
@@ -5952,6 +6015,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         return;
       }
 
+      if (isDown && agentSel < 0 && !agentView && agents.length && !input) { agentSel = 0; render(); return; } // Down on an empty prompt drops focus into the Agents panel
       if ((isUp || isDown) && !(composer.vim && composer.vimMode === "normal")) { arrowVert(isUp ? -1 : 1); return; }
 
       // ---- everything else: the pure composer key dispatch (lib/cli/composer.js) ----
