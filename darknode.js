@@ -1549,7 +1549,7 @@ async function aiCoder(argv) {
   const fs = require("fs"), path = require("path");
   const cwd = process.cwd();
   // ---- parse flags ----
-  const arr = Array.isArray(argv) ? argv.slice() : String(argv || "").split(/\s+/).filter(Boolean);
+  const arr = [].concat(...(Array.isArray(argv) ? argv.slice() : String(argv || "").split(/\s+/).filter(Boolean)).map((a) => { const m = /^(--model|--engine|-m|-e)=(.*)$/.exec(a); return m ? [m[1], m[2]] : [a]; })); // --model=x / --engine=x == --model x
   let autoApprove = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, resumeFlag = false, leanFlag = false, parts = [];
   const unknownFlags = [];
   for (let i = 0; i < arr.length; i++) {
@@ -1579,13 +1579,19 @@ async function aiCoder(argv) {
   // "api" is an alias for the local tool loop pointed at the configured API.
   if (enginePref === "api") { enginePref = "ollama"; if (!apiConfigured() && !cfg.apiModel) console.log("  " + yellow("note: no API configured — set DARKNODE_API_BASE (+ DARKNODE_API_KEY) or run /api <url> [model]")); }
   // Default to Claude headless when installed, fall back to Ollama.
+  if (enginePref && !ENGINES[enginePref]) { console.error("  " + red("unknown engine '" + enginePref + "'") + gray(" — choose one of: " + ENGINE_ORDER.join(", ") + " (or api)")); process.exitCode = 2; return; }
   let engine = enginePref || cfg.engine || (avail.claude ? "claude" : "ollama");
-  if (engine !== "ollama" && !avail[engine]) engine = avail.claude ? "claude" : "ollama";
+  if (!ENGINES[engine]) engine = avail.claude ? "claude" : "ollama"; // a stale/invalid config.json engine
+  if (engine !== "ollama" && !avail[engine]) { const fb = avail.claude ? "claude" : "ollama"; console.error("  " + yellow("note: the " + engine + " engine isn't installed — using " + fb + " instead") + gray(" (install it, or pick one with -e)")); engine = fb; }
   // The full-screen TUI is the default interactive experience now — the old
   // line-based `darknode nexus` REPL has been retired for interactive use. Fall
   // through to the non-TUI path only for a one-shot task (`darknode nexus
   // "..."`), --print, or a non-interactive stdout.
   if (parts[0] === "serve") return nexusServe(parts.slice(1), { engine });
+  if (printMode && !parts.length) {
+    if (!process.stdin.isTTY) { const piped = await new Promise((res) => { let b = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (d) => { b += d; }); process.stdin.on("end", () => res(b)); process.stdin.on("error", () => res(b)); }); if (piped.trim()) parts.push(piped.trim()); }
+    if (!parts.length) { console.error("  " + red("--print needs a task") + gray(" — e.g. nexus --print \"add tests for utils.js\"  (or pipe it in: echo task | nexus --print)")); process.exitCode = 2; return; }
+  }
   const oneShot = parts.length > 0;
   if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag === "new" ? false : (resumeFlag ? "restart" : "launch")); // like `claude -c`: the last chat comes back on every launch; --new starts blank
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
@@ -2648,7 +2654,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let turnLog = []; // one entry per finished paid/local turn this session — feeds /turns + /cheaper (never persisted, no prompt text beyond a short label)
     const cacheWarm = { lastAt: 0, ttl: 0 }; // when a claude call last touched the prompt cache + which TTL it wrote (status chip + /warm)
     let bypassCacheOnce = false; // /retry sets this so the next send skips the exact-repeat cache and really re-runs
-    let aliases = {}; try { const _a = settingsStore.get("aliases"); if (_a && typeof _a === "object") aliases = _a; } catch (_) {}
+    let aliases = {}; // loaded from ~/.nexus/settings.json once the settings store exists (below)
     const AGENTS_MAX = 24; // cap the registry; drop the oldest FINISHED agents past this
     const addAgent = (task, opts) => { const a = Object.assign({ id: "ag_" + Date.now().toString(36) + "_" + agents.length, task: String(task || "").slice(0, 300), status: "run", start: Date.now(), result: "", native: true }, opts || {}); agents.push(a); if (agents.length > AGENTS_MAX) { const keep = agents.filter((x) => x.status === "run"); const fin = agents.filter((x) => x.status !== "run"); agents = fin.slice(Math.max(0, fin.length - (AGENTS_MAX - keep.length))).concat(keep).sort((x, y) => x.start - y.start); } return a; };
     // An agent's conversation as chat messages (rendered by bodyLines like the
@@ -2714,6 +2720,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const settingsStore = nexusSettings.createStore(NHOME);
     const S = settingsStore.value, Ssrc = settingsStore.source;
     const saveSetting = (k, v) => { try { settingsStore.set(k, v); } catch (_) {} };
+    if (settingsStore.corrupt) transcript.push({ role: "system", text: "your settings file (~/.nexus/settings.json) was unreadable, so Nexus started with defaults. The old file was kept as " + settingsStore.corrupt + " — fix it and copy it back to restore your settings." });
+    try { const _a = settingsStore.getSaved("aliases"); if (_a && typeof _a === "object" && !Array.isArray(_a)) aliases = _a; } catch (_) {}
     // Per-project command history, loaded from disk (dedup + capped) and driven
     // by the pure ComposerModel. `history`/`hIdx` stay as compatibility mirrors.
     const history = Composer.loadHistory(cwd, Composer.HISTORY_CAP, NHOME); let hIdx = history.length;
@@ -2886,7 +2894,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     }
     const _refs = {}; let _refKey = "";
     const nexusRef = (brief) => { const k = Object.keys(customCmds).join(",") + "|" + Object.keys(aliases).join(","); if (_refKey !== k) { _refKey = k; _refs.full = _refs.brief = null; } const slot = brief ? "brief" : "full"; if (!_refs[slot]) { _refs[slot] = NexusDocs.buildReference({ brief: !!brief, cmds: CMDS, help: HELP_SECTIONS, keys: KEY_SECTIONS, side: [...SIDE_CMDS], topics: NEXUS_DOCS, topicOrder: DOC_ORDER, custom: Object.keys(customCmds).map((n) => [n, customCmds[n].desc]).concat(Object.keys(aliases).map((n) => [n, "your alias for: " + aliases[n]])) }); } return _refs[slot]; };
-    const allCmds = () => CMDS.concat(Object.keys(customCmds).map((k) => [k, customCmds[k].desc]));
+    const allCmds = () => { const base = CMDS.concat(Object.keys(customCmds).map((k) => [k, customCmds[k].desc])); const have = new Set(base.map((c) => c[0])); return base.concat(Object.keys(aliases).filter((k) => !have.has(k)).map((k) => [k, "alias → " + aliases[k]])); }; // aliases show in the menu, so typing one + Enter runs it (not a fuzzy neighbour)
     // Re-scan .nexus/commands + .claude/commands into customCmds (used after /feature
     // create|remove so a new feature is usable immediately, without a restart).
     const reloadCustomCmds = () => {
@@ -4772,6 +4780,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       btw = { list: btwLog, i: btwLog.length - 1, scroll: 0, loading: false };
       render();
     };
+    let _aliasDepth = 0;
     const handleSlash = (t) => {
       if (!_inSide && SIDE_CMDS.has(sideName(t)) && !aliases[sideName(t)] && !customCmds[sideName(t)]) { runSide(t); return; }
       const sp = t.indexOf(" ");
@@ -4780,7 +4789,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const arg = argstr.split(/\s+/)[0];
       // Any command other than a repeated /clear cancels a pending clear confirmation.
       const clearWasPending = clearPending; if (cmd !== "/clear" && cmd !== "/new") clearPending = false;
-      if (aliases[cmd]) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") handleSlash(body.trim()); else submit(body.trim()); return; }
+      if (aliases[cmd]) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") { if (_aliasDepth >= 5) { transcript.push({ role: "system", text: "alias " + cmd + " loops back on itself (aliases calling aliases more than 5 deep) — fix it with /alias" }); return; } _aliasDepth++; try { handleSlash(body.trim()); } finally { _aliasDepth--; } } else submit(body.trim()); return; }
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
       if (cmd === "/help") {
         const HS = HELP_SECTIONS;
