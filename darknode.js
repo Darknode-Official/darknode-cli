@@ -54,7 +54,7 @@ const UI = { accent: cyan, ok: green, warn: yellow, err: red, muted: gray, faint
 const { frameDiff, wordHi, wordFlags } = require("./lib/cli/diff"); // terminal render helpers (lib/diff.js)
 const { loopDecision, clampRounds, loopPrompt } = require("./lib/nexus/loop"); // autonomous /loop controller (lib/loop.js)
 const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command registry (lib/registry.js)
-const { toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
+const { sanitizeTerm, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
 const CompactAnim = require("./lib/cli/compact-anim");
@@ -3044,8 +3044,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // and re-render only live ones (the running turn, running tools, text still
     // revealing). WeakMap: dropped messages free their lines.
     const _msgCache = new WeakMap();
+    const _scrollAnchor = { n: 0, cols: 0 };
     const _msgSig = (m, g) => {
-      if (!m || m.role === "art" || (busy && m === cur())) return null;
+      if (!m || m.role === "art" || m.role === "plan" || (busy && m === cur())) return null;
       let sg = g + "|" + (m.role || "") + "|" + (m.text == null ? -1 : String(m.text).length) + "|" + (Array.isArray(m.lines) ? m.lines.length + ":" + m.lines.join("").length : "") + "|" + (m.summary ? String(m.summary).length : 0) + "|" + (m.recap ? JSON.stringify(m.recap).length : 0) + "|" + (m.auto ? 1 : 0) + "|" + (m.before || 0);
       if (m.items) for (const it of m.items) {
         if (it.status === "run" || it.status === "wait" || (it.full != null && (it.shown | 0) < String(it.full).length)) return null; // still live
@@ -3590,6 +3591,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const chrome = (cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows + agentPanelRows.length)) + bottomMargin; // spacer + composer + reserved menu + agents panel + footer + bottom margin
       const bodyRows = Math.max(0, R - chrome);
       const lines = bodyLines();
+      if (scroll > 0 && _scrollAnchor.cols === C && lines.length > _scrollAnchor.n) scroll += lines.length - _scrollAnchor.n; // scrolled up: new output below must not drag the view
+      _scrollAnchor.n = lines.length; _scrollAnchor.cols = C;
       const maxScroll = Math.max(0, lines.length - bodyRows);
       if (scroll > maxScroll) scroll = maxScroll;
       const start = Math.max(0, lines.length - bodyRows - scroll);
@@ -3700,6 +3703,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
       }
       for (let i = 0; i < bottomMargin; i++) frame.push(""); // float the footer up off the terminal floor
+      for (let i = 0; i < frame.length; i++) if (/[\x00-\x1a\x1c-\x1f\x7f-\x9f]|\x1b(?!\[[0-9;]*m)/.test(frame[i])) frame[i] = sanitizeTerm(frame[i]); // last line of defence: untrusted text that skipped ansiWrap can never move the cursor or clear the screen
       const b = frameDiff(lastLines, frame, ESC);
       lastLines = frame;
       // Park the real terminal cursor on the composer caret so it blinks natively.
