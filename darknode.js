@@ -53,7 +53,8 @@ const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command regist
 const { toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
-const CompactAnim = require("./lib/cli/compact-anim"); // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
+const CompactAnim = require("./lib/cli/compact-anim");
+const Ledger = require("./lib/cli/ledger"); // pure per-session cost ledger (/turns) + lossless cost advisor (/cheaper) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
 const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
@@ -2610,6 +2611,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // keyboard (-1 = composer has focus); `agentView` is the open transcript
     // overlay { i, scroll } or null. addAgent/finishAgent feed the registry.
     let agents = [], agentSel = -1, agentView = null;
+    let turnLog = []; // one entry per finished paid/local turn this session — feeds /turns + /cheaper (never persisted, no prompt text beyond a short label)
     const AGENTS_MAX = 24; // cap the registry; drop the oldest FINISHED agents past this
     const addAgent = (task, opts) => { const a = Object.assign({ id: "ag_" + Date.now().toString(36) + "_" + agents.length, task: String(task || "").slice(0, 300), status: "run", start: Date.now(), result: "", native: true }, opts || {}); agents.push(a); if (agents.length > AGENTS_MAX) { const keep = agents.filter((x) => x.status === "run"); const fin = agents.filter((x) => x.status !== "run"); agents = fin.slice(Math.max(0, fin.length - (AGENTS_MAX - keep.length))).concat(keep).sort((x, y) => x.start - y.start); } return a; };
     const finishAgent = (a, status, result) => { if (!a || a.status !== "run") return; a.status = status || "ok"; a.end = Date.now(); if (result != null) a.result = String(result); };
@@ -2762,7 +2764,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/help", "commands, input prefixes & keys"], ["/clear", "start a fresh chat"], ["/chat-clear", "clear the screen, keep the conversation memory"], ["/compact", "summarize & shrink the context"],
       ["/trust", "trust this workspace's .nexus MCP servers + hooks"],
       ["/connect", "connect an AI: local model · Claude (API) · any provider"],
-      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
+      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/cheaper", "lossless ways to spend fewer tokens"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
       ["/report", "cost & usage report for chargeback (/report json|save|since <date>)"],
       ["/compliance", "write a signed audit+usage compliance bundle (SOC2/review)"],
       ["/undo", "revert the last turn's file changes"], ["/rewind", "restore a specific checkpoint (/rewind N)"], ["/checkpoints", "list undo checkpoints"],
@@ -3929,7 +3931,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // result (/scan, /verify…) can push a system message mid-turn and move the tail,
       // which would otherwise attach the model's reply to that unrelated block.
       const textItem = () => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; block.items.push(last); } return last; };
-      const stat = { files: new Set(), paths: new Set(), cmds: 0, inTok0: sess.inTok, outTok0: sess.outTok, cost0: sess.cost, t0: Date.now() };
+      const stat = { files: new Set(), paths: new Set(), cmds: 0, inTok0: sess.inTok, outTok0: sess.outTok, cost0: sess.cost, cacheRead0: (sess.byModel && Object.values(sess.byModel).reduce((a, m) => a + (m.cacheRead || 0), 0)) || 0, t0: Date.now() };
       const relOf = (p) => { try { return path.relative(cwd, path.resolve(cwd, p)); } catch (_) { return null; } };
       const ckTree = nexusCheckpoint(cwd); // every engine can now modify files, so always checkpoint (null if not a git repo)
       let ckObj = null; if (ckTree) { ckObj = { tree: ckTree, label: oneline(text, 40), ts: Date.now() }; checkpoints.push(ckObj); }
@@ -3943,6 +3945,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (!block.items.length || !block.items.some((i) => i.type === "text" && i.full.trim())) { const t = textItem(); if (!t.full.trim()) t.full = res && res.interrupted ? "(interrupted)" : (res && res.output) || "(no output)"; }
         const dt = ((Date.now() - stat.t0) / 1000).toFixed(1);
         const din = sess.inTok - stat.inTok0, dout = sess.outTok - stat.outTok0, dcost = sess.cost - stat.cost0;
+        try { const _cr = (sess.byModel && Object.values(sess.byModel).reduce((a, m) => a + (m.cacheRead || 0), 0)) || 0; turnLog.push({ t: Date.now(), inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), dt: +dt || 0, model: sess.model || engine, engine, label: oneline(text || "", 64), paid: !!PAID[engine], cacheRead: Math.max(0, _cr - (stat.cacheRead0 || 0)) }); if (turnLog.length > 300) turnLog.shift(); } catch (_) {}
         if (PAID[engine]) { impact.cloudTurns++; impact.cloudInTok += Math.max(0, din); impact.cloudOutTok += Math.max(0, dout); impact.cloudCost += Math.max(0, dcost); } else { impact.localTurns++; impact.localTok += Math.max(0, din + dout); }
         // Chargeback ledger: one non-sensitive metrics line per turn (no prompt text, no paths).
         try { appendUsage(cwd, { ts: new Date().toISOString(), operator: ident.operator, team: ident.team, engine, model: sess.model || engine, mode: ["normal", "auto", "plan"][mode] || "normal", inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), seconds: +dt, files: stat.files.size, commands: stat.cmds, interrupted: !!(res && res.interrupted) }); } catch (_) {}
@@ -4787,6 +4790,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         transcript.length = 0; transcript.push({ role: "art" });
         transcript.push({ role: "system", text: "screen cleared — the conversation is still in memory" + gray("  · next message continues it · /clear to wipe memory too") });
         scroll = 0;
+      }
+      else if (cmd === "/turns" || cmd === "/ledger") {
+        const n = parseInt(argstr, 10);
+        transcript.push({ role: "system", lines: Ledger.renderTurns(turnLog, { colors: { cyan, gray, bold, dim, green, yellow, mag }, width: cols() - 4, max: n > 0 ? n : 12 }) });
+      }
+      else if (cmd === "/cheaper") {
+        transcript.push({ role: "system", lines: Ledger.renderAdvice(turnLog, { paid: !!PAID[engine], cacheOn, effort, engine, autoCompact, ctxPct: (sess.ctxUsed / (sess.ctxWindow || 200000)) * 100 }, { cyan, gray, bold, dim, green, yellow, mag }) });
       }
       else if (cmd === "/compact") doCompact(false);
       else if (cmd === "/context") transcript.push({ role: "system", text: "context: " + fmtK(sess.ctxUsed) + " / " + fmtK(sess.ctxWindow) + " tokens (" + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "%)  ·  window " + fmtK(sess.ctxWindow) });

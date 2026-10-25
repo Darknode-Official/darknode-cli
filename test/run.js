@@ -2724,6 +2724,46 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("view never crashes on a bare agent", Array.isArray(A.viewRows({ task: "x", status: "run", start: now }, 40, 12, 99, null, now)));
   }
 
+  group("cost ledger + advisor (/turns, /cheaper)");
+  {
+    const L = require("../lib/cli/ledger");
+    const turns = [
+      { inTok: 1200, outTok: 400, cost: 0.012, dt: 3, model: "opus", engine: "claude", label: "add a command", paid: true, cacheRead: 0 },
+      { inTok: 800, outTok: 120, cost: 0.004, dt: 1, model: "opus", engine: "claude", label: "add a command", paid: true, cacheRead: 500 },
+      { inTok: 40000, outTok: 1500, cost: 0.21, dt: 22, model: "opus", engine: "claude", label: "review the engine", paid: true, cacheRead: 0 },
+    ];
+    // ---- summarizeTurns ----
+    const sm = L.summarizeTurns(turns);
+    eq("sums input tokens", sm.inTok, 42000);
+    eq("sums output tokens", sm.outTok, 2020);
+    ok("sums cost", Math.abs(sm.cost - 0.226) < 1e-9);
+    eq("sums cache reads", sm.cacheRead, 500);
+    eq("flags the priciest turn", sm.topCostIdx, 2);
+    eq("counts a verbatim repeat", sm.dupTurns, 1);
+    eq("counts distinct repeated prompts", sm.dupPrompts, 1);
+    eq("empty ledger summarizes to zero turns", L.summarizeTurns([]).turns, 0);
+    eq("all-free session has no priciest turn", L.summarizeTurns([{ inTok: 9, outTok: 9, cost: 0, dt: 1, paid: false, label: "x" }]).topCostIdx, -1);
+    // ---- renderTurns ----
+    const rows = L.renderTurns(turns, { width: 80 });
+    ok("header totals the session", /3 turns/.test(rows[0]) && /42\.0k/.test(rows[0]) && /\$0\.2260/.test(rows[0]));
+    ok("lists each turn label", rows.some((r) => /add a command/.test(r)) && rows.some((r) => /review the engine/.test(r)));
+    ok("marks the priciest turn with ▲", rows.some((r) => r.includes("▲") && /review the engine/.test(r)));
+    ok("every row fits the width", rows.every((r) => r.replace(/\x1b\[[0-9;]*m/g, "").length <= 80));
+    ok("empty ledger says so", /no turns yet/.test(L.renderTurns([], { width: 60 })[0]));
+    ok("max caps the listed rows + notes earlier turns", (() => { const many = Array.from({ length: 20 }, (_, i) => ({ inTok: 1, outTok: 1, cost: 0.001, dt: 1, paid: true, label: "t" + i })); const r = L.renderTurns(many, { width: 80, max: 5 }); return r.filter((x) => /\dt\d|t\d+/.test(x)).length <= 7 && r.some((x) => /earlier turn/.test(x)); })());
+    // ---- costAdvice: lossless only ----
+    const tips = L.costAdvice(turns, { paid: true, cacheOn: false, effort: "high", engine: "claude", ctxPct: 62, autoCompact: false });
+    const tagset = tips.map((t) => t.tag);
+    ok("advises turning the exact-repeat cache on", tagset.includes("cache"));
+    ok("notes the verbatim repeats", tagset.includes("dups"));
+    ok("explains claude prompt-caching", tagset.includes("prompt-cache"));
+    ok("flags effort as a QUALITY tradeoff (not auto)", tips.find((t) => t.tag === "effort") && /quality tradeoff/.test(tips.find((t) => t.tag === "effort").text) && /not auto-applied/.test(tips.find((t) => t.tag === "effort").text));
+    ok("suggests /compact on a full context", tagset.includes("context"));
+    ok("a local engine short-circuits to free", (() => { const r = L.costAdvice(turns, { paid: false }); return r.length === 1 && r[0].tag === "free"; })());
+    ok("a tidy session says nothing to cut", (() => { const r = L.costAdvice([{ inTok: 50, outTok: 20, cost: 0.001, dt: 1, paid: true, label: "a" }], { paid: true, cacheOn: true, effort: "", engine: "claude", ctxPct: 10, autoCompact: true }); return r.some((t) => t.tag === "ok"); })());
+    ok("renderAdvice frames the tips", (() => { const r = L.renderAdvice(turns, { paid: true, cacheOn: false, engine: "claude" }); return /cost advisor/.test(r[0]) && r.length > 1; })());
+  }
+
   group("compaction condenser animation");
   {
     const CA = require("../lib/cli/compact-anim");
