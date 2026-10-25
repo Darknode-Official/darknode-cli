@@ -3544,6 +3544,24 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("file contents are never collapsed", res.content === t && res.output !== t);
   }
 
+  // ── TUI-only settings must not leak into module-level helpers (ollamaExec used `lean`:
+  //    every sub-agent / task-queue run_command threw "lean is not defined") ──
+  {
+    const L = require("fs").readFileSync(require("path").join(__dirname, "..", "darknode.js"), "utf8").split("\n");
+    const leaks = [];
+    for (let i = 0; i < L.length; i++) {
+      const m = /^(?:async )?function (\w+)\(([^)]*)\)/.exec(L[i]); if (!m || m[1] === "nexusTui") continue;
+      let j = i + 1; while (j < L.length && L[j] !== "}") j++;
+      const body = L.slice(i, j + 1).map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+      for (const v of ["lean", "trimOutput", "stepCap", "autoCompact", "cheapSide"]) {
+        const used = new RegExp("(?<![\\w$.\"'])" + v + "\\b(?!\\s*:)").test(body), declared = new RegExp("(?:const|let|var)\\s+[^;=]*\\b" + v + "\\b").test(body) || new RegExp("\\b" + v + "\\b").test(m[2]);
+        if (used && !declared) leaks.push(m[1] + ":" + v);
+      }
+      i = j;
+    }
+    eq("no module-level function reads a TUI-only setting", leaks, []);
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
