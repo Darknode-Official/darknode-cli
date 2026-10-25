@@ -3215,6 +3215,34 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  group("search — grouped by file, match-centred clipping, context, generated files skipped");
+  {
+    const SR = require("../lib/nexus/search");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "srch-")), rp = (p) => path.resolve(dir, p);
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(path.join(dir, "src/a.js"), "one\ntwo\nconst token = 1;\nfour\nfive\nsix\nseven\nuse(token);\n");
+    fs.writeFileSync(path.join(dir, "src/b.py"), "token = 2\n");
+    fs.writeFileSync(path.join(dir, "app.min.js"), "x".repeat(900) + "token" + "y".repeat(900));
+    fs.writeFileSync(path.join(dir, "package-lock.json"), "{\"token\":1}");
+    fs.writeFileSync(path.join(dir, "img.bin"), Buffer.from([0, 1, 2, 116, 111, 107, 101, 110]));
+    const q = (args) => SR.searchTool(args, dir, rp);
+    let r = q({ pattern: "token" });
+    eq("summary counts matches + files", r.summary, "Found 3 matches in 2 files");
+    ok("path written once per file", r.results.split("\n").filter((l) => l === "src/a.js").length === 1 && /\n  3: const token = 1;/.test(r.results));
+    ok("lockfile + minified skipped and reported", /2 lockfile\/minified/.test(r.skipped_generated));
+    ok("binary skipped", !/img\.bin/.test(r.results));
+    r = q({ pattern: "token", include_generated: true });
+    ok("include_generated searches them; long line cut AROUND the match", /app\.min\.js\n  1: …x+token/.test(r.results) && r.results.split("\n").find((l) => /token/.test(l) && /min/.test(r.results) && l.length < 220));
+    r = q({ pattern: "token", context: 1, glob: "**/*.js" });
+    eq("context lines + separator between distant hits", r.results, "src/a.js\n  2- two\n  3: const token = 1;\n  4- four\n  --\n  7- seven\n  8: use(token);");
+    eq("case_sensitive", q({ pattern: "TOKEN", case_sensitive: true }).summary, "No matches found");
+    eq("literal", q({ pattern: "use(", literal: true }).summary, "Found 1 match in 1 file");
+    ok("max_results truncates and says so", /stopped at 1/.test(q({ pattern: "token", max_results: 1 }).truncated));
+    const TF2 = require("../lib/cli/tui-format");
+    ok("card shows the real count (was always 'Found 1 line')", /Found 3 matches/.test(TF2.toolResultView("search", { pattern: "token" }, q({ pattern: "token" }), {}).lines[0].text));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();

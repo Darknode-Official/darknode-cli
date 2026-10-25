@@ -2171,12 +2171,7 @@ async function deviceTool(name, a, cwd) {
   const fs = require("fs"), path = require("path"), os = require("os");
   const rp = (p) => Jail.assertInJail(p == null ? "." : p, cwd); // sandbox all device-tool file ops to cwd (symlink/dot-dot safe)
   const SKIP = /(^|\/)(\.git|node_modules|dist|build|\.nexus|\.cache)(\/|$)/;
-  if (name === "search" || name === "grep") {
-    const pat = a.pattern || a.query || a.q; if (!pat) return { error: "search needs a pattern" };
-    let re; try { re = new RegExp(pat, "i"); } catch (_) { re = new RegExp(String(pat).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"); }
-    const out = []; const walk = (d) => { if (out.length >= 100) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(fp)) continue; if (e.isDirectory()) walk(fp); else { let txt; try { if (fs.statSync(fp).size > 500000) continue; txt = fs.readFileSync(fp, "utf8"); } catch (_) { continue; } const lines = txt.split("\n"); for (let i = 0; i < lines.length && out.length < 100; i++) if (re.test(lines[i])) out.push(path.relative(cwd, fp) + ":" + (i + 1) + ": " + lines[i].trim().slice(0, 160)); } if (out.length >= 100) return; } };
-    walk(rp(a.path || ".")); return { matches: out, truncated: out.length >= 100 };
-  }
+  if (name === "search" || name === "grep") return require("./lib/nexus/search").searchTool(a, cwd, rp);
   if (name === "find" || name === "find_files" || name === "glob") {
     const q = String(a.glob || a.pattern || a.name || "").toLowerCase(); const out = [];
     const walk = (d) => { if (out.length >= 300) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(fp)) continue; if (e.isDirectory()) walk(fp); else if (!q || e.name.toLowerCase().includes(q)) { out.push(path.relative(cwd, fp)); if (out.length >= 300) return; } } };
