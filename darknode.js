@@ -2165,10 +2165,8 @@ async function deviceTool(name, a, cwd) {
     const c = os.cpus()[0] || {};
     return { platform: os.platform(), arch: os.arch(), release: os.release(), hostname: os.hostname(), cpus: os.cpus().length + " x " + (c.model || "?"), memory: (os.totalmem() / 1e9).toFixed(1) + "GB total, " + (os.freemem() / 1e9).toFixed(1) + "GB free", loadavg: os.loadavg().map((n) => n.toFixed(2)).join(" "), uptime: (os.uptime() / 3600).toFixed(1) + "h", cwd, node: process.version, disk };
   }
-  if (name === "list_processes" || name === "ps") {
-    try { const r = _cp.execSync(process.platform === "win32" ? "tasklist" : "ps aux", { encoding: "utf8", maxBuffer: 4e6 }); let lines = r.split("\n"); if (a.filter) lines = [lines[0]].concat(lines.slice(1).filter((l) => l.toLowerCase().includes(String(a.filter).toLowerCase()))); return { processes: lines.slice(0, 60).join("\n") }; } catch (e) { return { error: e.message }; }
-  }
-  if (name === "make_dir" || name === "mkdir") { try { fs.mkdirSync(rp(a.path), { recursive: true }); return { ok: true }; } catch (e) { return { error: e.message }; } }
+  if (name === "list_processes" || name === "ps") return require("./lib/nexus/procs").listProcessesTool(a);
+  if (name === "make_dir" || name === "mkdir") { try { const fp = rp(a.path); const had = fs.existsSync(fp); fs.mkdirSync(fp, { recursive: true }); return had ? { ok: true, note: "already existed" } : { ok: true }; } catch (e) { return { error: e.message }; } }
   if (name === "move" || name === "rename" || name === "move_file") return require("./lib/nexus/fs-tools").moveTool(a, cwd, rp);
   if (name === "copy" || name === "copy_file") return require("./lib/nexus/fs-tools").copyTool(a, cwd, rp);
   if (name === "delete" || name === "delete_file" || name === "rm") return require("./lib/nexus/fs-tools").deleteTool(a, cwd, rp);
@@ -2311,10 +2309,13 @@ async function deviceTool(name, a, cwd) {
   if (name === "read_symbol" || name === "read_function" || name === "show_symbol") return require("./lib/nexus/read-symbol").readSymbolTool(a, cwd, rp);
   if (name === "json_query" || name === "jq" || name === "read_json") return require("./lib/nexus/json-query").jsonQueryTool(a, cwd, rp);
   if (name === "outline" || name === "file_outline" || name === "symbols") {
+    if (!(a.path || a.file)) return { error: "outline needs path (one file) — for the whole project use repo_map" };
     const fp = rp(a.path || a.file); let txt;
-    try { txt = fs.readFileSync(fp, "utf8"); } catch (e) { return { error: e.message }; }
+    try { if (fs.statSync(fp).isDirectory()) return { error: a.path + " is a folder — outline takes one file (use repo_map or list_dir for folders)" }; txt = fs.readFileSync(fp, "utf8"); } catch (e) { return { error: e.message }; }
     const syms = require("./lib/nexus/repo-map").extractSymbols(path.basename(fp), txt, { max: 400 });
-    return { file: path.relative(cwd, fp), count: syms.length, lines: txt.split("\n").length, symbols: syms.map((s) => ({ kind: s.kind, name: s.name, line: s.line })) };
+    const res = { file: path.relative(cwd, fp), count: syms.length, lines: txt.split("\n").length, symbols: syms.map((s) => ({ kind: s.kind, name: s.name, line: s.line })) };
+    if (!syms.length) res.note = /\.jsonc?$/i.test(fp) ? "JSON has no symbols — use json_query {path, query, keys_only:true} to see its structure" : "no functions/classes recognized in this file type — use read_file or search";
+    return res;
   }
   return null;
 }
