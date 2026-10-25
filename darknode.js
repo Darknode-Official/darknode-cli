@@ -54,7 +54,8 @@ const { toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
 const CompactAnim = require("./lib/cli/compact-anim");
-const Ledger = require("./lib/cli/ledger"); // pure per-session cost ledger (/turns) + lossless cost advisor (/cheaper) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
+const Ledger = require("./lib/cli/ledger");
+const TokCount = require("./lib/cli/tokcount"); // pure /tokens estimator — price files before @-attaching them (lib/cli/tokcount.js) // pure per-session cost ledger (/turns) + lossless cost advisor (/cheaper) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
 const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
@@ -2612,6 +2613,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // overlay { i, scroll } or null. addAgent/finishAgent feed the registry.
     let agents = [], agentSel = -1, agentView = null;
     let turnLog = []; // one entry per finished paid/local turn this session — feeds /turns + /cheaper (never persisted, no prompt text beyond a short label)
+    let bypassCacheOnce = false; // /retry sets this so the next send skips the exact-repeat cache and really re-runs
+    let aliases = {}; try { const _a = settingsStore.get("aliases"); if (_a && typeof _a === "object") aliases = _a; } catch (_) {}
     const AGENTS_MAX = 24; // cap the registry; drop the oldest FINISHED agents past this
     const addAgent = (task, opts) => { const a = Object.assign({ id: "ag_" + Date.now().toString(36) + "_" + agents.length, task: String(task || "").slice(0, 300), status: "run", start: Date.now(), result: "", native: true }, opts || {}); agents.push(a); if (agents.length > AGENTS_MAX) { const keep = agents.filter((x) => x.status === "run"); const fin = agents.filter((x) => x.status !== "run"); agents = fin.slice(Math.max(0, fin.length - (AGENTS_MAX - keep.length))).concat(keep).sort((x, y) => x.start - y.start); } return a; };
     const finishAgent = (a, status, result) => { if (!a || a.status !== "run") return; a.status = status || "ok"; a.end = Date.now(); if (result != null) a.result = String(result); };
@@ -2764,7 +2767,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/help", "commands, input prefixes & keys"], ["/clear", "start a fresh chat"], ["/chat-clear", "clear the screen, keep the conversation memory"], ["/compact", "summarize & shrink the context"],
       ["/trust", "trust this workspace's .nexus MCP servers + hooks"],
       ["/connect", "connect an AI: local model · Claude (API) · any provider"],
-      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/cheaper", "lossless ways to spend fewer tokens"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
+      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/cheaper", "lossless ways to spend fewer tokens"], ["/tokens", "estimate what @-attaching a file/dir costs"], ["/alias", "make a shortcut: /alias name = text|/cmd"], ["/retry", "re-run your last prompt (fresh, no cache)"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
       ["/report", "cost & usage report for chargeback (/report json|save|since <date>)"],
       ["/compliance", "write a signed audit+usage compliance bundle (SOC2/review)"],
       ["/undo", "revert the last turn's file changes"], ["/rewind", "restore a specific checkpoint (/rewind N)"], ["/checkpoints", "list undo checkpoints"],
@@ -3919,7 +3922,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // Response cache: an EXACT repeat of a READ-ONLY answer is served FREE. The key
       // includes the inlined context, so a changed file yields a new key and re-runs
       // (never a stale answer). /cache off to disable, /cache clear to wipe.
-      const ckey = cacheOn ? cacheKey(engine, sess.model || engine, promptText) : null;
+      const ckey = (cacheOn && !bypassCacheOnce) ? cacheKey(engine, sess.model || engine, promptText) : null; bypassCacheOnce = false;
       if (ckey) { const hit = cacheGet(cwd, ckey, CACHE_TTL); if (hit && hit.readonly && hit.text) {
         const blk = { role: "nexus", items: [{ type: "text", full: hit.text, shown: hit.text.length }] };
         blk.summary = green("cache hit — free") + gray("  ·  saved " + ((PAID[engine] && hit.cost) ? "$" + hit.cost.toFixed(4) + " · " : "") + "↑" + fmtK(hit.inTok || 0) + " ↓" + fmtK(hit.outTok || 0) + " tok  ·  /cache off to disable");
@@ -4626,6 +4629,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const arg = argstr.split(/\s+/)[0];
       // Any command other than a repeated /clear cancels a pending clear confirmation.
       const clearWasPending = clearPending; if (cmd !== "/clear" && cmd !== "/new") clearPending = false;
+      if (aliases[cmd]) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") handleSlash(body.trim()); else submit(body.trim()); return; }
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
       if (cmd === "/help") {
         const HS = [
@@ -4794,6 +4798,40 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/turns" || cmd === "/ledger") {
         const n = parseInt(argstr, 10);
         transcript.push({ role: "system", lines: Ledger.renderTurns(turnLog, { colors: { cyan, gray, bold, dim, green, yellow, mag }, width: cols() - 4, max: n > 0 ? n : 12 }) });
+      }
+      else if (cmd === "/tokens") {
+        if (!argstr) { transcript.push({ role: "system", text: "usage: /tokens <file|dir> [more…] — estimate what @-attaching those would cost per turn (before you send). ≈ chars/4." }); }
+        else {
+          const CAP = 2 * 1024 * 1024; // per-file char cap — skip anything bigger
+          const entries = []; let count = 0;
+          const walk = (rel) => {
+            if (count > 4000 || entries.length > 4000) return;
+            let abs, st; try { abs = path.resolve(cwd, rel); st = fs.statSync(abs); } catch (_) { entries.push({ path: rel, chars: 0, skipped: true }); return; }
+            if (st.isDirectory()) { if (TokCount.SKIP_DIRS.has(path.basename(abs))) return; let kids = []; try { kids = fs.readdirSync(abs); } catch (_) { return; } for (const k of kids) { count++; walk(path.relative(cwd, path.join(abs, k))); } return; }
+            if (st.size > CAP) { entries.push({ path: rel, chars: st.size, skipped: true }); return; }
+            let buf; try { buf = fs.readFileSync(abs); } catch (_) { entries.push({ path: rel, chars: 0, skipped: true }); return; }
+            if (TokCount.looksBinary(buf)) { entries.push({ path: rel, chars: buf.length, binary: true }); return; }
+            entries.push({ path: rel, chars: buf.toString("utf8").length });
+          };
+          for (const a of argstr.split(/\s+/).filter(Boolean)) walk(a.replace(/^@/, ""));
+          const pr = priceOf(shownModel());
+          transcript.push({ role: "system", lines: TokCount.renderTokens(entries, { price: { in: pr.in, cr: pr.cr }, paid: !!PAID[engine], model: pr.label, colors: { cyan, gray, bold, dim, green, yellow }, width: cols() - 4 }) });
+        }
+      }
+      else if (cmd === "/alias") {
+        const m = argstr.match(/^([^\s=]+)\s*=\s*(.+)$/);
+        if (!argstr) { const ks = Object.keys(aliases); transcript.push({ role: "system", text: ks.length ? "aliases:\n" + ks.map((k) => "  " + cyan(k) + gray(" → ") + aliases[k]).join("\n") + gray("\n  /alias <name> = <text|/command> · /alias rm <name>  ($ARGUMENTS forwards the rest)") : "no aliases yet — " + gray("/alias deploy = /pr   ·   /alias fix = find and fix the bug in   ($ARGUMENTS gets appended)") }); }
+        else if (arg === "rm" || arg === "remove" || arg === "del") { const nm = argstr.split(/\s+/)[1]; const key = nm && nm[0] === "/" ? nm : "/" + nm; if (nm && aliases[key]) { delete aliases[key]; saveSetting("aliases", aliases); transcript.push({ role: "system", text: "removed alias " + cyan(key) }); } else transcript.push({ role: "system", text: "no such alias — /alias lists them" }); }
+        else if (m) {
+          let name = m[1]; if (name[0] !== "/") name = "/" + name; name = name.toLowerCase();
+          if (CMDS.some(([c]) => c === name) || customCmds[name]) transcript.push({ role: "system", text: name + " is a built-in command — pick another alias name" });
+          else { aliases[name] = m[2].trim(); saveSetting("aliases", aliases); transcript.push({ role: "system", text: "alias " + cyan(name) + gray(" → ") + m[2].trim() + gray("   — type " + name + " to run it") }); }
+        }
+        else transcript.push({ role: "system", text: "usage: /alias <name> = <text or /command>   ·   /alias rm <name>   ·   /alias (list)" });
+      }
+      else if (cmd === "/retry") {
+        if (busy) transcript.push({ role: "system", text: "a turn is still running — wait for it to finish, then /retry" });
+        else { let last = null; for (let i = transcript.length - 1; i >= 0; i--) if (transcript[i].role === "user") { last = transcript[i].text; break; } if (last == null) transcript.push({ role: "system", text: "nothing to retry yet" }); else { bypassCacheOnce = true; transcript.push({ role: "system", text: gray("re-running your last prompt (fresh, skipping the exact-repeat cache)…") }); submit(last); } }
       }
       else if (cmd === "/cheaper") {
         transcript.push({ role: "system", lines: Ledger.renderAdvice(turnLog, { paid: !!PAID[engine], cacheOn, effort, engine, autoCompact, ctxPct: (sess.ctxUsed / (sess.ctxWindow || 200000)) * 100 }, { cyan, gray, bold, dim, green, yellow, mag }) });

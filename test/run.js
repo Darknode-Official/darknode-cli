@@ -2724,6 +2724,31 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("view never crashes on a bare agent", Array.isArray(A.viewRows({ task: "x", status: "run", start: now }, 40, 12, 99, null, now)));
   }
 
+  group("token estimator (/tokens — price before attaching)");
+  {
+    const T = require("../lib/cli/tokcount");
+    eq("estimates ~chars/4 tokens", T.estimateTokens(4000), 1000);
+    eq("rounds up a partial token", T.estimateTokens(10), 3);
+    ok("detects a NUL byte as binary", T.looksBinary(Buffer.from([65, 66, 0, 67])) && !T.looksBinary(Buffer.from("plain text")));
+    ok("skip-dirs cover the usual noise", T.SKIP_DIRS.has("node_modules") && T.SKIP_DIRS.has(".git") && T.SKIP_DIRS.has(".nexus"));
+    const entries = [{ path: "src/big.js", chars: 40000 }, { path: "README.md", chars: 8000 }, { path: "logo.png", chars: 1000, binary: true }, { path: "huge.bin", chars: 9e9, skipped: true }];
+    const sm = T.summarize(entries, { in: 5, cr: 0.5 });
+    eq("counts only real text files", sm.files, 2);
+    eq("counts binary + skipped separately", sm.binary + sm.skipped, 2);
+    eq("sums estimated tokens", sm.tokens, 12000);
+    ok("prices the first send and a cached resend", Math.abs(sm.firstSend - 0.06) < 1e-9 && Math.abs(sm.cachedResend - 0.006) < 1e-9);
+    ok("no cache rate → no cached-resend figure", T.summarize(entries, { in: 5, cr: null }).cachedResend === null);
+    const rows = T.renderTokens(entries, { price: { in: 5, cr: 0.5 }, paid: true, model: "Opus", width: 80 });
+    ok("header shows the ≈ total + binary skip", /≈12\.0k tokens across 2 files/.test(rows[0]) && /1 binary/.test(rows[0]));
+    ok("ranks the heaviest file first with a share %", /src\/big\.js/.test(rows[1]) && /83%/.test(rows[1]));
+    ok("shows first-turn and cached cost", rows.some((r) => /\$0\.06/.test(r) && /first turn/.test(r) && /while cached/.test(r)));
+    ok("every row fits the width", rows.every((r) => r.replace(/\x1b\[[0-9;]*m/g, "").length <= 80));
+    ok("a local engine says it's free", T.renderTokens(entries, { paid: false, width: 80 }).some((r) => /free/.test(r)));
+    ok("warns when the attachment is large", T.renderTokens([{ path: "x", chars: 400000 }], { price: { in: 5 }, paid: true, width: 80 }).some((r) => /large/.test(r)));
+    ok("empty match explains usage", /\/tokens/.test(T.renderTokens([], { width: 60 })[0]));
+    ok("long paths are truncated keeping the end", (() => { const r = T.renderTokens([{ path: "a/very/deeply/nested/" + "x".repeat(90) + "/file.js", chars: 400 }], { price: { in: 5 }, paid: true, width: 60 }); return r.every((x) => x.replace(/\x1b\[[0-9;]*m/g, "").length <= 60) && r.some((x) => /file\.js/.test(x)); })());
+  }
+
   group("cost ledger + advisor (/turns, /cheaper)");
   {
     const L = require("../lib/cli/ledger");
