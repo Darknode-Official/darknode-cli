@@ -3261,6 +3261,38 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  group("fs tools — move/copy never silently overwrite, copy folders, honest delete, list_dir");
+  {
+    const FT = require("../lib/nexus/fs-tools");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fst-")), rp = (p) => path.resolve(dir, p), P = (p) => path.join(dir, p), rd = (p) => fs.readFileSync(P(p), "utf8");
+    fs.mkdirSync(P("src/lib"), { recursive: true }); fs.mkdirSync(P("out"));
+    fs.writeFileSync(P("a.txt"), "A"); fs.writeFileSync(P("b.txt"), "B"); fs.writeFileSync(P("src/lib/x.js"), "X");
+    ok("move onto an existing file is refused (was silent data loss)", /already exists/.test(FT.moveTool({ from: "a.txt", to: "b.txt" }, dir, rp).error) && rd("b.txt") === "B" && rd("a.txt") === "A");
+    ok("overwrite:true replaces", FT.moveTool({ from: "a.txt", to: "b.txt", overwrite: true }, dir, rp).ok && rd("b.txt") === "A" && !fs.existsSync(P("a.txt")));
+    ok("move into an existing folder keeps the name", FT.moveTool({ from: "b.txt", to: "out" }, dir, rp).ok && rd("out/b.txt") === "A");
+    ok("move creates missing parent folders", FT.moveTool({ from: "out/b.txt", to: "new/deep/b.txt" }, dir, rp).ok && rd("new/deep/b.txt") === "A");
+    ok("cannot move a folder into itself", /into itself/.test(FT.moveTool({ from: "src", to: "src/lib/inner" }, dir, rp).error));
+    ok("copy a whole folder (used to fail)", FT.copyTool({ from: "src", to: "src2" }, dir, rp).ok && rd("src2/lib/x.js") === "X");
+    ok("copy onto an existing file is refused", /already exists/.test(FT.copyTool({ from: "src/lib/x.js", to: "src2/lib/x.js" }, dir, rp).error || ""));
+    ok("copy a folder onto an existing folder nests it, like cp", FT.copyTool({ from: "src", to: "src2" }, dir, rp).ok && rd("src2/src/lib/x.js") === "X");
+    ok("delete of a missing path says so (was a plain ok)", /already gone/.test(FT.deleteTool({ path: "nope.txt" }, dir, rp).note));
+    ok("non-empty folder needs recursive", /recursive:true/.test(FT.deleteTool({ path: "src2" }, dir, rp).error) && fs.existsSync(P("src2")));
+    ok("recursive delete works", FT.deleteTool({ path: "src2", recursive: true }, dir, rp).ok && !fs.existsSync(P("src2")));
+    ok("project root is never deleted", /project root/.test(FT.deleteTool({ path: "." }, dir, rp).error));
+    fs.writeFileSync(P("0first.txt"), "12345");
+    let r = FT.listDirTool({}, dir, rp);
+    ok("list_dir: folders first, then files with sizes", r.items[0].endsWith("/") && r.items[r.items.length - 1] === "0first.txt  5 B");
+    r = FT.listDirTool({ depth: 3 }, dir, rp);
+    ok("depth shows a tree", r.items.includes("    x.js  1 B"));
+    r = FT.listDirTool({ max_results: 1 }, dir, rp);
+    ok("cut-off is reported", /showing 1 of/.test(r.truncated));
+    const { createEditUndo } = require("../lib/nexus/edit-undo"), u = createEditUndo();
+    fs.writeFileSync(P("keep.txt"), "precious");
+    const sn = u.snapshot([P("keep.txt")]); FT.deleteTool({ path: "keep.txt" }, dir, rp); u.commit(sn);
+    ok("a deleted file can be restored with undo_edit", u.undo(P("keep.txt")).ok && rd("keep.txt") === "precious");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
