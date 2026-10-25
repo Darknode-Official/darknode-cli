@@ -3496,6 +3496,34 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("a real already-applied edit still says so", /already applied/.test(E.applyEditsFlexible(after, [{ find: "  return b;", replace: "  return a + b;" }]).error));
   }
 
+  // ── background jobs: forgiving ids, whole-tree stop, "is this port ours?" ──
+  {
+    const { createBgJobs } = require("../lib/nexus/bgjobs");
+    const J = createBgJobs();
+    const id = J.start("srv", { pid: 0, kill() {} }, 1);
+    eq("bg1 / 1 / '#1' / 'job 1' all resolve", ["bg1", "1", 1, "#1", "job 1"].map((x) => J.key(x)), [id, id, id, id, id]);
+    eq("no id + one running job → that job", J.key(""), id);
+    eq("unknown id → null", J.key("7"), null);
+    ok("unknown-id hint lists the jobs", /bg1 running: srv/.test(J.known()));
+    const P = require("../lib/nexus/procs");
+    const ps = "PID PPID %CPU %MEM ELAPSED COMMAND\n  100     1  0.0  0.0  01:00 sh -c npm run dev\n  101   100  0.0  0.0  01:00 npm run dev\n  102   101  0.0  0.0  01:00 node server.js\n  200     1  0.0  0.0  01:00 postgres\n";
+    ok("listener that descends from our job is ours", P.portOwnedBy(3000, [100], { ps, portLookup: () => ({ pids: new Set([102]) }) }));
+    ok("someone else's local service is not", !P.portOwnedBy(5432, [100], { ps, portLookup: () => ({ pids: new Set([200]) }) }));
+    ok("no jobs → never ours", !P.portOwnedBy(3000, [], { ps, portLookup: () => ({ pids: new Set([102]) }) }));
+    if (process.platform !== "win32") {
+      const cp = require("child_process");
+      const J2 = createBgJobs();
+      const child = cp.spawn("sh", ["-c", "sleep 287 & sleep 287 & wait"], { detached: true, stdio: "ignore" });
+      const jid = J2.start("x", child, 1);
+      await new Promise((r) => setTimeout(r, 150));
+      J2.stop("1");
+      await new Promise((r) => setTimeout(r, 150));
+      const left = cp.spawnSync("sh", ["-c", "ps -Ao args | grep -c '^sleep 287$' || true"], { encoding: "utf8" }).stdout.trim();
+      eq("stop kills the job's whole process tree", left, "0");
+      eq("stopped job status", J2.get(jid).status, "killed");
+    }
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
