@@ -2854,6 +2854,19 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("rejects a leading-dash value (curl would treat it as an option, not a URL)", !isSafeUrl("-o/tmp/pwn") && !isSafeUrl("-K/etc/curlrc") && !isSafeUrl("-V"));
   }
 
+  group("audit fixes — edit engine + policy normalisation");
+  {
+    const E = require("../lib/nexus/edit");
+    eq("flexible edit on a tab-indented block keeps tabs", E.applyEditsFlexible("\tif (x) {\n\t\ty();\n\t}\n", [{ find: "if (x) {\n  y();\n}", replace: "if (x) {\n  z();\n}" }]).content, "\tif (x) {\n\t\tz();\n\t}\n");
+    eq("flexible edit on a CRLF file keeps CRLF endings", E.applyEditsFlexible("a\r\nfoo();\r\nbar();\r\nz\r\n", [{ find: "foo();\nbar();", replace: "FOO();\nBAR();" }]).content, "a\r\nFOO();\r\nBAR();\r\nz\r\n");
+    ok("replaceAll:\"false\" is not treated as true", E.applyEdits("x x", [{ find: "x", replace: "y", replaceAll: "false" }]).ok === false);
+    ok("replaceAll:\"true\" still replaces every match", E.applyEdits("x x", [{ find: "x", replace: "y", replaceAll: "true" }]).content === "y y");
+    const P = require("../lib/governance/policy");
+    ok("hard-deny sees through ./ and // in protected paths", !!P.hitsHardDeny({ type: "write", path: ".nexus/./settings.json" }) && !!P.hitsHardDeny({ type: "write", path: ".nexus//audit.jsonl" }) && !!P.hitsHardDeny({ type: "edit", path: "x/../.nexus/settings.json" }));
+    ok("the agent can't rewrite its own policy/permission files", !!P.hitsHardDeny({ type: "write", path: ".nexus/policy.json" }) && !!P.hitsHardDeny({ type: "edit", path: ".nexus/permissions.json" }));
+    ok("ordinary files are untouched by the floor", !P.hitsHardDeny({ type: "write", path: "src/app.js" }));
+  }
+
   group("path jail — canonical, symlink- and dot-dot-safe (NSAFE-020)");
   {
     const jroot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "nx-jail-")));
