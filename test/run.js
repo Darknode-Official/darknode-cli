@@ -3410,6 +3410,31 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("gives up on the third", PR.missingTool({ action: "x" }, m3, st3).stop);
   }
 
+  // ── model API retry: transient failures retried (Retry-After honored), real errors not ──
+  {
+    const R = require("../lib/nexus/retry");
+    const err = (status, extra) => Object.assign(new Error("e" + status), { status }, extra || {});
+    const waits = [];
+    const fake = { sleep: async (ms) => { waits.push(ms); } };
+    let n = 0;
+    eq("429 twice then ok", await R.withRetry(async () => { if (++n <= 2) throw err(429, { retryAfter: "3" }); return "ok"; }, null, fake), "ok");
+    eq("Retry-After seconds honored", waits, [3000, 3000]);
+    let calls = 0;
+    try { await R.withRetry(async () => { calls++; throw err(401); }, null, fake); } catch (_) {}
+    eq("401 is not retried", calls, 1);
+    calls = 0; let msg = "";
+    try { await R.withRetry(async () => { calls++; throw err(529); }, null, fake); } catch (e) { msg = e.message; }
+    ok("gives up after 3 retries and says so", calls === 4 && /after 3 retries/.test(msg));
+    ok("dropped connection retried, refused is not", R.isRetryable(Object.assign(new Error("x"), { code: "ECONNRESET" })) && !R.isRetryable(Object.assign(new Error("x"), { code: "ECONNREFUSED" })));
+    ok("timeout (no response) not retried", !R.isRetryable(new Error("Ollama timed out (no response)")));
+    eq("Retry-After http date", R.retryAfterMs(new Date(10000).toUTCString(), 4000), 6000);
+    const ac = new AbortController(); calls = 0;
+    try { await R.withRetry(async () => { calls++; ac.abort(); throw err(503); }, ac.signal, fake); } catch (_) {}
+    eq("interrupt stops retrying", calls, 1);
+    ok("real sleep aborts promptly", await R.withRetry(async () => { throw err(503, { retryAfter: "50" }); }, AbortSignal.timeout(50)).then(() => false, (e) => /interrupted|e503/.test(e.message)));
+    ok("backoff without Retry-After grows and caps", await (() => { const w = []; let k = 0; return R.withRetry(async () => { if (++k < 4) throw err(503); return 1; }, null, { sleep: async (ms) => w.push(ms) }).then(() => w[0] >= 2000 && w[1] >= 4000 && w[2] >= 8000 && w.every((x) => x <= 60000)); })());
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
