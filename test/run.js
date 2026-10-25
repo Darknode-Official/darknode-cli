@@ -2724,6 +2724,31 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("view never crashes on a bare agent", Array.isArray(A.viewRows({ task: "x", status: "run", start: now }, 40, 12, 99, null, now)));
   }
 
+  group("prompt-cache warmth (/warm + status chip)");
+  {
+    const W = require("../lib/cli/cachewarm");
+    const now = 1e9, pr = { cr: 0.5, cw5: 6.25, cw1h: 10 };
+    eq("1h writes win the TTL vote", W.ttlFromWrites(10, 900, 0), W.TTL_1H);
+    eq("5m writes win the TTL vote", W.ttlFromWrites(900, 10, 0), W.TTL_5M);
+    eq("a pure cache read keeps the previous TTL", W.ttlFromWrites(0, 0, W.TTL_1H), W.TTL_1H);
+    eq("no cache touch yet -> none", W.cacheState({ lastAt: 0, now }).state, "none");
+    eq("fresh 5m cache is warm", W.cacheState({ lastAt: now - 60000, ttl: W.TTL_5M, now }).state, "warm");
+    eq("last minute is cooling", W.cacheState({ lastAt: now - 250000, ttl: W.TTL_5M, now }).state, "cooling");
+    eq("past the TTL is cold", W.cacheState({ lastAt: now - 400000, ttl: W.TTL_5M, now }).state, "cold");
+    eq("long-cold hides the chip", W.chip(W.cacheState({ lastAt: now - 3600000, ttl: W.TTL_5M, now })), "");
+    eq("1h TTL is still warm after 30m", W.cacheState({ lastAt: now - 1800000, ttl: W.TTL_1H, now }).state, "warm");
+    eq("warm chip shows minutes left", W.chip(W.cacheState({ lastAt: now - 60000, ttl: W.TTL_5M, now })), "cache 4m");
+    eq("cooling chip shows seconds", W.chip(W.cacheState({ lastAt: now - 250000, ttl: W.TTL_5M, now })), "cache 50s");
+    eq("cold chip", W.chip(W.cacheState({ lastAt: now - 400000, ttl: W.TTL_5M, now })), "cache cold");
+    const fc = W.followUpCost(1e6, pr, W.TTL_5M);
+    ok("follow-up: re-read at cr, re-write at cw5", fc.warm === 0.5 && fc.cold === 6.25);
+    eq("1h TTL re-writes at cw1h", W.followUpCost(1e6, pr, W.TTL_1H).cold, 10);
+    const ex = W.explain({ engine: "claude", lastAt: now - 60000, ttl: W.TTL_5M, now, ctxTok: 42000, price: pr }).join("\n");
+    ok("explainer shows warm, both prices and the ratio", /warm/.test(ex) && /\$0\.0210/.test(ex) && /\$0\.2625/.test(ex) && /13×/.test(ex));
+    ok("cold explainer drops the hurry-up tip", !/tip:/.test(W.explain({ engine: "claude", lastAt: now - 400000, ttl: W.TTL_5M, now, ctxTok: 1000, price: pr }).join("\n")));
+    ok("non-claude engines say it isn't tracked", /isn't|doesn't report/.test(W.explain({ engine: "ollama" })[0]));
+  }
+
   group("token estimator (/tokens — price before attaching)");
   {
     const T = require("../lib/cli/tokcount");

@@ -56,6 +56,7 @@ const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the mod
 const CompactAnim = require("./lib/cli/compact-anim");
 const Ledger = require("./lib/cli/ledger");
 const TokCount = require("./lib/cli/tokcount"); // pure /tokens estimator — price files before @-attaching them (lib/cli/tokcount.js) // pure per-session cost ledger (/turns) + lossless cost advisor (/cheaper) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
+const CacheWarm = require("./lib/cli/cachewarm"); // pure prompt-cache TTL countdown for the status chip + /warm (lib/cli/cachewarm.js)
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
 const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
@@ -2587,6 +2588,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const shownModel = () => (sess.model && sess.model !== engine) ? sess.model : (cliDefaultModel() || (ENGINES[engine] || {}).model || "");
     const addUsage = (modelUsage, u, mainModel) => {
       const b = usageBuckets(u); const w = b.cacheWrite5m + b.cacheWrite1h; const r1h = w ? b.cacheWrite1h / w : 0;
+      if (w || b.cacheRead) { cacheWarm.ttl = CacheWarm.ttlFromWrites(b.cacheWrite5m, b.cacheWrite1h, cacheWarm.ttl); cacheWarm.lastAt = Date.now(); } // any cache touch refreshes the TTL clock
       const add = (name, x) => { const t = sess.byModel[name] || (sess.byModel[name] = { input: 0, output: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, reported: 0 }); for (const k of ["input", "output", "cacheWrite5m", "cacheWrite1h", "cacheRead"]) t[k] += x[k] || 0; t.reported += x.reported || 0; };
       const names = modelUsage && typeof modelUsage === "object" ? Object.keys(modelUsage) : [];
       if (names.length) for (const n of names) { const m = modelUsage[n] || {}; const cw = m.cacheCreationInputTokens || 0; add(n, { input: m.inputTokens || 0, output: m.outputTokens || 0, cacheWrite1h: Math.round(cw * r1h), cacheWrite5m: cw - Math.round(cw * r1h), cacheRead: m.cacheReadInputTokens || 0, reported: m.costUSD || 0 }); }
@@ -2613,6 +2615,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // overlay { i, scroll } or null. addAgent/finishAgent feed the registry.
     let agents = [], agentSel = -1, agentView = null;
     let turnLog = []; // one entry per finished paid/local turn this session — feeds /turns + /cheaper (never persisted, no prompt text beyond a short label)
+    const cacheWarm = { lastAt: 0, ttl: 0 }; // when a claude call last touched the prompt cache + which TTL it wrote (status chip + /warm)
     let bypassCacheOnce = false; // /retry sets this so the next send skips the exact-repeat cache and really re-runs
     let aliases = {}; try { const _a = settingsStore.get("aliases"); if (_a && typeof _a === "object") aliases = _a; } catch (_) {}
     const AGENTS_MAX = 24; // cap the registry; drop the oldest FINISHED agents past this
@@ -2767,7 +2770,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/help", "commands, input prefixes & keys"], ["/clear", "start a fresh chat"], ["/chat-clear", "clear the screen, keep the conversation memory"], ["/compact", "summarize & shrink the context"],
       ["/trust", "trust this workspace's .nexus MCP servers + hooks"],
       ["/connect", "connect an AI: local model · Claude (API) · any provider"],
-      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/cheaper", "lossless ways to spend fewer tokens"], ["/tokens", "estimate what @-attaching a file/dir costs"], ["/alias", "make a shortcut: /alias name = text|/cmd"], ["/retry", "re-run your last prompt (fresh, no cache)"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
+      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/cheaper", "lossless ways to spend fewer tokens"], ["/warm", "prompt-cache countdown + warm-vs-cold follow-up cost"], ["/tokens", "estimate what @-attaching a file/dir costs"], ["/alias", "make a shortcut: /alias name = text|/cmd"], ["/retry", "re-run your last prompt (fresh, no cache)"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
       ["/report", "cost & usage report for chargeback (/report json|save|since <date>)"],
       ["/compliance", "write a signed audit+usage compliance bundle (SOC2/review)"],
       ["/undo", "revert the last turn's file changes"], ["/rewind", "restore a specific checkpoint (/rewind N)"], ["/checkpoints", "list undo checkpoints"],
@@ -3237,6 +3240,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (runningShells) parts.push(yellow(runningShells + " shell" + (runningShells > 1 ? "s" : "")));
       if (bgJobs.running()) parts.push(cyan(bgJobs.running() + " bg"));
       if (activeAgents) parts.push(mag(activeAgents + " agent" + (activeAgents > 1 ? "s" : "")));
+      if (engine === "claude") { const wc = CacheWarm.chip(CacheWarm.cacheState({ lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now() }), { green, yellow, dim: gray }); if (wc) parts.push(wc); }
       if (rate && rate.status && rate.status !== "allowed") parts.push(red("rate-limited"));
       else if (rate && rate.isUsingOverage) parts.push(yellow("overage"));
       if (pinned.size) parts.push(cyan(pinned.size + " pinned"));
@@ -3724,6 +3728,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // ---- animation loop: typewriter reveal + spinners + elapsed ----
     const revealing = () => { const b = activeBlock || cur(); if (!b || !b.items) return false; return b.items.some((it) => it.type === "text" && it.shown < it.full.length); };
     const startTick = () => { if (tick) return; tick = setInterval(() => { const b = activeBlock || cur(); if (b && b.items) for (const it of b.items) if (it.type === "text" && it.shown < it.full.length) { let ns = Math.min(it.full.length, it.shown + Math.max(2, Math.ceil((it.full.length - it.shown) / 22))); const cc = it.full.charCodeAt(ns - 1); if (cc >= 0xD800 && cc <= 0xDBFF && ns < it.full.length) ns++; it.shown = ns; } render(); if (!busy && !revealing() && !compact.on) { clearInterval(tick); tick = null; } }, 45); };
+    // idle refresh for the prompt-cache chip: re-render only when its text changes (minute steps, then seconds in the last minute)
+    let lastWarmChip = ""; const warmTimer = setInterval(() => { if (busy || engine !== "claude" || !cacheWarm.lastAt) return; const c = CacheWarm.chip(CacheWarm.cacheState({ lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now() })); if (c !== lastWarmChip) { lastWarmChip = c; render(); } }, 5000); if (warmTimer.unref) warmTimer.unref();
     // Flatten the kept transcript tail into a short plain-text summary, so a
     // claude turn that has just dropped --continue still knows what came before.
     // User lines and the model's own answers only — no tool spew, capped so the
@@ -4828,6 +4834,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           else { aliases[name] = m[2].trim(); saveSetting("aliases", aliases); transcript.push({ role: "system", text: "alias " + cyan(name) + gray(" → ") + m[2].trim() + gray("   — type " + name + " to run it") }); }
         }
         else transcript.push({ role: "system", text: "usage: /alias <name> = <text or /command>   ·   /alias rm <name>   ·   /alias (list)" });
+      }
+      else if (cmd === "/warm") {
+        const pr = priceOf(shownModel());
+        transcript.push({ role: "system", lines: CacheWarm.explain({ engine, lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now(), ctxTok: sess.ctxUsed || 0, price: pr, colors: { gray, green, yellow, bold, dim: gray } }) });
+        scroll = 0; render();
       }
       else if (cmd === "/retry") {
         if (busy) transcript.push({ role: "system", text: "a turn is still running — wait for it to finish, then /retry" });
