@@ -1879,10 +1879,11 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
         if (ev.type === "system" && ev.subtype === "init") { h.onInit && h.onInit(ev); }
         else if (ev.type === "rate_limit_event") { h.onRateLimit && h.onRateLimit(ev.rate_limit_info || {}); }
         else if (ev.type === "assistant" && ev.message) {
+          const pid = ev.parent_tool_use_id || null; // set on a sub-agent's (Task) own messages
           for (const c of ev.message.content || []) {
-            if (c.type === "text" && c.text) { finalText += c.text; h.onText && h.onText(c.text); }
-            else if (c.type === "thinking" && c.thinking) { h.onThinking && h.onThinking(c.thinking); }
-            else if (c.type === "tool_use") { h.onTool && h.onTool({ id: c.id, name: c.name, input: c.input || {} }); }
+            if (c.type === "text" && c.text) { if (!pid) finalText += c.text; h.onText && h.onText(c.text, pid); }
+            else if (c.type === "thinking" && c.thinking) { h.onThinking && h.onThinking(c.thinking, pid); }
+            else if (c.type === "tool_use") { h.onTool && h.onTool({ id: c.id, name: c.name, input: c.input || {} }, pid); }
           }
           if (ev.message.usage) h.onUsage && h.onUsage(ev.message.usage, ev.message.model, ev.parent_tool_use_id, ev.message.id); // one assistant event per content block — all repeat the SAME message usage; the id lets the host count it once
         }
@@ -1892,7 +1893,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
           else if (se.type === "message_delta" && se.usage && se.usage.output_tokens != null) h.onLiveTokens && h.onLiveTokens(se.usage.output_tokens); // real running output-token count for the message in flight
         }
         else if (ev.type === "user" && ev.message) {
-          for (const c of ev.message.content || []) if (c.type === "tool_result") h.onToolResult && h.onToolResult({ id: c.tool_use_id, content: c.content, isError: c.is_error });
+          for (const c of ev.message.content || []) if (c.type === "tool_result") h.onToolResult && h.onToolResult({ id: c.tool_use_id, content: c.content, isError: c.is_error }, ev.parent_tool_use_id || null);
         }
         else if (ev.type === "result") { res = ev; if (ev.result && !finalText.trim()) finalText = ev.result; h.onResult && h.onResult(ev); }
       }
@@ -2649,7 +2650,21 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let aliases = {}; try { const _a = settingsStore.get("aliases"); if (_a && typeof _a === "object") aliases = _a; } catch (_) {}
     const AGENTS_MAX = 24; // cap the registry; drop the oldest FINISHED agents past this
     const addAgent = (task, opts) => { const a = Object.assign({ id: "ag_" + Date.now().toString(36) + "_" + agents.length, task: String(task || "").slice(0, 300), status: "run", start: Date.now(), result: "", native: true }, opts || {}); agents.push(a); if (agents.length > AGENTS_MAX) { const keep = agents.filter((x) => x.status === "run"); const fin = agents.filter((x) => x.status !== "run"); agents = fin.slice(Math.max(0, fin.length - (AGENTS_MAX - keep.length))).concat(keep).sort((x, y) => x.start - y.start); } return a; };
-    const finishAgent = (a, status, result) => { if (!a || a.status !== "run") return; a.status = status || "ok"; a.end = Date.now(); if (result != null) a.result = String(result); };
+    // An agent's conversation as chat messages (rendered by bodyLines like the
+    // main chat): its brief as the user turn, then its own text/thinking/tool
+    // items — or, for an agent that only reports a final result, that result.
+    const agentMsgs = (a) => {
+      if (!a._msgs) a._msgs = [{ role: "user", text: String(a.prompt || a.task || "") }, { role: "nexus", items: [] }];
+      const m = a._msgs[1];
+      if (a.items && a.items.length) m.items = a.items;
+      else { const r = String(a.result || ""); if (!m.items.length || m.items[0].full !== r) m.items = r ? [{ type: "text", full: r, shown: r.length }] : []; }
+      const st = Agents.statusOf(a, { green: (x) => x, red: (x) => x, dim: (x) => x, yellow: (x) => x });
+      m._live = a.status === "run";
+      m.summary = m._live ? yellow(Agents.spinGlyph(Date.now()) + " working · " + Agents.fmtDur(Agents.elapsed(a, Date.now()))) : gray(st.badge + " · " + Agents.fmtDur(Agents.elapsed(a, Date.now())));
+      return a._msgs;
+    };
+    const subAgentOf = (pid) => pid ? agents.find((x) => x.toolId === pid && x.items) || null : null; // Claude Task sub-agent by its tool_use id
+    const finishAgent = (a, status, result) => { if (!a || a.status !== "run") return; a.status = status || "ok"; a.end = Date.now(); if (a.items) for (const it of a.items) if (it.type === "tool" && it.status === "run") { it.status = a.status === "ok" ? "ok" : "err"; it.interrupted = a.status !== "ok"; it.end = a.end; } if (result != null) a.result = String(result); };
     // Stop one running agent. Native sub-agents carry their own controller (a.ctl);
     // a Claude-engine Task runs inside the main turn and can't be killed on its own,
     // so point the user at the turn interrupt instead.
@@ -3046,7 +3061,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const _msgCache = new WeakMap();
     const _scrollAnchor = { n: 0, cols: 0 };
     const _msgSig = (m, g) => {
-      if (!m || m.role === "art" || m.role === "plan" || (busy && m === cur())) return null;
+      if (!m || m._live || m.role === "art" || m.role === "plan" || (busy && m === cur())) return null;
       let sg = g + "|" + (m.role || "") + "|" + (m.text == null ? -1 : String(m.text).length) + "|" + (Array.isArray(m.lines) ? m.lines.length + ":" + m.lines.join("").length : "") + "|" + (m.summary ? String(m.summary).length : 0) + "|" + (m.recap ? JSON.stringify(m.recap).length : 0) + "|" + (m.auto ? 1 : 0) + "|" + (m.before || 0);
       if (m.items) for (const it of m.items) {
         if (it.status === "run" || it.status === "wait" || (it.full != null && (it.shown | 0) < String(it.full).length)) return null; // still live
@@ -3054,14 +3069,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
       return sg;
     };
-    const bodyLines = () => {
-      const _sig = (busy || compact.on) ? null : _bodySig();
+    const bodyLines = (list) => {
+      const _sig = (list || busy || compact.on) ? null : _bodySig();
       if (_sig !== null && _blCache && _sig === _blSig) return _blCache;
       const L = [];
       const _g = cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + A.cyan + "|" + GRAD.join(",") + "|" + effort + "|" + engine + "|" + guard;
       let _pend = null; // the message rendered last iteration: store its lines once we know where they end (branches `continue`)
       const _flush = () => { if (_pend) { _msgCache.set(_pend.m, { sig: _pend.sig, lines: L.slice(_pend.from) }); _pend = null; } };
-      for (const m of transcript) {
+      for (const m of (list || transcript)) {
         _flush();
         const _ms = _msgSig(m, _g);
         if (_ms !== null) { const c = _msgCache.get(m); if (c && c.sig === _ms) { for (const x of c.lines) L.push(x); continue; } _pend = { m, sig: _ms, from: L.length }; }
@@ -3223,6 +3238,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         L.push("");
       }
       _flush();
+      if (list) return L; // an agent's conversation: just its messages, no live turn status
       // Idle home: while the chat is still empty (only the welcome card), fill the
       // screen below it with a gradient NEXUS wordmark, a few real starter prompts
       // and a live project pulse — so a fresh session reads as a product, not a void.
@@ -3576,7 +3592,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green, mag }) : null;
       const effortRows = (!askRows && pendingEffort) ? renderEffortPicker(C, pendingEffort.sel) : null;
       const btwRows = (!askRows && !effortRows && btw) ? renderBtw(C, R, btw) : null;
-      const agentViewRows = (!askRows && !effortRows && !btwRows && agentView && agents[agentView.i]) ? Agents.viewRows(agents[agentView.i], C, R, agentView.scroll, { cyan, gray, bold, dim, green, red, yellow, mag }, Date.now()) : null;
+      const _av = (!askRows && !effortRows && !btwRows && agentView && agents[agentView.i]) ? agents[agentView.i] : null; // an open agent: its conversation replaces the chat
+      const agentViewRows = _av ? Agents.viewBar(_av, agentView.i, agents.length, C, { cyan, gray, bold, dim, green, red, yellow, mag }, Date.now()) : null;
       let cardRows = askRows || effortRows || btwRows || agentViewRows; // a full-width card replaces the composer + menu
       if (cardRows && cardRows.length > R - 2) cardRows = cardRows.slice(0, Math.max(1, R - 2)); // never build a card taller than the screen (would overflow the diff'd frame)
       // breathing room below the footer so the composer floats off the terminal
@@ -3589,12 +3606,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const agentPanelRows = (!cardRows && agents.length) ? Agents.panelRows(agents, { now: Date.now(), sel: agentSel, width: C, max: Math.min(6, Math.max(2, (R >> 2))), colors: { cyan, gray, bold, dim, green, red, yellow, mag } }) : [];
       const chrome = (cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows + agentPanelRows.length)) + bottomMargin; // spacer + composer + reserved menu + agents panel + footer + bottom margin
       const bodyRows = Math.max(0, R - chrome);
-      const lines = bodyLines();
-      if (scroll > 0 && _scrollAnchor.cols === C && lines.length > _scrollAnchor.n) scroll += lines.length - _scrollAnchor.n; // scrolled up: new output below must not drag the view
-      _scrollAnchor.n = lines.length; _scrollAnchor.cols = C;
+      const lines = _av ? bodyLines(agentMsgs(_av)) : bodyLines();
       const maxScroll = Math.max(0, lines.length - bodyRows);
-      if (scroll > maxScroll) scroll = maxScroll;
-      const start = Math.max(0, lines.length - bodyRows - scroll);
+      let _sc;
+      if (_av) {
+        if (agentView.scroll > 0 && agentView.n && lines.length > agentView.n) agentView.scroll += lines.length - agentView.n; // same anchor as the chat
+        agentView.n = lines.length; agentView.scroll = Math.max(0, Math.min(agentView.scroll, maxScroll)); _sc = agentView.scroll;
+      } else {
+        if (scroll > 0 && _scrollAnchor.cols === C && lines.length > _scrollAnchor.n) scroll += lines.length - _scrollAnchor.n; // scrolled up: new output below must not drag the view
+        _scrollAnchor.n = lines.length; _scrollAnchor.cols = C;
+        if (scroll > maxScroll) scroll = maxScroll;
+        _sc = scroll;
+      }
+      const start = Math.max(0, lines.length - bodyRows - _sc);
       let view = lines.slice(start, start + bodyRows);
       // Anchor a short transcript to the BOTTOM — the conversation and the live
       // working status sit just above the composer (Claude Code look) instead of
@@ -3606,7 +3630,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // the short transcript would bottom-anchor and shove the card down beneath a
       // tall void. Stay top-anchored while the transcript is still just the card +
       // notices; the moment a user/nexus turn exists we bottom-anchor as before.
-      const _topAnchor = _idleHome || (!busy && transcript.every((m) => m.role === "art" || m.role === "system"));
+      const _topAnchor = !_av && _idleHome || (!busy && transcript.every((m) => m.role === "art" || m.role === "system"));
       if (!_topAnchor && view.length < bodyRows) view = new Array(bodyRows - view.length).fill("").concat(view);
       // Build the frame as an array of rows, then write ONLY the rows that changed
       // since last paint (frameDiff). During streaming just the status timer + the
@@ -4081,21 +4105,21 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         runClaudeStream(promptText, cwd, cont, {
           onInit: (ev) => { if (ev.model) sess.model = ev.model; if (ev.session_id) claudeSid = ev.session_id; },
           onRateLimit: (info) => { rate = info; },
-          onThinking: (t) => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; block.items.push(last); } last.full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
-          onText: (t) => { textItem().full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
+          onThinking: (t, pid) => { const sa = subAgentOf(pid), tg = sa ? sa.items : block.items; let last = tg[tg.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; tg.push(last); } last.full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
+          onText: (t, pid) => { const sa = subAgentOf(pid); if (sa) { let last = sa.items[sa.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; sa.items.push(last); } last.full += t; last.shown = last.full.length; } else textItem().full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
           onDelta: (t) => { anyDelta = true; bumpLive(t); renderSoon(); }, // mid-message delta: advance the live token estimate only (the whole text/thinking still lands via onText/onThinking)
           onLiveTokens: (n) => { estOut = Math.max(estOut, n); setLive(); renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate (never let it yank the counter backwards if the estimate ran ahead)
-          onTool: (tu) => {
+          onTool: (tu, pid) => {
             const _item = { type: "tool", id: tu.id, name: tu.name, input: tu.input, label: toolLabel(tu.name, tu.input), detail: JSON.stringify(tu.input).slice(0, 400), status: "run", start: Date.now() };
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
-            block.items.push(_item);
+            const _sa = subAgentOf(pid); (_sa ? _sa.items : block.items).push(_item); // a sub-agent's own tool calls live in its conversation, not the main reply
             if (tu.name === "Bash") { runningShells++; stat.cmds++; }
-            if (tu.name === "Task" || tu.name === "Agent") { activeAgents++; const _ag = addAgent((tu.input && (tu.input.description || tu.input.subagent_type || tu.input.prompt)) || "agent", { native: false, engine }); _item._agId = _ag.id; } // mirror a Claude-engine sub-agent into the Agents panel
+            if (tu.name === "Task" || tu.name === "Agent") { activeAgents++; const _ag = addAgent((tu.input && (tu.input.description || tu.input.subagent_type || tu.input.prompt)) || "agent", { native: false, engine, toolId: tu.id, prompt: (tu.input && tu.input.prompt) || "", items: [] }); _item._agId = _ag.id; } // mirror a Claude-engine sub-agent into the Agents panel
             if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(tu.name) && (tu.input.file_path || tu.input.notebook_path)) { const fp = tu.input.file_path || tu.input.notebook_path; stat.files.add(base(fp)); const r = relOf(fp); if (r) stat.paths.add(r); }
             render();
           },
-          onToolResult: (tr) => {
-            const it = block.items.find((x) => x.type === "tool" && x.id === tr.id);
+          onToolResult: (tr, pid) => {
+            const _sa = subAgentOf(pid), it = (_sa ? _sa.items : block.items).find((x) => x.type === "tool" && x.id === tr.id);
             if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if ((it.name === "Task" || it.name === "Agent") && activeAgents) activeAgents--; if (it._agId) { const rg = agents.find((x) => x.id === it._agId); if (rg && rg.status === "run") finishAgent(rg, tr.isError ? "fail" : "ok", resultText(tr.content)); } }
             render();
           },
@@ -6009,19 +6033,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       }
       // ---- the Agents transcript overlay owns the keyboard while open ----
       if (agentView) {
-        if (isMouse) return;
         const a = agents[agentView.i];
         if (!a) { agentView = null; render(); return; }
-        if (s === "\x1b[A" || s === "\x1bOA") { agentView.scroll = Math.max(0, agentView.scroll - 1); render(); return; } // up
-        if (s === "\x1b[B" || s === "\x1bOB") { agentView.scroll++; render(); return; }                                 // down
-        if (s === "\x1b[5~") { agentView.scroll = Math.max(0, agentView.scroll - 10); render(); return; }                // pgup
-        if (s === "\x1b[6~") { agentView.scroll += 10; render(); return; }                                              // pgdn
-        if (s === "[" || s === "\x1b[D" || s === "\x1bOD") { if (agentView.i > 0) { agentView.i--; agentView.scroll = 0; } render(); return; } // prev agent
-        if (s === "]" || s === "\x1b[C" || s === "\x1bOC") { if (agentView.i < agents.length - 1) { agentView.i++; agentView.scroll = 0; } render(); return; } // next agent
-        if (s === "c" || s === "C") { const txt = String(a.result || ""); if (txt) { try { out.write("\x1b]52;c;" + Buffer.from(txt).toString("base64") + "\x07"); } catch (_) {} } render(); return; } // copy output
+        const pg = Math.max(1, rows() - 8);
+        if (isMouse) { const mm = /^\x1b\[<(\d+);/.exec(s); if (mm && (+mm[1] & ~3) === 64) { agentView.scroll = Math.max(0, agentView.scroll + ((+mm[1] & 1) ? -3 : 3)); render(); } return; } // wheel
+        if (s === "\x1b[A" || s === "\x1bOA" || s === "k") { agentView.scroll++; render(); return; }                               // up = back in time
+        if (s === "\x1b[B" || s === "\x1bOB" || s === "j") { agentView.scroll = Math.max(0, agentView.scroll - 1); render(); return; }
+        if (s === "\x1b[5~") { agentView.scroll += pg; render(); return; }
+        if (s === "\x1b[6~") { agentView.scroll = Math.max(0, agentView.scroll - pg); render(); return; }
+        if (s === "\x1b[H" || s === "\x1b[1~" || s === "g") { agentView.scroll = 1e9; render(); return; } // home: the brief
+        if (s === "\x1b[F" || s === "\x1b[4~" || s === "G") { agentView.scroll = 0; render(); return; }  // end: latest
+        if (s === "[" || s === "\x1b[D" || s === "\x1bOD") { if (agentView.i > 0) agentView = { i: agentView.i - 1, scroll: 0 }; render(); return; } // prev agent
+        if (s === "]" || s === "\x1b[C" || s === "\x1bOC") { if (agentView.i < agents.length - 1) agentView = { i: agentView.i + 1, scroll: 0 }; render(); return; } // next agent
+        if (s === "\x19" || s === "c" || s === "C") { const txt = String(a.result || ""); if (txt) { try { out.write("\x1b]52;c;" + Buffer.from(txt).toString("base64") + "\x07"); } catch (_) {} } render(); return; } // copy the agent's result
         if ((s === "s" || s === "S") && a.status === "run") { stopAgent(a); render(); return; }
-        if (s === "\r" || s === "\n" || s === "\x1b" || s === "\x03" || s === "q") { agentView = null; render(); return; }
-        return; // overlay owns the keyboard
+        if (s === "\r" || s === "\n" || s === "\x1b" || s === "\x03" || s === "q") { const back = agentView.i; agentView = null; agentSel = Math.min(back, agents.length - 1); render(); return; } // back to the list, same row focused
+        return; // the agent view owns the keyboard
       }
       // ---- the /effort slider owns the keyboard while open ----
       if (pendingEffort) {

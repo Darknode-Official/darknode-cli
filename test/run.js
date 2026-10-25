@@ -2733,6 +2733,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("view shows the agent's result text", vr.some((r) => /Added 12 tests/.test(r)));
     ok("view of a running agent with no output says running", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /running/.test(r)));
     ok("running view offers a stop key; finished view does not", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /s stop/.test(r)) && !A.viewRows(agents[0], 70, 24, 0, null, now).some((r) => /s stop/.test(r)));
+    const vb = A.viewBar(agents[0], 0, 3, 80, null, now), vbr = A.viewBar(agents[1], 1, 3, 80, null, now);
+    ok("agent view bar: position, status and task in the header", /agent 1\/3/.test(vb[1]) && /done/.test(vb[1]));
+    ok("agent view bar: stop key only while running, prev/next with several agents", /s stop/.test(vbr[2]) && !/s stop/.test(vb[2]) && /prev\/next/.test(vb[2]));
+    ok("agent view bar never exceeds the width", A.viewBar(agents[1], 1, 3, 34, null, now).every((r) => r.length <= 34));
     ok("view never crashes on a bare agent", Array.isArray(A.viewRows({ task: "x", status: "run", start: now }, 40, 12, 99, null, now)));
   }
 
