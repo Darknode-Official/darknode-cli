@@ -1881,7 +1881,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
             else if (c.type === "thinking" && c.thinking) { h.onThinking && h.onThinking(c.thinking); }
             else if (c.type === "tool_use") { h.onTool && h.onTool({ id: c.id, name: c.name, input: c.input || {} }); }
           }
-          if (ev.message.usage) h.onUsage && h.onUsage(ev.message.usage, ev.message.model, ev.parent_tool_use_id);
+          if (ev.message.usage) h.onUsage && h.onUsage(ev.message.usage, ev.message.model, ev.parent_tool_use_id, ev.message.id); // one assistant event per content block — all repeat the SAME message usage; the id lets the host count it once
         }
         else if (ev.type === "stream_event" && ev.event) { // live deltas from --include-partial-messages: feed the token meter mid-message, not just between whole messages
           const se = ev.event, d = se.delta;
@@ -4033,20 +4033,25 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       };
       let lastCtx = 0; // context size from the latest main-thread API call this turn
       // Live token counter (same contract as every other engine: climbs while the
-      // reply streams). confOut = real output tokens locked in per finished message;
+      // reply streams). real output tokens are locked in per finished message (outById);
       // estOut = rough estimate for the message still streaming. liveOut = both.
-      let confOut = 0, estOut = 0;
-      const bumpLive = (t) => { estOut += Math.ceil(t.length / 4); sess.liveOut = confOut + estOut; };
+      // Real output is keyed by message id: Claude Code repeats a message's usage
+      // on every content-block event (thinking, text, tool_use), so summing each
+      // event double/triple-counted it, and zeroing the estimate on each one made
+      // the meter drop. The shown value never goes backwards within a turn.
+      const outById = new Map(); let estOut = 0, shownLive = 0, anyDelta = false, anonUse = 0;
+      const setLive = () => { let c = 0; for (const v of outById.values()) c += v; shownLive = Math.max(shownLive, c + estOut); sess.liveOut = shownLive; };
+      const bumpLive = (t) => { estOut += Math.ceil(t.length / 4); setLive(); };
       const _resumeSid = (engine === "claude" && oneShotRan && claudeSid) ? claudeSid : undefined; // recover the tracked session if a one-shot (/btw, /dream…) ran since the last turn
       oneShotRan = false;
       if (engine === "claude") {
         runClaudeStream(promptText, cwd, cont, {
           onInit: (ev) => { if (ev.model) sess.model = ev.model; if (ev.session_id) claudeSid = ev.session_id; },
           onRateLimit: (info) => { rate = info; },
-          onThinking: (t) => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; block.items.push(last); } last.full += t; bumpLive(t); renderSoon(); },
-          onText: (t) => { textItem().full += t; bumpLive(t); renderSoon(); },
-          onDelta: (t) => { bumpLive(t); renderSoon(); }, // mid-message delta: advance the live token estimate only (the whole text/thinking still lands via onText/onThinking)
-          onLiveTokens: (n) => { estOut = Math.max(estOut, n); sess.liveOut = confOut + estOut; renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate (never let it yank the counter backwards if the estimate ran ahead)
+          onThinking: (t) => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; block.items.push(last); } last.full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
+          onText: (t) => { textItem().full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
+          onDelta: (t) => { anyDelta = true; bumpLive(t); renderSoon(); }, // mid-message delta: advance the live token estimate only (the whole text/thinking still lands via onText/onThinking)
+          onLiveTokens: (n) => { estOut = Math.max(estOut, n); setLive(); renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate (never let it yank the counter backwards if the estimate ran ahead)
           onTool: (tu) => {
             const _item = { type: "tool", id: tu.id, name: tu.name, input: tu.input, label: toolLabel(tu.name, tu.input), detail: JSON.stringify(tu.input).slice(0, 400), status: "run", start: Date.now() };
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
@@ -4061,7 +4066,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if ((it.name === "Task" || it.name === "Agent") && activeAgents) activeAgents--; if (it._agId) { const rg = agents.find((x) => x.id === it._agId); if (rg && rg.status === "run") finishAgent(rg, tr.isError ? "fail" : "ok", resultText(tr.content)); } }
             render();
           },
-          onUsage: (u, _m, sub) => { confOut += (u.output_tokens || 0); estOut = 0; sess.liveOut = confOut; if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // lock in the real output tokens for the message that just finished (each agentic tool round is its own assistant message) and clear the streaming estimate; the next message's estimate climbs on top of this. lastCtx tracks the latest main-thread call's prompt = the real context size
+          onUsage: (u, _m, sub, mid) => { const k = mid || ("anon" + (++anonUse)); outById.set(k, Math.max(outById.get(k) || 0, u.output_tokens || 0)); estOut = 0; setLive(); if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // lock in the real output tokens for the message that just finished (each agentic tool round is its own assistant message) and clear the streaming estimate; the next message's estimate climbs on top of this. lastCtx tracks the latest main-thread call's prompt = the real context size
           onResult: (ev) => {
             const u = ev.usage || {};
             const newIn = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0);
