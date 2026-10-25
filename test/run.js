@@ -3135,6 +3135,86 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  group("replace_in_files — one find/replace across many files");
+  {
+    const RF = require("../lib/nexus/replace-files");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rif-")), rp = (p) => path.resolve(dir, p);
+    fs.mkdirSync(path.join(dir, "src")); fs.mkdirSync(path.join(dir, "node_modules"));
+    fs.writeFileSync(path.join(dir, "src/a.js"), "getUser(1);\ngetUserAll();\nconst getUser = 1;\n");
+    fs.writeFileSync(path.join(dir, "src/b.ts"), "import { getUser } from './a';\n");
+    fs.writeFileSync(path.join(dir, "node_modules/x.js"), "getUser();\n");
+    fs.writeFileSync(path.join(dir, "price.txt"), "cost: 5\n");
+    const run = (args, deps) => RF.replaceInFilesTool(args, dir, rp, deps);
+    let r = run({ find: "getUser", replace: "fetchUser", word: true, dry_run: true });
+    eq("dry run: counts whole-word matches only (getUserAll untouched)", [r.files, r.replacements, r.dry_run], [2, 3, true]);
+    ok("dry run writes nothing", fs.readFileSync(path.join(dir, "src/a.js"), "utf8").startsWith("getUser(1)"));
+    ok("samples show before → after", /getUser\(1\);  →  fetchUser\(1\);/.test(r.changed.find((c) => c.file === "src/a.js").samples[0]));
+    const seen = [];
+    r = run({ find: "getUser", replace: "fetchUser", word: true }, { onWrite: (f) => seen.push(f) });
+    eq("applied", fs.readFileSync(path.join(dir, "src/a.js"), "utf8"), "fetchUser(1);\ngetUserAll();\nconst fetchUser = 1;\n");
+    ok("node_modules skipped", fs.readFileSync(path.join(dir, "node_modules/x.js"), "utf8") === "getUser();\n");
+    eq("onWrite called once per changed file (undo snapshots)", seen.length, 2);
+    r = run({ find: "fetchUser", replace: "X", glob: "**/*.ts" });
+    eq("glob limits files", r.changed.map((c) => c.file), ["src/b.ts"]);
+    r = run({ find: "5", replace: "$1.00" });
+    eq("literal mode: $ in the replacement is literal", fs.readFileSync(path.join(dir, "price.txt"), "utf8"), "cost: $1.00\n");
+    r = run({ find: "cost: (\\S+)", replace: "price=$1", regex: true });
+    eq("regex mode: $1 groups", fs.readFileSync(path.join(dir, "price.txt"), "utf8"), "price=$1.00\n");
+    r = run({ find: "price", replace: "p" }, { check: (rel) => rel === "price.txt" ? "BLOCKED by policy: protected path" : null });
+    ok("policy check skips + reports the file", r.files === 0 && /protected/.test(r.skipped[0].reason) && fs.readFileSync(path.join(dir, "price.txt"), "utf8").startsWith("price"));
+    ok("no matches is a note, not an error", /no matches/.test(run({ find: "zzz_nope", replace: "y" }).note));
+    ok("bad regex reported", /invalid regex/.test(run({ find: "(", replace: "", regex: true }).error));
+    ok("brace globs", RF.globToRe("src/**/*.{js,ts}").test("src/x/y.ts") && !RF.globToRe("src/**/*.{js,ts}").test("src/y.py"));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  group("background jobs — new-output-only polling + stdin");
+  {
+    const B = require("../lib/nexus/bgjobs").createBgJobs();
+    const id = B.start("srv", null, 0);
+    B.append(id, "booting\n");
+    eq("first read returns everything", B.readNew(id).text, "booting\n");
+    B.append(id, "ready on 3000\n");
+    const n = B.readNew(id);
+    eq("next read returns only the new part", [n.text, n.earlier], ["ready on 3000\n", 8]);
+    eq("nothing new → empty", B.readNew(id).text, "");
+    ok("write to a job without a child is refused", /not running|no open stdin/.test(B.write(id, "x").error));
+    const { spawn } = require("child_process");
+    const cat = spawn("cat");
+    const id2 = B.start("cat", cat, 0); cat.stdout.on("data", (d) => B.append(id2, d));
+    ok("write to a running job's stdin", B.write(id2, "hello\n").ok);
+    await new Promise((r) => setTimeout(r, 300));
+    eq("echoed back", B.readNew(id2).text, "hello\n");
+    B.stop(id2);
+    const TG = require("../lib/nexus/tool-gates");
+    ok("write_stdin is an exec tool (guarded + plan-blocked)", TG.isExecTool("write_stdin") && TG.isPlanBlocked("write_stdin"));
+    ok("replace_in_files is plan-blocked", TG.isPlanBlocked("replace_in_files"));
+  }
+
+  group("wait_for — ready instead of sleep-guessing");
+  {
+    const WF = require("../lib/nexus/wait-for");
+    const net = require("net");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-")), rp = (p) => path.resolve(dir, p);
+    const srv = net.createServer(() => {}); await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    const port = srv.address().port;
+    let r = await WF.waitForTool({ port }, dir, rp, {});
+    ok("open port → ready", r.ready === true);
+    srv.close();
+    r = await WF.waitForTool({ port, timeout_s: 1 }, dir, rp, {});
+    ok("closed port → times out", r.ready === false && /timed out/.test(r.note));
+    setTimeout(() => fs.writeFileSync(path.join(dir, "flag"), "x"), 200);
+    r = await WF.waitForTool({ file: "flag", timeout_s: 3 }, dir, rp, {});
+    ok("file appears → ready", r.ready === true && r.waited_s < 3);
+    const B = require("../lib/nexus/bgjobs").createBgJobs(), id = B.start("srv", null, 0);
+    setTimeout(() => B.append(id, "compiling\nListening on http://localhost:5173\n"), 200);
+    r = await WF.waitForTool({ job: id, pattern: "listening on", timeout_s: 3 }, dir, rp, { jobs: B });
+    ok("job pattern → ready with the matching line", r.ready === true && /5173/.test(r.line));
+    ok("remote URLs refused (local only)", /only checks local/.test((await WF.waitForTool({ url: "https://example.com" }, dir, rp, {})).error));
+    ok("needs a target", /needs one of/.test((await WF.waitForTool({}, dir, rp, {})).error));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
