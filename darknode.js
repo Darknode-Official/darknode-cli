@@ -6,6 +6,10 @@
  * Uses only Node.js built-ins. Copyright (c) 2026 Darknode. All rights reserved.
  * Use only on systems you own or are explicitly authorized to test.
  */
+// Restart-supervisor handshake: read it once, then scrub it from our env so it
+// never leaks into anything we spawn (engines, shell commands, a nested nexus) —
+// an inherited flag made a nested nexus's /restart exit with no supervisor to respawn it.
+const NEXUS_SUPERVISED = process.env.NEXUS_SUPERVISED === "1"; delete process.env.NEXUS_SUPERVISED;
 const net = require("net");
 const tls = require("tls");
 const http = require("http");
@@ -3008,11 +3012,33 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       return transcript.length + "|" + cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + effort + "|" + engine + "|" + shownModel() + "|" + guard + "|" + (gitBranch || "") + "|" + mcpServers.filter((s) => s && !s.error).length + "|" + (_welcomeTip || "") + "|" + nextQueue.length + "/" + nextQueue.join("\u0001").length + "|" + last;
     };
     let _blCache = null, _blSig = "";
+    // Per-message memo for the BUSY path. The whole-transcript cache above is off
+    // while a turn runs (spinners, streaming), so each keystroke re-wrapped every
+    // message — ~240ms/key on a long session. A finished message renders the same
+    // until the width/colours/expand state change, so cache its lines per object
+    // and re-render only live ones (the running turn, running tools, text still
+    // revealing). WeakMap: dropped messages free their lines.
+    const _msgCache = new WeakMap();
+    const _msgSig = (m, g) => {
+      if (!m || m.role === "art" || (busy && m === cur())) return null;
+      let sg = g + "|" + (m.role || "") + "|" + (m.text == null ? -1 : String(m.text).length) + "|" + (Array.isArray(m.lines) ? m.lines.length + ":" + m.lines.join("").length : "") + "|" + (m.summary ? String(m.summary).length : 0) + "|" + (m.recap ? JSON.stringify(m.recap).length : 0) + "|" + (m.auto ? 1 : 0) + "|" + (m.before || 0);
+      if (m.items) for (const it of m.items) {
+        if (it.status === "run" || it.status === "wait" || (it.full != null && (it.shown | 0) < String(it.full).length)) return null; // still live
+        sg += "," + (it.type || "") + "." + (it.status || "") + "." + (it.full != null ? String(it.full).length : 0) + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? String(it.detail).length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0) + "." + (it.end || 0) + "." + (it.interrupted ? 1 : 0) + "." + (it.input ? JSON.stringify(it.input).length : 0);
+      }
+      return sg;
+    };
     const bodyLines = () => {
       const _sig = (busy || compact.on) ? null : _bodySig();
       if (_sig !== null && _blCache && _sig === _blSig) return _blCache;
       const L = [];
+      const _g = cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + A.cyan + "|" + GRAD.join(",") + "|" + effort + "|" + engine + "|" + guard;
+      let _pend = null; // the message rendered last iteration: store its lines once we know where they end (branches `continue`)
+      const _flush = () => { if (_pend) { _msgCache.set(_pend.m, { sig: _pend.sig, lines: L.slice(_pend.from) }); _pend = null; } };
       for (const m of transcript) {
+        _flush();
+        const _ms = _msgSig(m, _g);
+        if (_ms !== null) { const c = _msgCache.get(m); if (c && c.sig === _ms) { for (const x of c.lines) L.push(x); continue; } _pend = { m, sig: _ms, from: L.length }; }
         if (m.role === "art") {
           // Welcome card: product + tagline + version, a labelled session summary
           // (model/engine/project/context), and a two-column quick-start grid that
@@ -3170,6 +3196,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (m.recap && !(busy && m === cur())) recapLines(m.recap).forEach((x) => L.push(x));
         L.push("");
       }
+      _flush();
       // Idle home: while the chat is still empty (only the welcome card), fill the
       // screen below it with a gradient NEXUS wordmark, a few real starter prompts
       // and a live project pulse — so a fresh session reads as a product, not a void.
@@ -5442,7 +5469,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // Already running under a restart supervisor? Just exit with the restart
           // code and let it re-spawn fresh code. This is what stops every /restart
           // from stacking another idle wrapper process on top of the last.
-          if (process.env.NEXUS_SUPERVISED === "1") { process.exit(75); return; }
+          if (NEXUS_SUPERVISED) { process.exit(75); return; }
           const cp = require("child_process");
           // Rebuild a minimal, launch-mode-agnostic command instead of replaying
           // process.argv: that replay differs across the `darknode`/`nexus` bins,
