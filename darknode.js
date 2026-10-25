@@ -53,6 +53,14 @@ const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command regist
 const { toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
+const CompactAnim = require("./lib/cli/compact-anim");
+const Ledger = require("./lib/cli/ledger");
+const TokCount = require("./lib/cli/tokcount"); // pure /tokens estimator — price files before @-attaching them (lib/cli/tokcount.js) // pure per-session cost ledger (/turns) + lossless cost advisor (/cheaper) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
+const CacheWarm = require("./lib/cli/cachewarm"); // pure prompt-cache TTL countdown for the status chip + /warm (lib/cli/cachewarm.js)
+const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
+const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
+const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
+const ASK_MCP_PATH = require("path").join(__dirname, "lib", "nexus", "ask-mcp.js"); // stdio MCP shim spawned by the engine
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
 const Jail = require("./lib/nexus/jail"); // canonical path jail shared by every file tool (symlink/dot-dot safe) (lib/nexus/jail.js)
 const Redact = require("./lib/nexus/redact"); // central sink redaction + keyed placeholders (lib/nexus/redact.js)
@@ -1810,15 +1818,16 @@ function killGroup(child, sig) {
 }
 
 // Delegate a whole task to an external agent binary (claude / opencode). Streams output; returns {ok, output}.
-function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, model, effort) {
+function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, model, effort, extra) {
   return new Promise((resolve) => {
     const m = ENGINES[engine];
     // Only this engine's own args() builds its flags — nothing crosses engines.
     // The "local" (Ollama) engine has no CLI form and is driven separately.
     if (!m || !m.args || m.kind === "local") return resolve({ ok: false, output: "engine '" + engine + "' cannot run as a CLI task" });
-    const cmd = m.bin, args = m.args(prompt, { cont, autonomous, model, effort });
+    const cmd = m.bin, args = m.args(prompt, { cont, autonomous, model, effort, mcpServers: extra && extra.mcpServers });
     let out = "";
-    const p = _cp.spawn(cmd, args, { cwd, env: process.env, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree
+    const spawnEnv = (extra && extra.env) ? Object.assign({}, process.env, extra.env) : process.env; // e.g. $OPENCODE_CONFIG pointing at the Nexus ask bridge
+    const p = _cp.spawn(cmd, args, { cwd, env: spawnEnv, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree
     if (ctl && ctl.kids) ctl.kids.push(() => { killGroup(p, "SIGINT"); setTimeout(() => killGroup(p, "SIGKILL"), 1200); }); // ctrl+c kills this child and everything it spawned
     try { p.stdin.end(); } catch (_) {} // signal EOF so the CLI doesn't wait on stdin
     p.stdout.on("data", (d) => { const s = d.toString(); out += s; if (onChunk) onChunk(s); else if (!tuiActive) process.stdout.write(gray("    " + s.replace(/\n/g, "\n    "))); });
@@ -1830,19 +1839,24 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
 }
 // Claude Code stream-json driver — parses NDJSON events so the TUI can render
 // tool cards, live token usage, cost and context size exactly like Claude Code.
+const ULTRACODE_DIR = "ULTRACODE is ON for this session: the user turned it on and it stands for every message until they turn it off. Aim for the most thorough, correct result you can produce; token cost is not a constraint. For any substantive task, orchestrate: use the Workflow tool (or Agent subagents) to split the work into parallel pieces, cover it from independent angles, and adversarially verify findings and changes before reporting them. Multi-phase work (understand, design, implement, review) can be several workflows in sequence. Work solo only on conversational replies or trivial mechanical edits.";
 function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
   opts = opts || {};
+  const ultra = opts.effort === "ultracode"; // Nexus level above max: max thinking + standing multi-agent orchestration
+  if (ultra && !/^\s*\//.test(prompt)) prompt = "ultracode: " + prompt; // the keyword in the prompt is claude's opt-in for its Workflow tool (skip slash commands)
   return new Promise((resolve) => {
     const args = opts.readonly ? ["-p", prompt, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--permission-mode", "plan"] : ["-p", prompt, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions"]; // partial messages = live text/thinking/token deltas so the counter climbs during a long turn instead of freezing between whole messages
     if (opts.resume) args.push("--resume", opts.resume); // resume a tracked session id (survives intervening one-shot calls that would hijack --continue)
     else if (cont) args.push("--continue");
     if (opts.model) args.push("--model", opts.model);
-    if (opts.effort) args.push("--effort", opts.effort);
-    if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
+    if (opts.effort) args.push("--effort", ultra ? "max" : opts.effort);
+    const _sys = (opts.appendSystemPrompt || "") + (ultra ? "\n" + ULTRACODE_DIR : "");
+    if (_sys) args.push("--append-system-prompt", _sys);
     if (opts.fallbackModel) args.push("--fallback-model", opts.fallbackModel);
     if (opts.maxBudgetUsd) args.push("--max-budget-usd", String(opts.maxBudgetUsd));
     if (opts.maxTurns) args.push("--max-turns", String(opts.maxTurns));
     if (opts.disallow && opts.disallow.length) args.push("--disallowed-tools", ...opts.disallow);
+    if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath); // give claude the Nexus ask bridge (+ any .nexus/mcp.json servers); no --strict so claude keeps its own servers too
     const env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
     const cp = _cp.spawn("claude", args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
     try { cp.stdin.end(); } catch (_) {} // signal EOF so claude doesn't wait on stdin
@@ -2005,7 +2019,7 @@ function runHooks(hooks, event, env, cwd) {
 // build an AbortSignal wired to a ctl's kill list (so ctrl+c aborts in-flight ollama requests)
 function ctlSignal(ctl) { if (!ctl || !ctl.kids) return undefined; const ac = new AbortController(); ctl.kids.push(() => { try { ac.abort(); } catch (_) {} }); return ac.signal; }
 // ---------- Parallel sub-agents: fan a list of independent tasks out across the current engine ----------
-async function runSubagents(engine, tasks, cwd, model, onProgress, ctl, pickModel) {
+async function runSubagents(engine, tasks, cwd, model, onProgress, ctl, pickModel, agentCtls) {
   const path = require("path"), fs = require("fs"), os = require("os");
   const results = new Array(tasks.length);
   // Isolate each concurrent agent in its own git worktree so parallel writers can't
@@ -2018,14 +2032,18 @@ async function runSubagents(engine, tasks, cwd, model, onProgress, ctl, pickMode
   const stamp = Date.now().toString(36);
   const removeWt = (wt) => { try { _cp.execSync("git worktree remove --force " + JSON.stringify(wt), { cwd, stdio: "ignore" }); } catch (_) { try { fs.rmSync(wt, { recursive: true, force: true }); } catch (__) {} } };
   const runOne = async (i) => {
-    if (ctl && ctl.stopped) { results[i] = "(interrupted)"; if (onProgress) onProgress(i, "done"); return; }
+    // Each agent may carry its own controller so it can be stopped individually;
+    // link it to the shared controller so a global interrupt still cascades.
+    const actl = (agentCtls && agentCtls[i]) || ctl;
+    if (actl && actl !== ctl && ctl && ctl.kids) ctl.kids.push(() => { try { actl.kill(); } catch (_) {} });
+    if ((ctl && ctl.stopped) || (actl && actl.stopped)) { results[i] = "(interrupted)"; if (onProgress) onProgress(i, "done", results[i]); return; }
     if (onProgress) onProgress(i, "run");
     let dir = cwd;
     if (useWt) { const wt = path.join(os.tmpdir(), "nexus-agent-" + stamp + "-" + i); try { _cp.execSync("git worktree add --detach " + JSON.stringify(wt) + " " + baseCommit, { cwd, stdio: "ignore" }); worktrees[i] = dir = wt; } catch (_) { dir = cwd; } }
     let out;
-    try { if (engine === "ollama") { const r = await ollamaExec(model, tasks[i], "", dir, ctlSignal(ctl)); out = (r.output || "").trim(); } else { const r = await runEngineTask(engine, tasks[i], dir, true, false, null, ctl, pickModel ? pickModel(tasks[i]) : undefined); out = (r.output || "").trim(); } }
+    try { if (engine === "ollama") { const r = await ollamaExec(model, tasks[i], "", dir, ctlSignal(actl)); out = (r.output || "").trim(); } else { const r = await runEngineTask(engine, tasks[i], dir, true, false, null, actl, pickModel ? pickModel(tasks[i]) : undefined); out = (r.output || "").trim(); } }
     catch (e) { out = "error: " + e.message; }
-    results[i] = out; if (onProgress) onProgress(i, "done");
+    results[i] = out; if (onProgress) onProgress(i, "done", out);
   };
   // With isolation, agents run concurrently; without it (no git, or ollama), serialize to avoid corrupting the shared dir.
   const conc = useWt ? Math.max(1, Math.min(4, tasks.length)) : 1;
@@ -2570,6 +2588,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const shownModel = () => (sess.model && sess.model !== engine) ? sess.model : (cliDefaultModel() || (ENGINES[engine] || {}).model || "");
     const addUsage = (modelUsage, u, mainModel) => {
       const b = usageBuckets(u); const w = b.cacheWrite5m + b.cacheWrite1h; const r1h = w ? b.cacheWrite1h / w : 0;
+      if (w || b.cacheRead) { cacheWarm.ttl = CacheWarm.ttlFromWrites(b.cacheWrite5m, b.cacheWrite1h, cacheWarm.ttl); cacheWarm.lastAt = Date.now(); } // any cache touch refreshes the TTL clock
       const add = (name, x) => { const t = sess.byModel[name] || (sess.byModel[name] = { input: 0, output: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, reported: 0 }); for (const k of ["input", "output", "cacheWrite5m", "cacheWrite1h", "cacheRead"]) t[k] += x[k] || 0; t.reported += x.reported || 0; };
       const names = modelUsage && typeof modelUsage === "object" ? Object.keys(modelUsage) : [];
       if (names.length) for (const n of names) { const m = modelUsage[n] || {}; const cw = m.cacheCreationInputTokens || 0; add(n, { input: m.inputTokens || 0, output: m.outputTokens || 0, cacheWrite1h: Math.round(cw * r1h), cacheWrite5m: cw - Math.round(cw * r1h), cacheRead: m.cacheReadInputTokens || 0, reported: m.costUSD || 0 }); }
@@ -2578,6 +2597,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const ident = resolveOperator({ cwd }); // operator/team for chargeback attribution + audit provenance
     const oMsgs = nexusMd ? [{ role: "system", content: "Nexus coding assistant.\n" + nexusMd }] : [{ role: "system", content: "Nexus coding assistant." }];
     let input = "", curPos = 0, busy = false, cont = false, busyStart = 0, busyWord = "", tick = null, activeBlock = null; // activeBlock: the nexus block currently streaming (the typewriter targets it even if an async note moved the transcript tail)
+    let _escHold = false, _escTimer = null, _escFlushing = false; // reassemble an escape/report sequence a terminal split across stdin reads (ESC alone, body next)
     // Carried across a compaction of the claude engine. Claude's context lives
     // server-side and is resumed with --continue; to actually shrink it we must
     // DROP --continue (cont=false) and re-seed the next prompt with a summary,
@@ -2587,7 +2607,28 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // reached 726 turns / 794K context / one context that never reset).
     let carryNote = "";
     let localReplay = []; // ollama history rebuilt from a restored transcript (oMsgs itself is never persisted)
-    let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = false, hack = false; let _lastEscTs = 0; // double-Esc (rewind) detector // mode: 0 normal, 1 auto-accept, 2 plan, 3 bypass (waives the destructive-command guard); scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
+    let expanded = false, mode = 1, runningShells = 0, activeAgents = 0, scroll = 0, menuSel = 0, mouseOn = false, hack = false; let _lastEscTs = 0;
+    // ---- Agents panel (lib/cli/agents.js): a live list of sub-agents under the
+    // prompt bar. `agents` is the registry (one entry per sub-agent, kept after
+    // it finishes); `agentSel` is the focused row while the panel has the
+    // keyboard (-1 = composer has focus); `agentView` is the open transcript
+    // overlay { i, scroll } or null. addAgent/finishAgent feed the registry.
+    let agents = [], agentSel = -1, agentView = null;
+    let turnLog = []; // one entry per finished paid/local turn this session — feeds /turns + /cheaper (never persisted, no prompt text beyond a short label)
+    const cacheWarm = { lastAt: 0, ttl: 0 }; // when a claude call last touched the prompt cache + which TTL it wrote (status chip + /warm)
+    let bypassCacheOnce = false; // /retry sets this so the next send skips the exact-repeat cache and really re-runs
+    let aliases = {}; try { const _a = settingsStore.get("aliases"); if (_a && typeof _a === "object") aliases = _a; } catch (_) {}
+    const AGENTS_MAX = 24; // cap the registry; drop the oldest FINISHED agents past this
+    const addAgent = (task, opts) => { const a = Object.assign({ id: "ag_" + Date.now().toString(36) + "_" + agents.length, task: String(task || "").slice(0, 300), status: "run", start: Date.now(), result: "", native: true }, opts || {}); agents.push(a); if (agents.length > AGENTS_MAX) { const keep = agents.filter((x) => x.status === "run"); const fin = agents.filter((x) => x.status !== "run"); agents = fin.slice(Math.max(0, fin.length - (AGENTS_MAX - keep.length))).concat(keep).sort((x, y) => x.start - y.start); } return a; };
+    const finishAgent = (a, status, result) => { if (!a || a.status !== "run") return; a.status = status || "ok"; a.end = Date.now(); if (result != null) a.result = String(result); };
+    // Stop one running agent. Native sub-agents carry their own controller (a.ctl);
+    // a Claude-engine Task runs inside the main turn and can't be killed on its own,
+    // so point the user at the turn interrupt instead.
+    const stopAgent = (a) => {
+      if (!a || a.status !== "run") return;
+      if (a.ctl && a.ctl.kill) { try { a.ctl.kill(); } catch (_) {} finishAgent(a, "stopped", a.result || "(stopped by you)"); }
+      else transcript.push({ role: "system", text: "can't stop a single Claude sub-agent — press Esc to interrupt the whole turn" });
+    }; // double-Esc (rewind) detector // mode: 0 normal, 1 auto-accept, 2 plan, 3 bypass (waives the destructive-command guard); scroll = lines up from bottom; menuSel = highlighted slash-menu row; mouseOn = capture the mouse (wheel scroll) vs. release it so the terminal can select/copy text
     let gitBranch = ""; // cached "branch" (+ "*" when the tree is dirty), shown in the status bar
     const refreshGit = async () => { try { const b = await sh(["rev-parse", "--abbrev-ref", "HEAD"]); if (b.err) { gitBranch = ""; return; } const st = await sh(["status", "--porcelain"]); const next = (b.stdout || "").trim() + ((st.stdout || "").trim() ? "*" : ""); if (next !== gitBranch) { gitBranch = next; try { render(); } catch (_) {} } } catch (_) { gitBranch = ""; } };
     // One-shot project pulse (last commit, commit count, tracked file count) for
@@ -2647,6 +2688,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     if (S.model && engine === "claude") { sess.model = S.model; sess.userModel = true; } // restore the saved /model choice (the init event replaces it with the resolved id)
     const READONLY_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"]; // disallowed to enforce read-only (plan mode / /bench)
     const impact = { localTurns: 0, cloudTurns: 0, localTok: 0, cloudInTok: 0, cloudOutTok: 0, cloudCost: 0, ctxSavedTok: 0, coworkSaved: 0, delegated: 0, cachedHits: 0, cachedSaved: 0, squeezeTok: 0 }; // Impact Receipt tallies
+    const sessStart = Date.now();             // wall-clock start of this TUI session (dashboard uptime)
+    const sessFiles = new Set();              // every repo-relative file the agent touched this session (for the dashboard)
+    const toolUse = Object.create(null);      // tool name -> call count this session (for the dashboard)
     let cacheOn = !!S.cache; // response cache: serve exact-repeat read-only answers for free (off by default — opt in with /cache on)
     let cowork = { on: false, strong: "", weak: "", weakKind: "claude" }; // strong codes, weak does cheap work; weakKind: claude|ollama(local, free)
     const auxModel = () => (cowork.on && cowork.weakKind === "claude" && engine === "claude") ? cowork.weak : undefined; // weak CLAUDE model for aux calls
@@ -2726,13 +2770,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/help", "commands, input prefixes & keys"], ["/clear", "start a fresh chat"], ["/chat-clear", "clear the screen, keep the conversation memory"], ["/compact", "summarize & shrink the context"],
       ["/trust", "trust this workspace's .nexus MCP servers + hooks"],
       ["/connect", "connect an AI: local model · Claude (API) · any provider"],
-      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
+      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/cheaper", "lossless ways to spend fewer tokens"], ["/warm", "prompt-cache countdown + warm-vs-cold follow-up cost"], ["/tokens", "estimate what @-attaching a file/dir costs"], ["/alias", "make a shortcut: /alias name = text|/cmd"], ["/retry", "re-run your last prompt (fresh, no cache)"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
       ["/report", "cost & usage report for chargeback (/report json|save|since <date>)"],
       ["/compliance", "write a signed audit+usage compliance bundle (SOC2/review)"],
       ["/undo", "revert the last turn's file changes"], ["/rewind", "restore a specific checkpoint (/rewind N)"], ["/checkpoints", "list undo checkpoints"],
       ["/invariants", "diff-lint the pending diff against .nexus/invariants.json"], ["/attest", "capability manifest from the hash-chained audit log"], ["/bisect", "find the turn that broke the test (/bisect [test cmd])"], ["/whatbroke", "instant blame: which turn most likely broke a failing test"], ["/shrink", "delta-debug the edits to the minimal breaking file set (/shrink [test cmd])"],
       ["/resume", "reload the last saved session"], ["/branch", "fork & switch conversation branches (/branch new <name>)"], ["/export", "save the conversation to a markdown file"], ["/copy", "copy the last reply to the clipboard"],
-      ["/status", "session engine, model, tokens & cost"], ["/doctor", "check engines & tools are available"], ["/init", "scaffold .nexus/ in this project"],
+      ["/status", "session engine, model, tokens & cost"], ["/session", "this session's uptime, files changed & tools used"], ["/doctor", "check engines & tools are available"], ["/init", "scaffold .nexus/ in this project"],
       ["/model", "pick the model — lists the engine catalog; /model <name|number>"], ["/engine", "switch AI: claude · gemini · codex · opencode · aider · ollama"], ["/commands", "list custom project commands"],
       ["/agents", "run tasks in parallel: /agents a ;; b ;; c"], ["/mcp", "list / connect MCP servers"], ["/hooks", "show configured tool hooks"],
       ["/race", "run a prompt on every engine at once"], ["/review", "second opinion from a different engine"], ["/codereview", "AI review of your changes for real bugs · /codereview [file|branch|PR#] [--fix]"], ["/redo", "reapply an undone change"],
@@ -2743,7 +2787,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/ensemble", "all engines answer, then synthesize the best"], ["/settings", "all options, neatly arranged (alias /options /config)"], ["/jobs", "background commands the agent started (run_background)"], ["/loop", "autonomous goal loop: /loop [-n rounds] <goal> until GOAL-DONE"], ["/team", "multi-model workspace: architect + builder + reviewer, loops to PASS"], ["/policy", "show the enterprise security policy (org + local)"], ["/audit", "audited tool actions · /audit verify (tamper check)"], ["/bench", "speed / tokens / cost table per engine"], ["/explain", "explain the diff or a file in plain English"], ["/test", "generate & run unit tests for a file"], ["/refactor", "restructure code for clarity without changing behavior"], ["/migrate", "migrate code: /migrate <from> to <to>"], ["/pr", "AI-write a PR title+body from the diff and open it (gh)"],
       ["/index", "index the repo for local auto-context"], ["/map", "show the repo map (file+symbol outline); /map on|off"], ["/verify", "detect + run this project's tests/build"], ["/radar", "codebase complexity + hotspot map"], ["/review-fast", "fast rule-based review of changed code (no AI)"], ["/diffexplain", "explain the current git diff"], ["/testgen", "scaffold tests for a function/file"], ["/snippet", "save / use a prompt macro"], ["/snippets", "list saved prompt macros"],
       ["/plan", "make & run an editable task checklist"], ["/git", "branch, status & recent commits"], ["/blame", "who last changed a file's lines"],
-      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "max token savings with ZERO quality loss"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens)"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
+      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "max token savings with ZERO quality loss"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens)"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max|ultracode)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
       ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "session savings (tokens & cost avoided)"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "built-in documentation (/docs <topic>)"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
       ["/tree", "show the project file tree"], ["/theme", "change the color theme"],
       ["/color", "set the accent color · /color <name|0-255|#hex> · /color reset"], ["/colors", "list accent colors"], ["/gradient", "set the logo gradient · /gradient <theme|reset>"], ["/mouse", "toggle mouse capture · /mouse off to select & copy text"],
@@ -2800,6 +2844,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // Surgical-edit directive — a LOSSLESS token saver (no quality cost: the edit
     // engine errors on an ambiguous find rather than mis-applying, so a too-short
     // anchor just retries). Keeps diffs minimal instead of rewriting whole lines.
+    const ASK_ENGINE_NOTE = "\nYou can ask the operator a question via the mcp__nexus__ask_user tool — it opens a real popup in the Nexus terminal and waits for their answer (pick-one: pass options; pick-many: options + multi:true; free-text: input:true). Use it ONLY when a decision is genuinely theirs (an ambiguous requirement, a destructive/irreversible choice, picking among approaches) — never for something you can decide or look up yourself.";
     const TIGHT_DIR = "Surgical edits (saves tokens, no quality loss): when editing, make the old/find text the SHORTEST span that is still unique — change only what differs; never reproduce a whole line, block or function just to alter a few characters, but keep enough surrounding context to stay unambiguous. Don't paste file contents or long command output back into your reply.";
     const bgJobs = createBgJobs(); // long-running background commands (run_background/check_background)
     const fileGuard = makeFileState(); // stale-write guard: don't let a full overwrite clobber on-disk changes (persists across turns)
@@ -2910,7 +2955,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (name === "Read") return "Read(" + relP(a.file_path) + ")";
       if (name === "Bash") return "Bash(" + oneline(a.command, Math.max(40, cols() - 30)) + ")" + (a.run_in_background ? gray(" &") : "");
       if (name === "Grep" || name === "Glob") return "Search(pattern: \"" + oneline(a.pattern, 40) + "\"" + (a.path ? ", path: \"" + relP(a.path) + "\"" : "") + ")";
-      if (name === "Task") return "Task(" + oneline(a.subagent_type || a.description || "agent", 30) + ")";
+      if (name === "Task" || name === "Agent") return name + "(" + oneline(a.subagent_type || a.description || "agent", 30) + ")";
+      if (name === "Workflow") return "Workflow(" + oneline(a.name || (String(a.script || "").match(/name:\s*['"]([^'"]+)/) || [])[1] || "script", 30) + ")";
       if (name === "WebFetch") return "Fetch(" + oneline(a.url, 36) + ")";
       if (name === "WebSearch") return "Search(" + oneline(a.query, 34) + ")";
       if (name === "TodoWrite") return "Update Todos";
@@ -2921,7 +2967,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const resultText = (c) => { if (c == null) return ""; if (typeof c === "string") return c; if (Array.isArray(c)) return c.map((x) => (x && x.text) || (typeof x === "string" ? x : "")).join(" "); return String(c); };
     // ---- transcript block accessors ----
     const cur = () => transcript[transcript.length - 1];
-    const ensureText = () => { const b = cur(); if (!b.items) b.items = []; let last = b.items[b.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; b.items.push(last); } return last; };
+    const ensureText = (b) => { if (!b) b = cur(); if (!b.items) b.items = []; let last = b.items[b.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; b.items.push(last); } return last; };
     // ---- render body ----
     const spin = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     // Darknode logo — the official 2x2 mark (four navy rounded boxes, one yellow).
@@ -2948,7 +2994,23 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // One welcome tip chosen once per session (stable across every render so the
     // card never flickers), rotated by start time for a little variety.
     const _welcomeTip = NEXUS_TIPS[Math.floor(Date.now() / 1000) % NEXUS_TIPS.length];
+    // Memoize the fully-rendered transcript while idle. bodyLines re-wraps every
+    // message (ANSI, diffs, tool cards) on each paint — O(transcript) — and every
+    // keystroke paints, so a long session (common after /restart resumes one) made
+    // held-key input lag: each repeat paid a full rebuild. Typing never changes the
+    // transcript, so when !busy we reuse the cached lines and only the composer
+    // repaints. We skip the cache while busy/compacting (live spinners, streaming
+    // text, running-tool timers) and key the cache on everything bodyLines reads.
+    const _bodySig = () => {
+      const m = transcript[transcript.length - 1];
+      let last = "";
+      if (m) { last = (m.role || "") + ":" + (m.text ? m.text.length : 0); if (m.items) { last += ":" + m.items.length; for (const it of m.items) last += "," + (it.status || "") + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? it.detail.length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0); } }
+      return transcript.length + "|" + cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + effort + "|" + engine + "|" + shownModel() + "|" + guard + "|" + (gitBranch || "") + "|" + mcpServers.filter((s) => s && !s.error).length + "|" + (_welcomeTip || "") + "|" + nextQueue.length + "/" + nextQueue.join("\u0001").length + "|" + last;
+    };
+    let _blCache = null, _blSig = "";
     const bodyLines = () => {
+      const _sig = (busy || compact.on) ? null : _bodySig();
+      if (_sig !== null && _blCache && _sig === _blSig) return _blCache;
       const L = [];
       for (const m of transcript) {
         if (m.role === "art") {
@@ -2998,8 +3060,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         // short one-line notice stays an indented dim line. The rail is the same 2 columns the old
         // indent used, so wrap/clip widths are unchanged.
         if (m.role === "compacted") {
-          L.push(gray("✻ Conversation compacted" + (m.auto && m.before ? " (auto, at " + fmtK(m.before) + " tokens)" : "")) + (m.summary ? gray(" · ctrl+o " + (expanded ? "to hide summary" : "for summary")) : ""));
-          if (expanded && m.summary) for (const ln of wrap(m.summary)) L.push("  " + gray(ln));
+          L.push(CompactAnim.doneRow({ before: m.before, auto: m.auto, hasSummary: !!m.summary, expanded, colors: { cyan, gray, bold, dim, mag } })); // the condenser's closed frame ▸◆◂
+          if (expanded && m.summary) for (const ln of wrap(m.summary)) L.push(mag("┃ ") + gray(ln));
           L.push(""); continue;
         }
         if (m.role === "recap") { recapLines(m.text).forEach((x) => L.push(x)); L.push(""); continue; }
@@ -3151,12 +3213,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         });
         if (busy) L.push(gray("  Ctrl+X / Ctrl+S runs " + (nextQueue.length > 1 ? "the next one" : "it") + " now"));
       }
-      // live compaction line, styled like the working line (Claude Code's "Compacting conversation…")
+      // live compaction: the Nexus "condenser" — a bar squeezed from both ends into a core (lib/cli/compact-anim.js)
       if (compact.on) {
-        const el = Math.round((Date.now() - compact.start) / 1000);
         L.push("");
-        L.push(workGlyph() + " " + cyan("Compacting conversation…") + gray("  (" + fmtElapsed(el) + (compact.tok ? " · ↓ " + fmtK(compact.tok) + " tokens" : "") + " · esc to interrupt)"));
+        for (const r of CompactAnim.compactRows({ now: Date.now(), start: compact.start, tok: compact.tok, before: compact.cur && compact.cur.before, width: cols() - 2, colors: { cyan, gray, bold, dim, mag } })) L.push(r);
       }
+      if (_sig !== null) { _blCache = L; _blSig = _sig; }
       return L;
     };
     // ---- status + hint bars ----
@@ -3178,6 +3240,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (runningShells) parts.push(yellow(runningShells + " shell" + (runningShells > 1 ? "s" : "")));
       if (bgJobs.running()) parts.push(cyan(bgJobs.running() + " bg"));
       if (activeAgents) parts.push(mag(activeAgents + " agent" + (activeAgents > 1 ? "s" : "")));
+      if (engine === "claude") { const wc = CacheWarm.chip(CacheWarm.cacheState({ lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now() }), { green, yellow, dim: gray }); if (wc) parts.push(wc); }
       if (rate && rate.status && rate.status !== "allowed") parts.push(red("rate-limited"));
       else if (rate && rate.isUsingOverage) parts.push(yellow("overage"));
       if (pinned.size) parts.push(cyan(pinned.size + " pinned"));
@@ -3230,7 +3293,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       "/color": () => Object.keys(COLORS).map((n) => [n, "\x1b[" + COLORS[n] + "m█████\x1b[0m"]),
       "/gradient": () => Object.keys(THEMES).map((t) => [t, THEMES[t].grad.map((g) => "\x1b[" + g + "m█\x1b[0m").join("")]),
       "/style": () => [["default", ""], ["concise", "minimal"], ["explanatory", "detailed"], ["review", "code review"], ["tdd", "test-driven"], ["secure", "security-focused"], ["teacher", "educational"]],
-      "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"], ["xhigh", "harder problems"], ["max", "maximum thinking"]],
+      "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"], ["xhigh", "harder problems"], ["max", "maximum thinking"], ["ultracode", "max + multi-agent workflows"]],
       "/guard": () => [["enforce", "block destructive commands"], ["warn", "warn but allow"], ["off", "no safety checks"]],
       "/marketplace": () => [["list", "installed packages"], ["install", "install from path/URL"], ["remove", "uninstall a package"], ["init", "scaffold a publishable package"]],
       "/cron": () => [["list", "show scheduled jobs"], ["add", "schedule a new job"], ["remove", "delete a job"], ["enable", "enable a job"], ["disable", "pause a job"], ["run", "run a job now"]],
@@ -3284,7 +3347,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const _goldTxt = (s) => "\x1b[38;5;220m" + s + "\x1b[0m";
     const godApply = () => {
       godSnap = { effort, lean, minimizeCalls, stepCap, trimOutput, repoMapOn };
-      if (engineCap(engine, "effort")) effort = "max"; // only the quality levers; nothing that trades quality for cost/speed
+      if (engineCap(engine, "effort") && effort !== "ultracode") effort = "max"; // only the quality levers; nothing that trades quality for cost/speed
       lean = false; minimizeCalls = false; stepCap = false; trimOutput = false; repoMapOn = true;
     };
     const godRestore = () => { if (!godSnap) return; ({ effort, lean, minimizeCalls, stepCap, trimOutput, repoMapOn } = godSnap); godSnap = null; };
@@ -3294,6 +3357,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["high", "Deeper reasoning on most problems"],
       ["xhigh", "Hard problems — more thinking, more tokens"],
       ["max", "Maximum thinking — the hardest problems, most tokens"],
+      ["ultracode", "Max thinking + multi-agent workflows that fan out and verify — by far the most tokens"],
     ];
     const renderEffortPicker = (C, sel) => {
       const names = EFFORT_LEVELS.map((l) => l[0]);
@@ -3457,16 +3521,21 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const menuStart = combined.length > menuRows ? Math.max(0, Math.min(menuSel - (menuRows >> 1), combined.length - menuRows)) : 0;
       const inRows = Math.max(1, Math.min(wrapped.length, 8, Math.max(1, avail - menuReserve - 1)));
       // When the model is asking a question, its card replaces the composer + menu.
-      const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green }) : null;
+      const askRows = pendingAsk ? Ask.renderAsk(pendingAsk, C, { cyan, gray, bold, dim, green, mag }) : null;
       const effortRows = (!askRows && pendingEffort) ? renderEffortPicker(C, pendingEffort.sel) : null;
       const btwRows = (!askRows && !effortRows && btw) ? renderBtw(C, R, btw) : null;
-      let cardRows = askRows || effortRows || btwRows; // a full-width card replaces the composer + menu
+      const agentViewRows = (!askRows && !effortRows && !btwRows && agentView && agents[agentView.i]) ? Agents.viewRows(agents[agentView.i], C, R, agentView.scroll, { cyan, gray, bold, dim, green, red, yellow, mag }, Date.now()) : null;
+      let cardRows = askRows || effortRows || btwRows || agentViewRows; // a full-width card replaces the composer + menu
       if (cardRows && cardRows.length > R - 2) cardRows = cardRows.slice(0, Math.max(1, R - 2)); // never build a card taller than the screen (would overflow the diff'd frame)
       // breathing room below the footer so the composer floats off the terminal
       // floor (matches Claude Code, which leaves a margin under its prompt).
       // clamped away on short terminals so it never eats the transcript.
       const bottomMargin = Math.min(5, Math.max(0, R - 16));
-      const chrome = (cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows)) + bottomMargin; // spacer + composer + reserved menu + footer + bottom margin
+      // Agents panel: the live sub-agent list sits between the composer/menu and
+      // the footer (Claude-Code layout). Hidden while a full-width card owns the
+      // bottom. Capped so a long list never crowds out the transcript.
+      const agentPanelRows = (!cardRows && agents.length) ? Agents.panelRows(agents, { now: Date.now(), sel: agentSel, width: C, max: Math.min(6, Math.max(2, (R >> 2))), colors: { cyan, gray, bold, dim, green, red, yellow, mag } }) : [];
+      const chrome = (cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows + agentPanelRows.length)) + bottomMargin; // spacer + composer + reserved menu + agents panel + footer + bottom margin
       const bodyRows = Math.max(0, R - chrome);
       const lines = bodyLines();
       const maxScroll = Math.max(0, lines.length - bodyRows);
@@ -3535,7 +3604,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         }
         frame.push(_bd(_rule));
       }
-      const _showStart = Math.max(0, wrapped.length - inRows);
+      let _showStart = Math.max(0, wrapped.length - inRows);
+      if (_cLine < _showStart) _showStart = _cLine; // follow the caret up: editing an earlier line of a tall draft must keep that line (and the cursor) on screen
       const shown = wrapped.slice(_showStart);
       for (let i = 0; i < inRows; i++) {
         const raw = shown[i] || ""; const li = _showStart + i;
@@ -3559,6 +3629,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); frame.push(clip((sel ? cyan(" › ") : "   ") + nmShown + tail + pos, C - 2));
       }
       }
+      for (const r of agentPanelRows) frame.push(clip(r, C)); // the Agents panel, under the prompt bar
       // footer: contextual hint on the left, status on the right. The status
       // menu (cost, savings & more) is the clickable "..." at the far right;
       // when open its buttons take over the row.
@@ -3605,13 +3676,60 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // ---- model-driven question: pause the agent loop, show the Claude-style
     // multiple-choice card, and resolve with the user's pick (or {cancelled}
     // if they skip with Esc). The key loop drives pendingAsk via Ask.askKey. ----
-    const askUser = (question, options) => new Promise((resolve) => {
-      pendingAsk = { question: String(question || ""), options: options || [], sel: 0, resolve };
+    const askUser = (question, options, extra) => new Promise((resolve) => {
+      pendingAsk = Object.assign({ question: String(question || ""), options: options || [], sel: 0, picked: [], text: "", resolve }, extra || {});
       scroll = 0; render();
     });
+    // ---- the ask bridge: lets an EXTERNAL engine's model raise this same popup.
+    // Lazily opened the first time an external engine launches; the out-of-process
+    // MCP shim (lib/nexus/ask-mcp.js) connects to askBridge.sockPath and forwards
+    // the question here, where handleBridgeAsk shows the real card and answers. ----
+    let askBridge = null;
+    const handleBridgeAsk = async (req) => {
+      const q = String((req && req.question) || "");
+      if (!q) return { skipped: true };
+      transcript.push({ role: "system", text: gray("the model is asking: ") + oneline(q, 60) }); render();
+      if (req.input) { const ans = await askUser(q, [], { input: true, placeholder: req.placeholder }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
+      const norm = Ask.normOptions(Array.isArray(req.options) ? req.options : []);
+      if (!norm.length) { const ans = await askUser(q, [], { input: true }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
+      if (req.multi) { const ans = await askUser(q, norm, { multi: true, picked: [] }); if (ans.cancelled) return { skipped: true }; if (ans.typed) return { answer: String(ans.value || "") }; return { selected: (ans.values || []).map((v) => (v && v.label != null) ? v.label : String(v)), indices: ans.indices || [] }; }
+      const ans = await askUser(q, norm); if (ans.cancelled) return { skipped: true }; if (ans.typed) return { answer: String(ans.value || "") }; return { selected: (ans.value && ans.value.label != null) ? ans.value.label : String(ans.value), index: ans.index };
+    };
+    const ensureAskBridge = () => { if (!askBridge) { try { askBridge = createAskServer(handleBridgeAsk); } catch (_) { askBridge = null; } } return askBridge; };
+    // Build (or reuse) the per-engine MCP config: the Nexus ask bridge plus any
+    // servers the user configured in a trusted .nexus/mcp.json. Returns a file
+    // path for claude's --mcp-config, or null if the bridge couldn't open.
+    const engineMcpServers = () => {
+      const b = ensureAskBridge(); if (!b) return null;
+      try { return buildEngineMcpServers({ sockPath: b.sockPath, askMcpPath: ASK_MCP_PATH, userServers: loadMcpConfig(cwd) || {} }); } catch (_) { return null; }
+    };
+    const engineMcpConfigPath = () => { const servers = engineMcpServers(); if (!servers) return null; try { return writeMcpConfigFile(path.join(cwd, ".nexus"), servers); } catch (_) { return null; } };
+    // Per-engine injection of the ask bridge for the CLI engines (claude uses
+    // --mcp-config directly). Returns the `extra` to hand runEngineTask: codex
+    // takes -c overrides via mcpServers; opencode is pointed at a merged config
+    // file via $OPENCODE_CONFIG (the user's own opencode config is preserved).
+    const engineMcpLaunch = (eng) => {
+      const m = ENGINES[eng] || {};
+      if (!engineCap(eng, "mcpInject")) return undefined;
+      const servers = engineMcpServers(); if (!servers) return undefined;
+      if (m.mcpMode === "env") {
+        let obj, fname;
+        if (m.mcpFormat === "opencode") { // opencode's own schema; merge INTO a copy of the user's project config
+          let base = {}; for (const f of ["opencode.json", "opencode.jsonc"]) { try { base = JSON.parse(fs.readFileSync(path.join(cwd, f), "utf8")); break; } catch (_) {} }
+          obj = toOpencodeConfig(servers, base); fname = "opencode.json";
+        } else { // claude-style { mcpServers } (gemini's system-overrides settings file — gemini merges it, so only 'nexus' is added)
+          obj = { mcpServers: servers }; fname = ".gemini-settings.json";
+        }
+        const p = writeEngineConfigFile(path.join(cwd, ".nexus"), fname, obj);
+        return (p && m.mcpEnvVar) ? { env: { [m.mcpEnvVar]: p } } : undefined;
+      }
+      return { mcpServers: servers }; // cArgs (codex): -c overrides via args()
+    };
     // ---- animation loop: typewriter reveal + spinners + elapsed ----
     const revealing = () => { const b = activeBlock || cur(); if (!b || !b.items) return false; return b.items.some((it) => it.type === "text" && it.shown < it.full.length); };
     const startTick = () => { if (tick) return; tick = setInterval(() => { const b = activeBlock || cur(); if (b && b.items) for (const it of b.items) if (it.type === "text" && it.shown < it.full.length) { let ns = Math.min(it.full.length, it.shown + Math.max(2, Math.ceil((it.full.length - it.shown) / 22))); const cc = it.full.charCodeAt(ns - 1); if (cc >= 0xD800 && cc <= 0xDBFF && ns < it.full.length) ns++; it.shown = ns; } render(); if (!busy && !revealing() && !compact.on) { clearInterval(tick); tick = null; } }, 45); };
+    // idle refresh for the prompt-cache chip: re-render only when its text changes (minute steps, then seconds in the last minute)
+    let lastWarmChip = ""; const warmTimer = setInterval(() => { if (busy || engine !== "claude" || !cacheWarm.lastAt) return; const c = CacheWarm.chip(CacheWarm.cacheState({ lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now() })); if (c !== lastWarmChip) { lastWarmChip = c; render(); } }, 5000); if (warmTimer.unref) warmTimer.unref();
     // Flatten the kept transcript tail into a short plain-text summary, so a
     // claude turn that has just dropped --continue still knows what came before.
     // User lines and the model's own answers only — no tool spew, capped so the
@@ -3744,7 +3862,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (sess.ctxUsed > compactAt()) doCompact(true);
     };
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
-    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (_rsT) { clearTimeout(_rsT); _rsT = null; } if (_drainT) { clearTimeout(_drainT); _drainT = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
+    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (_rsT) { clearTimeout(_rsT); _rsT = null; } if (_drainT) { clearTimeout(_drainT); _drainT = null; } if (_escTimer) { clearTimeout(_escTimer); _escTimer = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { askBridge && askBridge.close(); } catch (_) {} try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
     tuiActive = true;
     const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { term.teardown(); } catch (_) {} try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
@@ -3810,7 +3928,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // Response cache: an EXACT repeat of a READ-ONLY answer is served FREE. The key
       // includes the inlined context, so a changed file yields a new key and re-runs
       // (never a stale answer). /cache off to disable, /cache clear to wipe.
-      const ckey = cacheOn ? cacheKey(engine, sess.model || engine, promptText) : null;
+      const ckey = (cacheOn && !bypassCacheOnce) ? cacheKey(engine, sess.model || engine, promptText) : null; bypassCacheOnce = false;
       if (ckey) { const hit = cacheGet(cwd, ckey, CACHE_TTL); if (hit && hit.readonly && hit.text) {
         const blk = { role: "nexus", items: [{ type: "text", full: hit.text, shown: hit.text.length }] };
         blk.summary = green("cache hit — free") + gray("  ·  saved " + ((PAID[engine] && hit.cost) ? "$" + hit.cost.toFixed(4) + " · " : "") + "↑" + fmtK(hit.inTok || 0) + " ↓" + fmtK(hit.outTok || 0) + " tok  ·  /cache off to disable");
@@ -3822,7 +3940,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // result (/scan, /verify…) can push a system message mid-turn and move the tail,
       // which would otherwise attach the model's reply to that unrelated block.
       const textItem = () => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; block.items.push(last); } return last; };
-      const stat = { files: new Set(), paths: new Set(), cmds: 0, inTok0: sess.inTok, outTok0: sess.outTok, cost0: sess.cost, t0: Date.now() };
+      const stat = { files: new Set(), paths: new Set(), cmds: 0, inTok0: sess.inTok, outTok0: sess.outTok, cost0: sess.cost, cacheRead0: (sess.byModel && Object.values(sess.byModel).reduce((a, m) => a + (m.cacheRead || 0), 0)) || 0, t0: Date.now() };
       const relOf = (p) => { try { return path.relative(cwd, path.resolve(cwd, p)); } catch (_) { return null; } };
       const ckTree = nexusCheckpoint(cwd); // every engine can now modify files, so always checkpoint (null if not a git repo)
       let ckObj = null; if (ckTree) { ckObj = { tree: ckTree, label: oneline(text, 40), ts: Date.now() }; checkpoints.push(ckObj); }
@@ -3832,12 +3950,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const finish = (res) => {
         for (const it of block.items) if (it.type === "tool" && it.status === "run") { it.status = res && res.interrupted ? "err" : "ok"; it.interrupted = !!(res && res.interrupted); it.end = Date.now(); }
         runningShells = 0; activeAgents = 0; ctl = null;
+        for (const rg of agents) if (rg.status === "run" && rg.native === false) finishAgent(rg, res && res.interrupted ? "stopped" : "ok"); // any Claude sub-agent still open when the turn ends
         if (!block.items.length || !block.items.some((i) => i.type === "text" && i.full.trim())) { const t = textItem(); if (!t.full.trim()) t.full = res && res.interrupted ? "(interrupted)" : (res && res.output) || "(no output)"; }
         const dt = ((Date.now() - stat.t0) / 1000).toFixed(1);
         const din = sess.inTok - stat.inTok0, dout = sess.outTok - stat.outTok0, dcost = sess.cost - stat.cost0;
+        try { const _cr = (sess.byModel && Object.values(sess.byModel).reduce((a, m) => a + (m.cacheRead || 0), 0)) || 0; turnLog.push({ t: Date.now(), inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), dt: +dt || 0, model: sess.model || engine, engine, label: oneline(text || "", 64), paid: !!PAID[engine], cacheRead: Math.max(0, _cr - (stat.cacheRead0 || 0)) }); if (turnLog.length > 300) turnLog.shift(); } catch (_) {}
         if (PAID[engine]) { impact.cloudTurns++; impact.cloudInTok += Math.max(0, din); impact.cloudOutTok += Math.max(0, dout); impact.cloudCost += Math.max(0, dcost); } else { impact.localTurns++; impact.localTok += Math.max(0, din + dout); }
         // Chargeback ledger: one non-sensitive metrics line per turn (no prompt text, no paths).
         try { appendUsage(cwd, { ts: new Date().toISOString(), operator: ident.operator, team: ident.team, engine, model: sess.model || engine, mode: ["normal", "auto", "plan"][mode] || "normal", inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), seconds: +dt, files: stat.files.size, commands: stat.cmds, interrupted: !!(res && res.interrupted) }); } catch (_) {}
+        for (const p of stat.paths) if (p) sessFiles.add(p); // accumulate session-wide file + tool activity for the dashboard
+        for (const it of block.items) if (it.type === "tool" && it.name) toolUse[it.name] = (toolUse[it.name] || 0) + 1;
         const bits = [];
         const recap = [];
         if (stat.files.size) { bits.push(stat.files.size + " file" + (stat.files.size > 1 ? "s" : "")); recap.push((res && res.interrupted ? "Touched" : "Wrote") + " " + [...stat.files].slice(0, 4).join(", ") + (stat.files.size > 4 ? " +" + (stat.files.size - 4) + " more" : "")); }
@@ -3897,19 +4019,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           onThinking: (t) => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; block.items.push(last); } last.full += t; bumpLive(t); renderSoon(); },
           onText: (t) => { textItem().full += t; bumpLive(t); renderSoon(); },
           onDelta: (t) => { bumpLive(t); renderSoon(); }, // mid-message delta: advance the live token estimate only (the whole text/thinking still lands via onText/onThinking)
-          onLiveTokens: (n) => { estOut = n; sess.liveOut = confOut + estOut; renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate
+          onLiveTokens: (n) => { estOut = Math.max(estOut, n); sess.liveOut = confOut + estOut; renderSoon(); }, // real running output tokens for the in-flight message — overrides the char estimate (never let it yank the counter backwards if the estimate ran ahead)
           onTool: (tu) => {
             const _item = { type: "tool", id: tu.id, name: tu.name, input: tu.input, label: toolLabel(tu.name, tu.input), detail: JSON.stringify(tu.input).slice(0, 400), status: "run", start: Date.now() };
             if (["Write", "Edit", "MultiEdit"].includes(tu.name)) _item.diff = editDiff(tu.name, tu.input);
             block.items.push(_item);
             if (tu.name === "Bash") { runningShells++; stat.cmds++; }
-            if (tu.name === "Task") activeAgents++;
+            if (tu.name === "Task" || tu.name === "Agent") { activeAgents++; const _ag = addAgent((tu.input && (tu.input.description || tu.input.subagent_type || tu.input.prompt)) || "agent", { native: false, engine }); _item._agId = _ag.id; } // mirror a Claude-engine sub-agent into the Agents panel
             if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(tu.name) && (tu.input.file_path || tu.input.notebook_path)) { const fp = tu.input.file_path || tu.input.notebook_path; stat.files.add(base(fp)); const r = relOf(fp); if (r) stat.paths.add(r); }
             render();
           },
           onToolResult: (tr) => {
             const it = block.items.find((x) => x.type === "tool" && x.id === tr.id);
-            if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if (it.name === "Task" && activeAgents) activeAgents--; }
+            if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if ((it.name === "Task" || it.name === "Agent") && activeAgents) activeAgents--; if (it._agId) { const rg = agents.find((x) => x.id === it._agId); if (rg && rg.status === "run") finishAgent(rg, tr.isError ? "fail" : "ok", resultText(tr.content)); } }
             render();
           },
           onUsage: (u, _m, sub) => { confOut += (u.output_tokens || 0); estOut = 0; sess.liveOut = confOut; if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // lock in the real output tokens for the message that just finished (each agentic tool round is its own assistant message) and clear the streaming estimate; the next message's estimate climbs on top of this. lastCtx tracks the latest main-thread call's prompt = the real context size
@@ -3924,7 +4046,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             addUsage(ev.modelUsage, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
-        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt()) || undefined, fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
+        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
       } else if (ENGINES[engine] && ENGINES[engine].kind === "cli") { // gemini / codex / opencode / aider
         const eng = ENGINES[engine];
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose
@@ -3942,7 +4064,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
               renderSoon();
             })
           : ((chunk) => { textItem().full += chunk; sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); });
-        runEngineTask(engine, promptText, cwd, true, cont, onChunk, ctl, mdl).then((res) => {
+        runEngineTask(engine, promptText, cwd, true, cont, onChunk, ctl, mdl, undefined, engineMcpLaunch(engine)).then((res) => {
           const raw = res.output || "";
           let display = raw, inD, outD;
           if (jsonProto) {
@@ -3962,7 +4084,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       } else { // ollama — LOCAL agent with full device access (read/write/edit/list/run_command)
         const mcps = mcpToolList();
         const extra = (mcps.length ? " MCP tools: " + mcps.map((m) => m.full + " — " + oneline(m.desc, 40)).join("; ") + "." : "") + " spawn_agents{tasks:[\"...\",\"...\"]} runs several INDEPENDENT sub-tasks in parallel via sub-agents and returns all their results — use it to split big work.";
-        if (oMsgs.length === 1) oMsgs[0].content = "Nexus agent (cwd " + cwd + "). One action/step. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} multi_edit{path,edits:[{find,replace}]} apply_patch{patch} list_dir{path?} run_command{command} run_background{command} check_background{id?} stop_background{id} search{pattern,path?} find{glob,path?} http_fetch{url,method?} web_search{query} view_image{path} todo_write{todos} sysinfo{} list_processes{filter?} make_dir{path} move{from,to} copy{from,to} delete{path} repo_map{} find_symbol{name} find_references{name,path?,context?} module_graph{path?} outline{path} verify{kind?} git_tool{op,path?,ref?} lint_format{check?,path?} notebook_edit{path,op,index?,source?} remember{text} discover{query} batch{ops:[{op,path?,pattern?,glob?}]} invariants{} attest{claims?} bisect{test?} explain_break{output?} shrink{test?} ask_user{question,options:[\"A\",\"B\"]}." + extra + " repo_map{} returns a ranked file+symbol map to get oriented fast; find_symbol{name} jumps to where a function/class is defined; find_references{name} is the reverse — every USAGE/caller of a symbol across the repo, grouped by file with line numbers (def/import/usage tagged), for impact analysis before you rename, change a signature, or delete something. module_graph{path?} is the file-level view: what imports a file and what it imports (its blast radius), or a project summary of the most-imported files + entry points when path is omitted. outline{path} lists one file's functions/classes/types in order with line numbers to get oriented fast. batch{ops} runs several READ-ONLY lookups (op:read/search/glob/list) in ONE call and returns them all together — prefer it over firing many separate read_file/search/find calls when investigating, to save round-trips and tokens. multi_edit makes several edits to one file atomically; apply_patch applies a unified diff (anchors on context, so line numbers can drift). edit_file/multi_edit tolerate whitespace differences. verify{kind?} auto-detects and runs the project's own tests/build — call it after editing to check your work before you finish. invariants{} lints your pending diff against the repo's declared rules in .nexus/invariants.json (stray debug lines, new TODOs, new dependencies, forbidden-path edits) — call it before finishing so a reviewer-trustable gate catches mistakes tests don't. attest{claims?} reads the tamper-evident audit log and reports exactly what this run touched (files written, commands run, whether the network was used) and can prove declared claims like {\"noNetwork\":true,\"onlyPaths\":[\"src/**\"],\"noDelete\":true}. bisect{test?} binary-searches your per-turn checkpoints, restoring and testing each, to pinpoint the exact turn that broke the tests (then restores the working tree) — use it when a run ends with the tests failing and you don't know which change caused it. explain_break{output?} is the instant version: give it the failing test output and it blames the turn whose changes most likely caused it (no re-running) — a fast first guess before bisect proves it. shrink{test?} delta-debugs your OWN edits down to the minimal subset of changed files that still breaks the test, reverting the rest to baseline — use it to find the real blast radius when a run touched many files. ask_user{question,options} pauses and asks the user a MULTIPLE-CHOICE question (2-9 short options) and returns their pick — use it ONLY when a real decision is genuinely the user's to make (ambiguous requirement, a destructive/irreversible choice, which of several approaches); never for things you can decide or look up yourself, and never more than needed. git_tool{op} runs READ-ONLY structured git (op: status/log/diff/show/blame/branch) and returns a parsed object — use run_command for commits/pushes. lint_format auto-detects the project formatter and fixes code style in place (prettier/eslint/ruff/black/gofmt); pass check:true to only report. notebook_edit reads and edits Jupyter .ipynb cells structurally (op: read/edit/insert/delete) instead of hand-splicing the JSON. JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Greetings→final." + (tightEdits ? " " + TIGHT_DIR : "") + (minimizeCalls ? " Minimize calls; chain commands." : "") + (lean ? " Terse." : "") + (styleDir(style) ? " " + styleDir(style) : "") + (hack ? " " + HACK_DIR : "") + (nexusMd ? "\nPROJECT:\n" + nexusMd.slice(0, 1000) : "");
+        if (oMsgs.length === 1) oMsgs[0].content = "Nexus agent (cwd " + cwd + "). One action/step. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} multi_edit{path,edits:[{find,replace}]} apply_patch{patch} list_dir{path?} run_command{command} run_background{command} check_background{id?} stop_background{id} search{pattern,path?} find{glob,path?} http_fetch{url,method?} web_search{query} view_image{path} todo_write{todos} sysinfo{} list_processes{filter?} make_dir{path} move{from,to} copy{from,to} delete{path} repo_map{} find_symbol{name} find_references{name,path?,context?} module_graph{path?} outline{path} verify{kind?} git_tool{op,path?,ref?} lint_format{check?,path?} notebook_edit{path,op,index?,source?} remember{text} discover{query} batch{ops:[{op,path?,pattern?,glob?}]} invariants{} attest{claims?} bisect{test?} explain_break{output?} shrink{test?} ask_user{question,options:[\"A\",\"B\"]}." + extra + " repo_map{} returns a ranked file+symbol map to get oriented fast; find_symbol{name} jumps to where a function/class is defined; find_references{name} is the reverse — every USAGE/caller of a symbol across the repo, grouped by file with line numbers (def/import/usage tagged), for impact analysis before you rename, change a signature, or delete something. module_graph{path?} is the file-level view: what imports a file and what it imports (its blast radius), or a project summary of the most-imported files + entry points when path is omitted. outline{path} lists one file's functions/classes/types in order with line numbers to get oriented fast. batch{ops} runs several READ-ONLY lookups (op:read/search/glob/list) in ONE call and returns them all together — prefer it over firing many separate read_file/search/find calls when investigating, to save round-trips and tokens. multi_edit makes several edits to one file atomically; apply_patch applies a unified diff (anchors on context, so line numbers can drift). edit_file/multi_edit tolerate whitespace differences. verify{kind?} auto-detects and runs the project's own tests/build — call it after editing to check your work before you finish. invariants{} lints your pending diff against the repo's declared rules in .nexus/invariants.json (stray debug lines, new TODOs, new dependencies, forbidden-path edits) — call it before finishing so a reviewer-trustable gate catches mistakes tests don't. attest{claims?} reads the tamper-evident audit log and reports exactly what this run touched (files written, commands run, whether the network was used) and can prove declared claims like {\"noNetwork\":true,\"onlyPaths\":[\"src/**\"],\"noDelete\":true}. bisect{test?} binary-searches your per-turn checkpoints, restoring and testing each, to pinpoint the exact turn that broke the tests (then restores the working tree) — use it when a run ends with the tests failing and you don't know which change caused it. explain_break{output?} is the instant version: give it the failing test output and it blames the turn whose changes most likely caused it (no re-running) — a fast first guess before bisect proves it. shrink{test?} delta-debugs your OWN edits down to the minimal subset of changed files that still breaks the test, reverting the rest to baseline — use it to find the real blast radius when a run touched many files. ask_user{question,options} pauses and asks the user a question — use it ONLY when a real decision is genuinely the user's to make (ambiguous requirement, a destructive/irreversible choice, which of several approaches); never for things you can decide or look up yourself, and never more than needed. Three forms: pick-one ask_user{question,options:[\"A\",\"B\"]} returns {selected,index}; pick-many ask_user{question,options:[...],multi:true} (the user toggles several, Space to check) returns {selected:[...],indices:[...]}; free-text ask_user{question,input:true} (no options; the user types an answer) returns {answer}. git_tool{op} runs READ-ONLY structured git (op: status/log/diff/show/blame/branch) and returns a parsed object — use run_command for commits/pushes. lint_format auto-detects the project formatter and fixes code style in place (prettier/eslint/ruff/black/gofmt); pass check:true to only report. notebook_edit reads and edits Jupyter .ipynb cells structurally (op: read/edit/insert/delete) instead of hand-splicing the JSON. JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Greetings→final." + (tightEdits ? " " + TIGHT_DIR : "") + (minimizeCalls ? " Minimize calls; chain commands." : "") + (lean ? " Terse." : "") + (styleDir(style) ? " " + styleDir(style) : "") + (hack ? " " + HACK_DIR : "") + (nexusMd ? "\nPROJECT:\n" + nexusMd.slice(0, 1000) : "");
         if (localReplay.length) { for (const m of localReplay) oMsgs.push(m); localReplay = []; } // restored session → the local model remembers it
         if (imgAttach.length && apiConfigured()) oMsgs.push({ role: "user", content: [{ type: "text", text: promptText }].concat(imgAttach.map((im) => ({ type: "image_url", image_url: { url: "data:" + im.mime + ";base64," + im.b64 } }))) }); // OpenAI-compatible vision
         else if (imgAttach.length) oMsgs.push({ role: "user", content: promptText, images: imgAttach.map((im) => im.b64) }); // Ollama vision (llava / llama3.2-vision / …)
@@ -4060,7 +4182,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
               else if (name === "run_background") { if (!a.command || typeof a.command !== "string") { result = { error: "run_background needs a non-empty command string" }; } else { const p = _cp.spawn(process.platform === "win32" ? "cmd" : "sh", process.platform === "win32" ? ["/c", a.command] : ["-c", a.command], { cwd, env: process.env }); const id = bgJobs.start(a.command, p, Date.now()); p.stdout && p.stdout.on("data", (d) => bgJobs.append(id, d)); p.stderr && p.stderr.on("data", (d) => bgJobs.append(id, d)); p.on("close", (code) => bgJobs.finish(id, code)); p.on("error", (e) => { bgJobs.append(id, "spawn error: " + e.message); bgJobs.finish(id, 1); }); result = { ok: true, jobId: id, status: "running", hint: "poll it with check_background{id:'" + id + "'}, stop it with stop_background{id:'" + id + "'}" }; } }
               else if (name === "check_background") { if (a.id) { const j = bgJobs.get(a.id); result = j ? { id: j.id, status: j.status, code: j.code, output: compactOutput(bgJobs.tail(a.id, 6000), 4000) } : { error: "no such job " + a.id }; } else result = { jobs: bgJobs.list() }; }
               else if (name === "stop_background") { result = a.id ? { ok: bgJobs.stop(a.id), stopped: a.id } : { error: "stop_background needs a job id" }; }
-              else if (name === "spawn_agents") { const tasks = (a.tasks || []).map(String).filter(Boolean).slice(0, 8); const outs = await runSubagents(engine, tasks, cwd, mdl, null, ctl); result = { agents: outs.map((o2, i) => ({ task: tasks[i], result: (o2 || "").slice(0, 1500) })) }; }
+              else if (name === "spawn_agents") { const tasks = (a.tasks || []).map(String).filter(Boolean).slice(0, 8); const actls = tasks.map(() => makeCtl()); const regs = tasks.map((tk, i) => addAgent(tk, { native: engine !== "claude", engine, ctl: actls[i] })); render(); const outs = await runSubagents(engine, tasks, cwd, mdl, (i, phase, out) => { if (phase === "done" && regs[i].status === "run") finishAgent(regs[i], /^error:/.test(String(out || "")) ? "fail" : "ok", out); render(); }, ctl, undefined, actls); regs.forEach((rg, i) => { if (rg.status === "run") finishAgent(rg, "ok", outs[i]); }); result = { agents: outs.map((o2, i) => ({ task: tasks[i], result: (o2 || "").slice(0, 1500) })) }; }
               else if (String(name).startsWith("mcp__")) { const srv = mcpServers.find((s) => !s.error && String(name).slice(5).startsWith(s.name + "__")); if (!srv) result = { error: "MCP tool not connected: " + name }; else { const tool = String(name).slice(5 + srv.name.length + 2); const r = await srv.call("tools/call", { name: tool, arguments: a }); result = { content: resultText((r && r.content) || r) }; } }
               else if (name === "discover") { result = { tools: discoverTools(a.query || a.q || "", TOOL_CATALOG.concat(mcpToolList().map((m) => [m.full, m.desc]))) }; }
               else if (name === "repo_map" || name === "repomap" || name === "map") { const rm = getRepoMap({ fresh: !!a.fresh }); result = rm && rm.map ? { map: rm.text, files: rm.map.fileCount, symbols: rm.map.symbolCount } : { error: "could not build a repo map here" }; }
@@ -4072,14 +4194,34 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
                 // rendered exactly like the Claude-Code "pick one" prompt. The
                 // chosen label (or a skip) is fed back as the tool observation.
                 const q = a.question || a.prompt || a.q || a.text || "";
+                const wantInput = a.input === true || a.freeform === true || a.free_text === true || a.text_input === true;
+                const multi = a.multi === true || a.multiple === true || a.multi_select === true;
                 let opts = a.options || a.choices || a.answers || a.items || [];
                 if (typeof opts === "string") opts = opts.split(/\s*\|\s*|\n/).map((x) => x.trim()).filter(Boolean);
                 const norm = Ask.normOptions(opts);
-                if (!q || !norm.length) result = { error: "ask_user needs a non-empty question and an options array (2-9 choices), e.g. ask_user{question,options:[\"A\",\"B\"]}" };
+                const skipNote = { skipped: true, note: "the user dismissed the question without answering — decide yourself or ask differently" };
+                if (!q) result = { error: "ask_user needs a non-empty question" };
+                else if (wantInput) {
+                  // free-text: the user types an answer (no options needed).
+                  card.label = "AskUser(" + oneline(q, 30) + ")"; render();
+                  const ans = await askUser(q, [], { input: true, placeholder: a.placeholder || a.hint });
+                  if (ans.cancelled) { result = skipNote; transcript.push({ role: "system", text: "Nexus asked: " + oneline(q, 48) + " — skipped" }); }
+                  else { const answer = String(ans.value || ""); result = { answer }; transcript.push({ role: "system", text: "you answered: " + oneline(answer || "(empty)", 40) + "  (" + oneline(q, 36) + ")" }); }
+                }
+                else if (!norm.length) result = { error: "ask_user needs an options array (2-9 choices), or input:true for a free-text answer — e.g. ask_user{question,options:[\"A\",\"B\"]}, ask_user{question,options:[...],multi:true}, or ask_user{question,input:true}" };
+                else if (multi) {
+                  // multi-select: the user toggles any number of choices (space), confirms with Enter.
+                  card.label = "AskUser(" + oneline(q, 30) + ")"; render();
+                  const ans = await askUser(q, norm, { multi: true, picked: [] });
+                  if (ans.cancelled) { result = skipNote; transcript.push({ role: "system", text: "Nexus asked: " + oneline(q, 48) + " — skipped" }); }
+                  else if (ans.typed) { const answer = String(ans.value || ""); result = { answer }; transcript.push({ role: "system", text: "you answered: " + oneline(answer || "(empty)", 40) + "  (" + oneline(q, 36) + ")" }); }
+                  else { const labels = (ans.values || []).map((v) => v && v.label != null ? v.label : String(v)); result = { selected: labels, indices: ans.indices || [] }; transcript.push({ role: "system", text: "you chose: " + oneline(labels.join(", ") || "(none)", 42) + "  (" + oneline(q, 32) + ")" }); }
+                }
                 else {
                   card.label = "AskUser(" + oneline(q, 30) + ")"; render();
                   const ans = await askUser(q, norm);
-                  if (ans.cancelled) { result = { skipped: true, note: "the user dismissed the question without choosing — decide yourself or ask differently" }; transcript.push({ role: "system", text: "Nexus asked: " + oneline(q, 48) + " — skipped" }); }
+                  if (ans.cancelled) { result = skipNote; transcript.push({ role: "system", text: "Nexus asked: " + oneline(q, 48) + " — skipped" }); }
+                  else if (ans.typed) { const answer = String(ans.value || ""); result = { answer }; transcript.push({ role: "system", text: "you answered: " + oneline(answer || "(empty)", 40) + "  (" + oneline(q, 36) + ")" }); }
                   else { const label = ans.value && ans.value.label != null ? ans.value.label : String(ans.value); result = { selected: label, index: ans.index }; transcript.push({ role: "system", text: "you chose: " + oneline(label, 36) + "  (" + oneline(q, 40) + ")" }); }
                 }
               }
@@ -4139,17 +4281,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       activeAgents = tasks.length;
       const cards = tasks.map((tk, i) => ({ type: "tool", id: "ag" + i, name: "Task", label: "Task(" + oneline(tk, 30) + ")", status: "run", start: Date.now(), detail: tk }));
       cards.forEach((c) => block.items.push(c));
+      // Mirror each task into the Agents panel (live list under the prompt bar),
+      // each with its own controller so it can be stopped individually.
+      const agentCtls = tasks.map(() => makeCtl());
+      const regs = tasks.map((tk, i) => addAgent(tk, { native: engine !== "claude", engine, ctl: agentCtls[i] }));
       startTick(); render();
-      const agentsCtl = ctl; const pick = (cowork.on && engine === "claude" && cowork.weakKind === "claude") ? ((t) => { const est = Math.ceil(t.length / 4) + 800; if (isMechanical(t) && shouldDelegate(est, est * 4, cowork.strong, cowork.weak)) { impact.delegated++; impact.coworkSaved += (priceOf(cowork.strong).out - priceOf(cowork.weak).out) * (est * 3) / 1e6; return cowork.weak; } return cowork.strong; }) : (cowork.on && engine === "claude" ? ((t) => cowork.strong) : null); (async () => { const mdl = engine === "ollama" ? (sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags())) : sess.model; return runSubagents(engine, tasks, cwd, mdl, (i, phase) => { if (phase === "done") { cards[i].status = "ok"; cards[i].end = Date.now(); activeAgents = Math.max(0, activeAgents - 1); } render(); }, agentsCtl, pick); })()
+      const agentsCtl = ctl; const pick = (cowork.on && engine === "claude" && cowork.weakKind === "claude") ? ((t) => { const est = Math.ceil(t.length / 4) + 800; if (isMechanical(t) && shouldDelegate(est, est * 4, cowork.strong, cowork.weak)) { impact.delegated++; impact.coworkSaved += (priceOf(cowork.strong).out - priceOf(cowork.weak).out) * (est * 3) / 1e6; return cowork.weak; } return cowork.strong; }) : (cowork.on && engine === "claude" ? ((t) => cowork.strong) : null); (async () => { const mdl = engine === "ollama" ? (sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags())) : sess.model; return runSubagents(engine, tasks, cwd, mdl, (i, phase, out) => { if (phase === "done") { cards[i].status = "ok"; cards[i].end = Date.now(); activeAgents = Math.max(0, activeAgents - 1); if (regs[i].status === "run") finishAgent(regs[i], /^error:/.test(String(out || "")) ? "fail" : "ok", out); } render(); }, agentsCtl, pick, agentCtls); })()
         .then((outs) => {
-          const t = ensureText();
+          const t = ensureText(block);
           t.full = outs.map((o, i) => "### agent " + (i + 1) + " — " + oneline(tasks[i], 60) + "\n" + (o || "(no output)")).join("\n\n");
           for (const c of cards) if (c.status === "run") { c.status = "ok"; c.end = Date.now(); }
+          regs.forEach((rg, i) => { if (rg.status === "run") finishAgent(rg, /^error:/.test(String(outs[i] || "")) ? "fail" : "ok", outs[i]); });
           sess.outTok += Math.ceil(outs.join("").length / 4); sess.ctxUsed = sess.inTok + sess.outTok;
           activeAgents = 0; busy = false; ctl = null;
           block.summary = tasks.length + " agents  ·  ↑" + fmtK(sess.inTok - in0) + " ↓" + fmtK(sess.outTok - out0) + " tok  ·  " + fmtDur((Date.now() - t0) / 1000);
           try { saveSession(); } catch (_) {} render();
-        }).catch(() => { activeAgents = 0; busy = false; ctl = null; render(); });
+        }).catch(() => { regs.forEach((rg) => { if (rg.status === "run") finishAgent(rg, "fail", "(failed)"); }); activeAgents = 0; busy = false; ctl = null; render(); });
     };
     // quick TCP connect scan (Nexus ships with the Darknode security toolkit)
     const quickScan = (host, ports) => new Promise((resolve) => {
@@ -4174,7 +4321,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       };
       Promise.all(race.map(racer)).then((res) => {
         res.sort((a, b) => a.ms - b.ms);
-        ensureText().full = res.map((r, i) => "### " + (i === 0 ? "fastest — " : "") + r.e + "  (" + fmtDur(r.ms / 1000) + ")\n" + (r.out || "(no output)")).join("\n\n");
+        ensureText(block).full = res.map((r, i) => "### " + (i === 0 ? "fastest — " : "") + r.e + "  (" + fmtDur(r.ms / 1000) + ")\n" + (r.out || "(no output)")).join("\n\n");
         busy = false; ctl = null; block.summary = race.length + " engines raced  ·  " + fmtDur((Date.now() - t0) / 1000); try { saveSession(); } catch (_) {} render();
       }).catch(() => { busy = false; ctl = null; render(); });
     };
@@ -4191,7 +4338,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       block.items.push(card); startTick(); render();
       (async () => {
         let out; try { if (re === "ollama") { const mdl = pickCoderModel(await ollamaTags()); out = await ollamaChat(mdl, [{ role: "user", content: prompt }], undefined, aSignal(ctl)); } else { out = (await runEngineTask(re, prompt, cwd, false, false, null, ctl)).output; } } catch (e) { out = "error: " + e.message; }
-        card.status = "ok"; card.end = Date.now(); ensureText().full = "second opinion (" + re + "):\n\n" + (out || "(no output)").trim(); busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
+        card.status = "ok"; card.end = Date.now(); ensureText(block).full = "second opinion (" + re + "):\n\n" + (out || "(no output)").trim(); busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
       })();
     };
     // /ultrareview — a rigorous, multi-lens review of the working diff (correctness,
@@ -4207,13 +4354,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       (async () => {
         let diff = ""; let src = "working tree";
         try { let d = await sh(["diff", "--no-color"]); diff = (d.stdout || "").trim(); if (!diff) { d = await sh(["diff", "--cached", "--no-color"]); diff = (d.stdout || "").trim(); src = "staged"; } if (!diff) { d = await sh(["diff", "--no-color", "HEAD~1"]); diff = (d.stdout || "").trim(); src = "last commit"; } } catch (_) {}
-        if (!diff) { card.status = "err"; card.end = Date.now(); ensureText().full = "nothing to review — no working, staged, or last-commit changes found (make some edits first)"; busy = false; ctl = null; render(); return; }
+        if (!diff) { card.status = "err"; card.end = Date.now(); ensureText(block).full = "nothing to review — no working, staged, or last-commit changes found (make some edits first)"; busy = false; ctl = null; render(); return; }
         const prompt = buildReviewPrompt(diff);
         let out; try { if (re === "ollama") { const mdl = pickCoderModel(await ollamaTags()); out = await ollamaChat(mdl, [{ role: "user", content: prompt }], undefined, aSignal(ctl)); } else { out = (await runEngineTask(re, prompt, cwd, false, false, null, ctl)).output; } } catch (e) { out = "error: " + e.message; }
         out = (out || "(no output)").trim();
         const sv = countBySeverity(out); const tally = SEVERITY.filter((s) => sv[s]).map((s) => (s === "critical" || s === "high" ? red : s === "medium" ? yellow : gray)(sv[s] + " " + s)).join(gray(" · "));
         card.status = "ok"; card.end = Date.now();
-        ensureText().full = bold("ultrareview") + gray("  " + re + " · " + src) + (tally ? "  " + tally : "  " + green("no issues flagged")) + "\n\n" + out;
+        ensureText(block).full = bold("ultrareview") + gray("  " + re + " · " + src) + (tally ? "  " + tally : "  " + green("no issues flagged")) + "\n\n" + out;
         busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
       })();
     };
@@ -4236,7 +4383,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           const sp = res.length + " candidate answers. Combine strengths, fix mistakes, return ONLY the best answer.\n\nQ: " + prompt + "\n\n" + res.map((r, i) => "==" + (i + 1) + " (" + r.e + ")==\n" + r.o).join("\n\n");
           let best; try { best = await engineAnswer(se, sp); } catch (_) { best = res[0] && res[0].o; }
           synth.status = "ok"; synth.end = Date.now();
-          ensureText().full = "best-of-" + res.length + " (synthesized by " + se + "):\n\n" + (best || "(no output)").trim();
+          ensureText(block).full = "best-of-" + res.length + " (synthesized by " + se + "):\n\n" + (best || "(no output)").trim();
           busy = false; ctl = null; block.summary = res.length + " engines + synthesis  ·  " + fmtDur((Date.now() - t0) / 1000); try { saveSession(); } catch (_) {} render();
         }).catch(() => { busy = false; ctl = null; render(); });
     };
@@ -4259,7 +4406,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           const pad = (s, n) => (s + " ".repeat(n)).slice(0, n);
           let tbl = pad("engine", 10) + pad("time", 9) + pad("in", 8) + pad("out", 8) + "cost\n";
           for (const r of res) tbl += pad(r.e + (r.e === fastest ? " *" : ""), 10) + pad(fmtDur(r.ms / 1000), 9) + pad((r.real ? "" : "~") + fmtK(r.inTok), 8) + pad((r.real ? "" : "~") + fmtK(r.outTok), 8) + (r.real ? (r.cost ? "$" + r.cost.toFixed(4) : "-") : "free") + "\n";
-          ensureText().full = "benchmark (* = fastest; ~ = estimated; claude tokens/cost are real):\n\n" + tbl;
+          ensureText(block).full = "benchmark (* = fastest; ~ = estimated; claude tokens/cost are real):\n\n" + tbl;
           busy = false; ctl = null; block.summary = res.length + " engines benchmarked  ·  " + fmtDur((Date.now() - t0) / 1000); try { saveSession(); } catch (_) {} render();
         }).catch(() => { busy = false; ctl = null; render(); });
     };
@@ -4274,7 +4421,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         let tasks = []; try { if (cowork.on) { const raw = await weakChat("Break this GOAL into an ordered list of 5-15 concrete, independently-verifiable tasks. Return ONLY a JSON array of short task strings.\n\nGOAL: " + goal + (nexusMd ? "\n\nPROJECT:\n" + nexusMd.slice(0, 1000) : "")); const arr = extractJson(raw, null); tasks = (Array.isArray(arr) && arr.length ? arr : [goal]).slice(0, 20).map((t, i) => ({ title: String(t).slice(0, 300) })); } else tasks = await planGoal(engine, mdl, goal, nexusMd); } catch (_) {}
         plan = (tasks || []).map((t) => ({ text: String(t.title || t).slice(0, 300), done: false })); savePlan();
         card.status = "ok"; card.end = Date.now();
-        ensureText().full = "planned " + plan.length + " task(s). /plan run to execute · /plan done <n> to check off · /plan add <text> to add.";
+        ensureText(block).full = "planned " + plan.length + " task(s). /plan run to execute · /plan done <n> to check off · /plan add <text> to add.";
         busy = false; ctl = null; transcript.push({ role: "plan" }); try { saveSession(); } catch (_) {} render();
       })();
     };
@@ -4294,7 +4441,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           try { if (delegate) { await weakTask(t.text); } else if (engine === "ollama") { const mdl = sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags()); await ollamaExec(mdl, t.text, "", cwd, aSignal(ctl)); } else { await runEngineTask(engine, t.text, cwd, true, false, null, ctl, cowork.on && engine === "claude" ? cowork.strong : undefined); } } catch (_) {}
           t.running = false; t.done = true; savePlan(); card.status = "ok"; card.end = Date.now(); activeAgents = 0; render();
         }
-        ensureText().full = plan.every((t) => t.done) ? "all plan tasks completed." : "stopped — some tasks remain (/plan run to resume).";
+        ensureText(block).full = plan.every((t) => t.done) ? "all plan tasks completed." : "stopped — some tasks remain (/plan run to resume).";
         busy = false; ctl = null; transcript.push({ role: "plan" }); try { saveSession(); } catch (_) {} maybeAutoCompact(); render();
       })();
     };
@@ -4311,16 +4458,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           attempts = att;
           const rc = { type: "tool", id: "wr" + att, name: "Bash", label: "Bash(" + oneline(command, 40) + ")", status: "run", start: Date.now() }; block.items.push(rc); render();
           const r = await coderShell(command, cwd); rc.status = r.code === 0 ? "ok" : "err"; rc.end = Date.now(); rc.detail = oneline(r.output, 260); render();
-          if (r.code === 0) { const t = ensureText(); t.full += (t.full ? "\n" : "") + "command passed on attempt " + att + "."; passed = true; break; }
+          if (r.code === 0) { const t = ensureText(block); t.full += (t.full ? "\n" : "") + "command passed on attempt " + att + "."; passed = true; break; }
           if (att === 5) break;
-          const t = ensureText(); t.full += (t.full ? "\n" : "") + "attempt " + att + " failed — asking " + engine + " to fix…"; render();
+          const t = ensureText(block); t.full += (t.full ? "\n" : "") + "attempt " + att + " failed — asking " + engine + " to fix…"; render();
           const fc = { type: "tool", id: "wf" + att, name: "Task", label: "Task(fix attempt " + att + ")", status: "run", start: Date.now() }; block.items.push(fc); activeAgents = 1; render();
           const fixPrompt = "The command `" + command + "` is failing. Its output was:\n\n" + (r.output || "").slice(-3000) + "\n\nEdit the code so the command passes. Make the file edits now — do not ask questions.";
           try { if (engine === "ollama") { const mdl = sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags()); await ollamaExec(mdl, fixPrompt, "", cwd, aSignal(ctl)); } else { await runEngineTask(engine, fixPrompt, cwd, true, false, null, ctl); } } catch (_) {}
           fc.status = "ok"; fc.end = Date.now(); activeAgents = 0; render();
         }
         for (const it of block.items) if (it.status === "run") { it.status = "ok"; it.end = Date.now(); }
-        const t = ensureText(); t.full += (passed ? "\n\nAll green." : "\n\nStill failing after " + attempts + " attempt(s) — review the output above.");
+        const t = ensureText(block); t.full += (passed ? "\n\nAll green." : "\n\nStill failing after " + attempts + " attempt(s) — review the output above.");
         busy = false; ctl = null; block.summary = "watch  ·  " + attempts + " attempt(s)  ·  " + fmtDur((Date.now() - t0) / 1000) + (ck ? "  ·  undo #" + checkpoints.length : "");
         try { saveSession(); } catch (_) {} maybeAutoCompact(); render();
       })();
@@ -4339,7 +4486,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         msg = (msg || "").replace(/```[a-z]*\n?|```/g, "").trim().split("\n").slice(0, 8).join("\n").trim() || "chore: update";
         card.status = "ok"; card.end = Date.now();
         let done = false; try { const subj = msg.split("\n")[0], body = msg.split("\n").slice(1).join("\n").trim(); _cp.execSync("git commit -m " + JSON.stringify(subj) + (body ? " -m " + JSON.stringify(body) : ""), { cwd, stdio: "ignore" }); done = true; } catch (_) {}
-        ensureText().full = (done ? "committed:\n\n" : "generated message (commit failed — commit manually):\n\n") + msg;
+        ensureText(block).full = (done ? "committed:\n\n" : "generated message (commit failed — commit manually):\n\n") + msg;
         busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
       })();
     };
@@ -4366,7 +4513,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           try { out = _cp.execSync("gh pr create --title " + JSON.stringify(title) + " --body " + JSON.stringify(body || title) + " 2>&1", { cwd, encoding: "utf8" }).trim(); opened = /https?:\/\//.test(out); }
           catch (e) { out = ((e.stdout || "") + (e.stderr || "") || e.message || "").toString().trim(); }
         }
-        ensureText().full = opened
+        ensureText(block).full = opened
           ? "pull request opened:\n" + out
           : (hasBin("gh") ? "gh couldn't open the PR (" + out.slice(0, 200) + ") — title & body below:\n\n" : "gh CLI not installed — PR title & body (create it manually):\n\n") + title + "\n\n" + body;
         busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
@@ -4476,6 +4623,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       plan: plan.map((p) => ({ text: p.text || p.title || "", done: !!p.done, running: !!p.running })),
       pipelines: pipeInfo(),
       activity: dashActivity(),
+      files: [...sessFiles].slice(-80),
+      tools: Object.keys(toolUse).map((k) => ({ name: k, n: toolUse[k] })).sort((a, b) => b.n - a.n).slice(0, 24),
+      elapsed: Math.round((Date.now() - (sessStart || Date.now())) / 1000),
     });
 
     const handleSlash = (t) => {
@@ -4485,11 +4635,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const arg = argstr.split(/\s+/)[0];
       // Any command other than a repeated /clear cancels a pending clear confirmation.
       const clearWasPending = clearPending; if (cmd !== "/clear" && cmd !== "/new") clearPending = false;
+      if (aliases[cmd]) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") handleSlash(body.trim()); else submit(body.trim()); return; }
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
       if (cmd === "/help") {
         const HS = [
           { title: "Session", rows: [["/clear","start a new conversation"],["/chat-clear","clear the screen but keep the conversation in memory"],["/compact","summarize the conversation to free up context"],["/resume","reload the last saved session"],["/export","save the conversation to a markdown file"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/recap","recap the session so far (/recap [on|off] for after-task recaps)"],["/title","name the terminal tab for this topic (/title [text|on|off])"],["/exit","quit Nexus"]] },
-          { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low | medium | high"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max token savings, zero quality loss"],["/tight","surgical minimal edits (lossless)"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
+          { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low … max | ultracode"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max token savings, zero quality loss"],["/tight","surgical minimal edits (lossless)"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
           { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/codereview","review changes for bugs, ranked by severity (--fix applies)"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
           { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/open","launch the live web dashboard in your browser"],["/dashboard","start/stop the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
           { title: "Input prefixes", rows: [["/command","run a command (type / to browse)"],["@file","attach a file or image (Tab completes the path)"],["!command","run a shell command (output goes to the AI)"],["#note","save a note to memory"]] },
@@ -4588,6 +4739,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/agents" || cmd === "/parallel") { const tasks = argstr.split(/\s*;;\s*/).map((s) => s.trim()).filter(Boolean); if (tasks.length < 2) transcript.push({ role: "system", text: "usage: /agents <task 1> ;; <task 2> ;; …   — runs each task in parallel on the " + engine + " engine, each in its own isolated git worktree, then merges the changes back" }); else spawnAgents(tasks); }
       else if (cmd === "/hooks") { transcript.push({ role: "system", text: hooks ? ("hooks (.nexus/hooks.json) active for events: " + Object.keys(hooks).join(", ") + "\n  PreToolUse/PostToolUse run for the local engine; UserPromptSubmit & Stop run for every engine") : "no hooks configured. Create .nexus/hooks.json:\n  { \"PreToolUse\": [ { \"matcher\": \"run_command|write_file\", \"command\": \"echo $TOOL_NAME >> .nexus/audit.log\" } ] }\n  events: UserPromptSubmit · PreToolUse · PostToolUse · Stop  (non-zero exit on PreToolUse/UserPromptSubmit blocks the action)" }); }
       else if (cmd === "/status") transcript.push({ role: "system", text: "status:\n  engine   " + engine + (sess.model && sess.model !== engine ? " (" + sess.model + ")" : "") + "\n  dir      " + cwd + "\n  mode     " + MODES[mode].k + "\n  context  " + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "% of " + fmtK(sess.ctxWindow) + "\n  tokens   ↑" + fmtK(sess.inTok) + " ↓" + fmtK(sess.outTok) + (PAID[engine] ? (sess.cost ? " · $" + sess.cost.toFixed(4) : " · billed") : " · local · free") + "\n  budget   " + (costCap ? "$" + costCap.toFixed(2) + " cap" : "none") + "\n  undo     " + checkpoints.length + " checkpoint(s)" });
+      else if (cmd === "/session" || cmd === "/activity") { const fl = [...sessFiles]; const tl = Object.keys(toolUse).map((k) => ({ name: k, n: toolUse[k] })).sort((a, b) => b.n - a.n); const up = fmtDur(Math.max(0, (Date.now() - sessStart) / 1000)); const turnCount = transcript.filter((m) => m.role === "user").length; const toolLine = tl.length ? tl.slice(0, 12).map((t) => t.name + " ×" + t.n).join(", ") : "none yet"; const fileLine = fl.length ? fl.slice(-12).join("\n           ") : "none yet"; transcript.push({ role: "system", text: "session:\n  uptime   " + up + "\n  turns    " + turnCount + "\n  tokens   ↑" + fmtK(sess.inTok) + " ↓" + fmtK(sess.outTok) + (PAID[engine] ? (sess.cost ? " · $" + sess.cost.toFixed(4) : " · billed") : " · local · free") + "\n  tools    " + toolLine + "\n  files    " + fileLine + (fl.length > 12 ? "\n           …and " + (fl.length - 12) + " more" : "") + "\n\n  the live web view (/dashboard) shows these updating in real time" }); }
       else if (cmd === "/update") { const apply = /\b(apply|now|-y|yes)\b/.test(argstr); transcript.push({ role: "system", text: (apply ? "" : "checking for updates…\n") + nexusUpdate({ apply }) }); }
       else if (cmd === "/autoupdate") {
         const a = (argstr || "").trim().toLowerCase();
@@ -4633,8 +4785,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed" : "the working tree")) : "rewind failed (git error)" }); } } }
       else if (cmd === "/clear" || cmd === "/new") {
         const hasContent = oMsgs.length > 1 || transcript.some((m) => m.role === "user" || m.role === "nexus");
-        if (hasContent && !clearWasPending) { clearPending = true; transcript.push({ role: "system", text: yellow("Clear the whole conversation?") + gray("  press " + cmd + " again to confirm · any other input keeps it") }); }
-        else { clearPending = false; transcript.length = 0; transcript.push({ role: "art" }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); }
+        const doClear = () => { clearPending = false; transcript.length = 0; transcript.push({ role: "art" }); cont = false; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); render(); };
+        if (!hasContent) doClear(); // nothing to lose — just reset
+        else askUser("Clear the whole conversation? This wipes the chat and the model's memory of it.", ["Keep it", "Clear everything"]).then((ans) => {
+          if (!ans.cancelled && ans.index === 1) doClear();
+          else { transcript.push({ role: "system", text: gray("kept the conversation") }); render(); }
+        });
       }
       else if (cmd === "/chat-clear" || cmd === "/screen-clear") {
         // Wipe only the on-screen transcript. The model keeps the full
@@ -4644,6 +4800,52 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         transcript.length = 0; transcript.push({ role: "art" });
         transcript.push({ role: "system", text: "screen cleared — the conversation is still in memory" + gray("  · next message continues it · /clear to wipe memory too") });
         scroll = 0;
+      }
+      else if (cmd === "/turns" || cmd === "/ledger") {
+        const n = parseInt(argstr, 10);
+        transcript.push({ role: "system", lines: Ledger.renderTurns(turnLog, { colors: { cyan, gray, bold, dim, green, yellow, mag }, width: cols() - 4, max: n > 0 ? n : 12 }) });
+      }
+      else if (cmd === "/tokens") {
+        if (!argstr) { transcript.push({ role: "system", text: "usage: /tokens <file|dir> [more…] — estimate what @-attaching those would cost per turn (before you send). ≈ chars/4." }); }
+        else {
+          const CAP = 2 * 1024 * 1024; // per-file char cap — skip anything bigger
+          const entries = []; let count = 0;
+          const walk = (rel) => {
+            if (count > 4000 || entries.length > 4000) return;
+            let abs, st; try { abs = path.resolve(cwd, rel); st = fs.statSync(abs); } catch (_) { entries.push({ path: rel, chars: 0, skipped: true }); return; }
+            if (st.isDirectory()) { if (TokCount.SKIP_DIRS.has(path.basename(abs))) return; let kids = []; try { kids = fs.readdirSync(abs); } catch (_) { return; } for (const k of kids) { count++; walk(path.relative(cwd, path.join(abs, k))); } return; }
+            if (st.size > CAP) { entries.push({ path: rel, chars: st.size, skipped: true }); return; }
+            let buf; try { buf = fs.readFileSync(abs); } catch (_) { entries.push({ path: rel, chars: 0, skipped: true }); return; }
+            if (TokCount.looksBinary(buf)) { entries.push({ path: rel, chars: buf.length, binary: true }); return; }
+            entries.push({ path: rel, chars: buf.toString("utf8").length });
+          };
+          for (const a of argstr.split(/\s+/).filter(Boolean)) walk(a.replace(/^@/, ""));
+          const pr = priceOf(shownModel());
+          transcript.push({ role: "system", lines: TokCount.renderTokens(entries, { price: { in: pr.in, cr: pr.cr }, paid: !!PAID[engine], model: pr.label, colors: { cyan, gray, bold, dim, green, yellow }, width: cols() - 4 }) });
+        }
+      }
+      else if (cmd === "/alias") {
+        const m = argstr.match(/^([^\s=]+)\s*=\s*(.+)$/);
+        if (!argstr) { const ks = Object.keys(aliases); transcript.push({ role: "system", text: ks.length ? "aliases:\n" + ks.map((k) => "  " + cyan(k) + gray(" → ") + aliases[k]).join("\n") + gray("\n  /alias <name> = <text|/command> · /alias rm <name>  ($ARGUMENTS forwards the rest)") : "no aliases yet — " + gray("/alias deploy = /pr   ·   /alias fix = find and fix the bug in   ($ARGUMENTS gets appended)") }); }
+        else if (arg === "rm" || arg === "remove" || arg === "del") { const nm = argstr.split(/\s+/)[1]; const key = nm && nm[0] === "/" ? nm : "/" + nm; if (nm && aliases[key]) { delete aliases[key]; saveSetting("aliases", aliases); transcript.push({ role: "system", text: "removed alias " + cyan(key) }); } else transcript.push({ role: "system", text: "no such alias — /alias lists them" }); }
+        else if (m) {
+          let name = m[1]; if (name[0] !== "/") name = "/" + name; name = name.toLowerCase();
+          if (CMDS.some(([c]) => c === name) || customCmds[name]) transcript.push({ role: "system", text: name + " is a built-in command — pick another alias name" });
+          else { aliases[name] = m[2].trim(); saveSetting("aliases", aliases); transcript.push({ role: "system", text: "alias " + cyan(name) + gray(" → ") + m[2].trim() + gray("   — type " + name + " to run it") }); }
+        }
+        else transcript.push({ role: "system", text: "usage: /alias <name> = <text or /command>   ·   /alias rm <name>   ·   /alias (list)" });
+      }
+      else if (cmd === "/warm") {
+        const pr = priceOf(shownModel());
+        transcript.push({ role: "system", lines: CacheWarm.explain({ engine, lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now(), ctxTok: sess.ctxUsed || 0, price: pr, colors: { gray, green, yellow, bold, dim: gray } }) });
+        scroll = 0; render();
+      }
+      else if (cmd === "/retry") {
+        if (busy) transcript.push({ role: "system", text: "a turn is still running — wait for it to finish, then /retry" });
+        else { let last = null; for (let i = transcript.length - 1; i >= 0; i--) if (transcript[i].role === "user") { last = transcript[i].text; break; } if (last == null) transcript.push({ role: "system", text: "nothing to retry yet" }); else { bypassCacheOnce = true; transcript.push({ role: "system", text: gray("re-running your last prompt (fresh, skipping the exact-repeat cache)…") }); submit(last); } }
+      }
+      else if (cmd === "/cheaper") {
+        transcript.push({ role: "system", lines: Ledger.renderAdvice(turnLog, { paid: !!PAID[engine], cacheOn, effort, engine, autoCompact, ctxPct: (sess.ctxUsed / (sess.ctxWindow || 200000)) * 100 }, { cyan, gray, bold, dim, green, yellow, mag }) });
       }
       else if (cmd === "/compact") doCompact(false);
       else if (cmd === "/context") transcript.push({ role: "system", text: "context: " + fmtK(sess.ctxUsed) + " / " + fmtK(sess.ctxWindow) + " tokens (" + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "%)  ·  window " + fmtK(sess.ctxWindow) });
@@ -4945,7 +5147,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         transcript.push({ role: "system", text: bold("/mode " + a2) + " — " + p.desc + " (saved)\n  " + gray(bits.join(" · ")) });
         return;
       }
-      else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else { const _i = EFFORT_LEVELS.findIndex((l) => l[0] === (effort || "high")); pendingEffort = { sel: _i < 0 ? 2 : _i }; render(); } }
+      else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max", "ultracode"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "ultracode" ? "max thinking and orchestrates multi-agent workflows on every substantive task (fans out, adversarially verifies; by far the most tokens — /budget still caps it)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else { const _i = EFFORT_LEVELS.findIndex((l) => l[0] === (effort || "high")); pendingEffort = { sel: _i < 0 ? 2 : _i }; render(); } }
       else if (cmd === "/hack") { hack = arg === "on" ? true : arg === "off" ? false : !hack; transcript.push({ role: "system", text: hack ? red("● HACK MODE") + " — Nexus is now an offensive-security specialist for AUTHORIZED engagements, with the full Darknode toolkit (scan · dns · cert · subs · cve · payloads · revshell · dorks · jwt · hash · totp · encode …) available via run_command. Systems you own or are explicitly in-scope to test only. " + gray("/hack off to exit") : "hack mode OFF — back to the standard coding agent" }); }
       else if (cmd === "/pentest") { const { startPentest } = require("./lib/nexus/pentest-engine"); startPentest(arg || null, { reportDir: process.cwd() }).catch(e => transcript.push({ role: "system", text: "HYDRA error: " + e.message })); }
       else if (cmd === "/ai-prompt" || cmd === "/aiprompt") {
@@ -5013,7 +5215,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         let out = ""; try { out = cowork.on ? await weakChat(dreamPrompt) : await engineAnswer(offline ? "ollama" : engine, dreamPrompt); } catch (_) {}
         const bullets = (out || "").split("\n").map((l) => l.trim()).filter((l) => /^[-*]\s/.test(l)).map((l) => l.replace(/^[*]\s/, "- "));
         card.status = "ok"; card.end = Date.now();
-        if (bullets.length) { try { const md = path.join(cwd, ".nexus", "NEXUS.md"); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; const lc = c.toLowerCase(); const added = []; for (const b of bullets) { const key = b.toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 28); if (key.length > 8 && !lc.includes(key)) { c += b + "\n"; added.push(b); } } fs.writeFileSync(md, c); ensureText().full = added.length ? ("consolidated " + added.length + " new fact(s) into .nexus/NEXUS.md:\n\n" + added.join("\n")) : "reviewed the session — everything's already in NEXUS.md"; } catch (e) { ensureText().full = "could not write memory: " + e.message; } } else ensureText().full = "no durable facts found to consolidate.";
+        if (bullets.length) { try { const md = path.join(cwd, ".nexus", "NEXUS.md"); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; const lc = c.toLowerCase(); const added = []; for (const b of bullets) { const key = b.toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 28); if (key.length > 8 && !lc.includes(key)) { c += b + "\n"; added.push(b); } } fs.writeFileSync(md, c); ensureText(block).full = added.length ? ("consolidated " + added.length + " new fact(s) into .nexus/NEXUS.md:\n\n" + added.join("\n")) : "reviewed the session — everything's already in NEXUS.md"; } catch (e) { ensureText(block).full = "could not write memory: " + e.message; } } else ensureText(block).full = "no durable facts found to consolidate.";
         busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
       })(); }
       else if (cmd === "/plan") { const s = arg;
@@ -5610,6 +5812,30 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (loading) { finishBoot(); return; }   // any key skips the intro
       if (pasteNotice) pasteNotice = "";        // a paste preflight notice lasts until the next key
       let s = String(d);
+      // Reassemble an escape sequence a terminal split across reads. A report or
+      // arrow can arrive as a lone ESC in one chunk and its body ("[12;40R", "[I",
+      // "OP", "[A"…) in the next; the body starts with '[' or 'O', NOT ESC, so the
+      // printable guard below would insert it into the composer as stray text —
+      // parking the caret past the end and making backspace look dead (it's
+      // deleting the junk first). Hold a lone trailing ESC one beat and glue the
+      // next chunk onto it; if nothing follows, deliver it as a real Esc.
+      if (_escHold) {
+        _escHold = false; if (_escTimer) { clearTimeout(_escTimer); _escTimer = null; }
+        // Glue the held ESC onto this chunk ONLY if it's the body of ONE split
+        // escape sequence (CSI "[…", SS3 "O…", or a single Alt+<key> like \x1b\r).
+        // A MULTI-byte run of control bytes is NOT an escape body — e.g. a held
+        // Backspace batch ("\x7f\x7f…") buffered during a slow /restart while the
+        // terminal also emits a report (lone ESC): gluing made "\x1b\x7f\x7f…",
+        // which keymap can't match and the printable guard drops, so every
+        // backspace was silently swallowed. Deliver the held ESC on its own and
+        // let the batch fall through to the control-run splitter below.
+        const _escBatch = s.length > 1 && /^[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]+$/.test(s);
+        if (s.charCodeAt(0) !== 27 && !_escBatch) s = "\x1b" + s;  // ESC + body → whole sequence
+        else { try { _escFlushing = true; process.stdin.emit("data", "\x1b"); } finally { _escFlushing = false; } } // held ESC was standalone; deliver it, then process this new chunk
+      } else if (s === "\x1b" && !_escFlushing) {
+        _escHold = true; _escTimer = setTimeout(() => { _escHold = false; _escTimer = null; try { _escFlushing = true; process.stdin.emit("data", "\x1b"); } finally { _escFlushing = false; } }, 40);
+        return;
+      }
       // A wheel notch in alt-screen scroll mode (?1007) arrives as a burst of arrow
       // keys in ONE chunk, often in SS3 form (ESC O A). Replay a burst key by key
       // and fold SS3 arrows to CSI so every handler below sees a single "\x1b[A".
@@ -5619,7 +5845,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // racing through it three entries a notch.
       const _burst = s.match(/\x1b[[O][AB]/g);
       if (_burst && _burst.length > 1 && _burst.join("") === s) {
-        if (!btw && !pendingAsk && !pendingEffort && !navOpen && !composer.searchMode && !slashMatches().length && !argMatches().length) { const up = s[2] === "A"; scroll = up ? scroll + _burst.length : Math.max(0, scroll - _burst.length); render(); return; }
+        if (!btw && !agentView && agentSel < 0 && !pendingAsk && !pendingEffort && !navOpen && !composer.searchMode && !slashMatches().length && !argMatches().length) { const up = s[2] === "A"; scroll = up ? scroll + _burst.length : Math.max(0, scroll - _burst.length); render(); return; }
         for (const k of _burst) process.stdin.emit("data", k); return;
       }
       // Several keys can land in one chunk (key repeat, a fast typist over ssh):
@@ -5627,6 +5853,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // every handler below matches a single exact sequence.
       const _seqs = s.match(/\x1b(?:\[[0-9;]*[A-Za-z~]|O[A-Z])/g);
       if (_seqs && _seqs.length > 1 && _seqs.join("") === s && !/\[<|\[200~|\[201~/.test(s)) { for (const k of _seqs) process.stdin.emit("data", k); return; }
+      // A run of single-byte control keys can batch into one read too — notably a
+      // held Backspace (0x7f) or keystrokes buffered during a slow restart, which
+      // arrive as "\x7f\x7f…". Each handler matches ONE exact byte, and the
+      // printable guard treats DEL (0x7f) as text, so a batched run would get
+      // inserted as stray chars instead of editing — the caret jumps right and
+      // nothing deletes. Replay such a run one byte at a time.
+      if (s.length > 1 && /^[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]+$/.test(s)) { for (const ch of s) process.stdin.emit("data", ch); return; } // (exclude \t \n \r so real newlines/paste still flow through, and ESC so Alt+key combos like Alt+Backspace stay intact)
       // Application-cursor mode (DECCKM, often left on by another program) sends
       // arrows/Home/End as SS3 (ESC O x): fold all of them to the CSI form.
       if (/^\x1bO[ABCDHF]$/.test(s)) s = "\x1b[" + s[2];
@@ -5664,6 +5897,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (s === "\r" || s === "\n" || s === " " || s === "\x1b" || s === "\x03") { btw = null; render(); return; }
         return; // overlay owns the keyboard
       }
+      // ---- the Agents transcript overlay owns the keyboard while open ----
+      if (agentView) {
+        if (isMouse) return;
+        const a = agents[agentView.i];
+        if (!a) { agentView = null; render(); return; }
+        if (s === "\x1b[A" || s === "\x1bOA") { agentView.scroll = Math.max(0, agentView.scroll - 1); render(); return; } // up
+        if (s === "\x1b[B" || s === "\x1bOB") { agentView.scroll++; render(); return; }                                 // down
+        if (s === "\x1b[5~") { agentView.scroll = Math.max(0, agentView.scroll - 10); render(); return; }                // pgup
+        if (s === "\x1b[6~") { agentView.scroll += 10; render(); return; }                                              // pgdn
+        if (s === "[" || s === "\x1b[D" || s === "\x1bOD") { if (agentView.i > 0) { agentView.i--; agentView.scroll = 0; } render(); return; } // prev agent
+        if (s === "]" || s === "\x1b[C" || s === "\x1bOC") { if (agentView.i < agents.length - 1) { agentView.i++; agentView.scroll = 0; } render(); return; } // next agent
+        if (s === "c" || s === "C") { const txt = String(a.result || ""); if (txt) { try { out.write("\x1b]52;c;" + Buffer.from(txt).toString("base64") + "\x07"); } catch (_) {} } render(); return; } // copy output
+        if ((s === "s" || s === "S") && a.status === "run") { stopAgent(a); render(); return; }
+        if (s === "\r" || s === "\n" || s === "\x1b" || s === "\x03" || s === "q") { agentView = null; render(); return; }
+        return; // overlay owns the keyboard
+      }
       // ---- the /effort slider owns the keyboard while open ----
       if (pendingEffort) {
         if (isMouse) return;
@@ -5680,10 +5929,23 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (isMouse) return; // swallow mouse while choosing (no accidental scroll/edit)
         const r = Ask.askKey(pendingAsk, s);
         if (r.cancelled) { const p = pendingAsk; pendingAsk = null; p.resolve({ cancelled: true }); render(); return; }
-        if (r.done) { const p = pendingAsk; pendingAsk = null; p.resolve({ index: r.index, value: r.value }); render(); return; }
-        if (r.sel !== pendingAsk.sel) { pendingAsk.sel = r.sel; render(); }
-        return;
+        if (r.typing) { pendingAsk.input = true; pendingAsk.typed = true; if (pendingAsk.text == null) pendingAsk.text = ""; pendingAsk.placeholder = pendingAsk.placeholder || "type your answer"; render(); return; } // "type a different answer" row → drop into a free-text field
+        if (r.done) { const p = pendingAsk; pendingAsk = null; p.resolve(r); render(); return; } // r carries value/index (single), indices/values (multi) or value+typed (text)
+        if (r.sel != null) pendingAsk.sel = r.sel; if (r.pick != null) pendingAsk.pick = r.pick; if (r.picked) pendingAsk.picked = r.picked; if (r.text != null) pendingAsk.text = r.text;
+        render(); return;
       }
+      // ---- Agents panel has the keyboard (arrowed down into it from the composer) ----
+      if (agentSel >= 0 && agents.length) {
+        if (isMouse) return;
+        const r = Agents.panelKey({ sel: agentSel }, s, agents.length);
+        if (r.leave) { agentSel = -1; render(); return; }
+        if (r.open != null) { agentView = { i: r.open, scroll: 0 }; agentSel = -1; render(); return; }
+        if (r.stop != null) { stopAgent(agents[r.stop]); render(); return; }
+        if (r.clear) { agents = agents.filter((a) => a.status === "run"); if (!agents.length) agentSel = -1; else agentSel = Math.min(agentSel, agents.length - 1); render(); return; }
+        if (r.sel != null) agentSel = r.sel;
+        render(); return;
+      }
+      if (agentSel >= 0 && !agents.length) agentSel = -1; // the last agent was cleared out from under the focus
 
       // ---- reverse-i-search owns the keyboard while active (mouse still works) ----
       if (composer.searchMode && !isMouse) {
@@ -5786,6 +6048,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         if (cm.length && s === "\t") { if (_mm.length) { input = (_mm[menuSel] || _mm[0])[0] + " "; refreshArgCache(); } else { const sp = input.indexOf(" "); input = input.slice(0, sp) + " " + (_am[menuSel] || _am[0])[0] + " "; } curPos = input.length; menuSel = 0; render(); return; }
         if (_mm.length && (s === "\r" || s === "\n")) { const t = (_mm[menuSel] || _mm[0])[0]; nextQueue.push(t); input = ""; curPos = 0; menuSel = 0; render(); return; }
         if (s === "\x1b" || s === "\x03") { if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); } render(); return; }
+        if (isDown && agentSel < 0 && !agentView && agents.length && !input) { agentSel = 0; render(); return; } // Down on an empty prompt drops focus into the Agents panel
         if (isUp || isDown) { arrowVert(isUp ? -1 : 1); return; }       // same as idle: visual row, then history / queued recall
         // Full composer editing mid-turn (arrows, word moves, Ctrl+U/K/W, undo…);
         // Enter queues the draft instead of sending it.
@@ -5811,6 +6074,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         return;
       }
 
+      if (isDown && agentSel < 0 && !agentView && agents.length && !input) { agentSel = 0; render(); return; } // Down on an empty prompt drops focus into the Agents panel
       if ((isUp || isDown) && !(composer.vim && composer.vimMode === "normal")) { arrowVert(isUp ? -1 : 1); return; }
 
       // ---- everything else: the pure composer key dispatch (lib/cli/composer.js) ----

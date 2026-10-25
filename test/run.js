@@ -2585,29 +2585,252 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("normalizes strings + objects to {label,hint}", JSON.stringify(normOptions(["a", { label: "b", hint: "h" }])), JSON.stringify([{ label: "a", hint: "" }, { label: "b", hint: "h" }]));
     eq("drops empty labels", normOptions(["", "x", null]).length, 1);
     eq("caps options at 9 (single-digit pick)", normOptions(Array.from({ length: 20 }, (_, i) => "o" + i)).length, 9);
-    // ---- askKey: navigation ----
-    eq("down moves selection +1", askKey(ask, "\x1b[B").sel, 1);
-    eq("up from 0 wraps to last", askKey(ask, "\x1b[A").sel, 2);
+    // ---- askKey: navigation (rows = 3 options + Type + Submit = 5) ----
+    eq("down moves focus +1", askKey(ask, "\x1b[B").sel, 1);
+    eq("up from 0 wraps to last row (Submit)", askKey(ask, "\x1b[A").sel, 4);
     eq("bare-CSI down (no ESC) also moves", askKey(ask, "[B").sel, 1);
-    eq("down at last wraps to 0", askKey({ ...ask, sel: 2 }, "\x1b[B").sel, 0);
+    eq("down tracks pick when landing on an option", askKey(ask, "\x1b[B").pick, 1);
     // ---- askKey: confirm / pick / cancel ----
-    ok("enter confirms the current selection", (() => { const r = askKey({ ...ask, sel: 1 }, "\r"); return r.done && r.index === 1 && r.value.label === "SQLite"; })());
+    ok("enter on an option row confirms it", (() => { const r = askKey({ ...ask, sel: 1 }, "\r"); return r.done && r.index === 1 && r.value.label === "SQLite"; })());
     ok("a digit picks that option immediately", (() => { const r = askKey(ask, "3"); return r.done && r.index === 2 && r.value.label === "MySQL"; })());
+    ok("enter on the Submit row confirms the tracked pick", (() => { const r = askKey({ ...ask, sel: 4, pick: 2 }, "\r"); return r.done && r.index === 2 && r.value.label === "MySQL"; })());
+    ok("enter on the Type row signals typing (no answer yet)", (() => { const r = askKey({ ...ask, sel: 3 }, "\r"); return r.typing === true && !r.done; })());
     ok("an out-of-range digit is a no-op", (() => { const r = askKey(ask, "7"); return !r.done && !r.cancelled; })());
     ok("esc cancels (user skips)", askKey(ask, "\x1b").cancelled === true);
     ok("ctrl+c cancels", askKey(ask, "\x03").cancelled === true);
-    ok("an unrelated key is a no-op that keeps selection", (() => { const r = askKey({ ...ask, sel: 1 }, "x"); return !r.done && !r.cancelled && r.sel === 1; })());
+    ok("an unrelated key is a no-op that keeps focus", (() => { const r = askKey({ ...ask, sel: 1 }, "x"); return !r.done && !r.cancelled && r.sel === 1; })());
     // ---- renderAsk: layout + content (plain, colors identity) ----
     const rows = renderAsk({ ...ask, sel: 1 }, 60);
-    ok("opens and closes with a horizontal rule", /─/.test(rows[0]) && /─/.test(rows[rows.length - 1]));
+    ok("draws the Nexus card (tab header, rail, foot)", rows[0].includes("┏━") && rows[0].includes("◆ nexus asks") && rows.some((r) => r.includes("┃")) && rows[rows.length - 1].includes("┗━"));
     ok("shows the question text", rows.some((r) => r.includes("Which database")));
-    ok("numbers every option", rows.some((r) => /1\. PostgreSQL/.test(r)) && rows.some((r) => /2\. SQLite/.test(r)) && rows.some((r) => /3\. MySQL/.test(r)));
-    ok("marks the selected option with ›", rows.some((r) => r.includes("›") && r.includes("SQLite")));
+    ok("keycaps every option", rows.some((r) => /\[1\] PostgreSQL/.test(r)) && rows.some((r) => /\[2\] SQLite/.test(r)) && rows.some((r) => /\[3\] MySQL/.test(r)));
+    ok("marks the focused option with ▸", rows.some((r) => r.includes("▸") && r.includes("SQLite")) && !rows.some((r) => r.includes("▸") && r.includes("MySQL")));
     ok("renders a hint when provided", rows.some((r) => r.includes("zero-config")));
-    ok("has a key-legend footer", rows.some((r) => /enter confirm/.test(r) && /esc skip/.test(r)));
+    ok("offers a write-my-own-answer row", rows.some((r) => /write my own answer/.test(r)));
+    ok("offers a Submit row", rows.some((r) => /Submit/.test(r)));
+    ok("has a key-legend footer", rows.some((r) => /enter select/.test(r) && /esc skip/.test(r)));
+    ok("the tab header spans exactly the requested width (plain)", rows[0].length === 60);
     ok("no row exceeds the requested width (plain)", rows.every((r) => r.length <= 60));
+    ok("allowType:false drops the Type row", !renderAsk({ ...ask, allowType: false }, 60).some((r) => /write my own answer/.test(r)));
     ok("empty options + esc still cancels (no crash)", askKey({ question: "q", options: [], sel: 0 }, "\x1b").cancelled === true);
     ok("renderAsk tolerates no options", Array.isArray(renderAsk({ question: "q", options: [] }, 40)));
+  }
+
+  group("ask — multi-select (checkbox) mode");
+  {
+    // rows = 4 options (0-3) + Type (4) + Submit (5)
+    const base = { question: "Pick the test suites to run", options: ["unit", "e2e", "lint", "types"], sel: 0, multi: true, picked: [] };
+    ok("space toggles the current row on", (() => { const r = askKey(base, " "); return !r.done && JSON.stringify(r.picked) === JSON.stringify([0]); })());
+    ok("space again toggles it back off", (() => { const r = askKey({ ...base, picked: [0] }, " "); return JSON.stringify(r.picked) === JSON.stringify([]); })());
+    ok("enter on an option row toggles (does not submit)", (() => { const r = askKey({ ...base, sel: 1, picked: [] }, "\r"); return !r.done && JSON.stringify(r.picked) === JSON.stringify([1]); })());
+    ok("a digit toggles that option", (() => { const r = askKey({ ...base, picked: [0] }, "3"); return JSON.stringify(r.picked) === JSON.stringify([0, 2]); })());
+    ok("arrows move without changing the picked set", (() => { const r = askKey({ ...base, picked: [1] }, "\x1b[B"); return r.sel === 1 && JSON.stringify(r.picked) === JSON.stringify([1]); })());
+    ok("enter on Submit confirms the whole set (sorted)", (() => { const r = askKey({ ...base, sel: 5, picked: [2, 0] }, "\r"); return r.done && JSON.stringify(r.indices) === JSON.stringify([0, 2]) && r.values[0].label === "unit" && r.values[1].label === "lint"; })());
+    ok("enter on Submit with nothing picked confirms an empty set", (() => { const r = askKey({ ...base, sel: 5, picked: [] }, "\r"); return r.done && JSON.stringify(r.indices) === JSON.stringify([]); })());
+    ok("esc still cancels in multi mode", askKey(base, "\x1b").cancelled === true);
+    const rows = renderAsk({ ...base, picked: [1] }, 60);
+    ok("renders ■/□ checkboxes", rows.some((r) => r.includes("■")) && rows.some((r) => r.includes("□")));
+    ok("multi card is tabbed \"pick any\"", rows[0].includes("pick any"));
+    ok("Submit button shows the selected count", rows.some((r) => /\[ Submit · 1 selected \]/.test(r)));
+    ok("multi footer mentions space-toggle", rows.some((r) => /space/.test(r) && /toggle/.test(r)));
+    ok("no multi box row exceeds width", rows.every((r) => r.length <= 60));
+  }
+
+  group("ask — free-text input mode");
+  {
+    const base = { question: "What should the new command be named?", input: true, text: "" };
+    ok("a printable char appends to the field", askKey(base, "s").text === "s");
+    ok("builds up the answer char by char", (() => { let a = { ...base }; for (const c of "scan") a = { ...a, text: askKey(a, c).text }; return a.text === "scan"; })());
+    ok("backspace removes the last char", askKey({ ...base, text: "scan" }, "\x7f").text === "sca");
+    ok("ctrl+u clears the field", askKey({ ...base, text: "scan" }, "\x15").text === "");
+    ok("enter submits the typed answer", (() => { const r = askKey({ ...base, text: "scan now" }, "\r"); return r.done && r.value === "scan now"; })());
+    ok("esc cancels the input", askKey({ ...base, text: "x" }, "\x1b").cancelled === true);
+    ok("a control byte (not backspace) is ignored", askKey({ ...base, text: "ab" }, "\x02").text === "ab");
+    const empty = renderAsk(base, 50), filled = renderAsk({ ...base, text: "scan" }, 50);
+    ok("shows a placeholder when empty", empty.some((r) => /type your answer/.test(r)));
+    ok("shows the typed text with a caret", filled.some((r) => r.includes("scan") && r.includes("█")));
+    ok("input footer says enter submits", filled.some((r) => /enter submit/.test(r)));
+    // ---- the "type a different answer" transition on an option prompt ----
+    const optAsk = { question: "Pick one", options: ["A", "B"], sel: 2 }; // sel 2 = Type row (0,1 opts, 2 type, 3 submit)
+    ok("enter on the Type row asks the host to switch to typing", askKey(optAsk, "\r").typing === true);
+    ok("once in type mode, a submitted answer is flagged typed", (() => { const r = askKey({ question: "Pick one", options: ["A", "B"], input: true, typed: true, text: "custom" }, "\r"); return r.done && r.value === "custom" && r.typed === true; })());
+    ok("a pure free-text prompt is NOT flagged typed", (() => { const r = askKey({ question: "name?", input: true, text: "x" }, "\r"); return r.done && r.value === "x" && !r.typed; })());
+  }
+
+  group("agents panel (live sub-agent list under the prompt bar)");
+  {
+    const A = require("../lib/cli/agents");
+    const now = 100000;
+    const agents = [
+      { id: "ag0", task: "add unit tests for the parser", status: "ok", start: now - 83000, end: now - 20000, result: "Added 12 tests; all pass." },
+      { id: "ag1", task: "write the API docs", status: "run", start: now - 5000 },
+      { id: "ag2", task: "fix the lint errors", status: "fail", start: now - 60000, end: now - 10000, result: "could not resolve 3 warnings" },
+    ];
+    // ---- fmtDur ----
+    eq("fmtDur seconds", A.fmtDur(5000), "5s");
+    eq("fmtDur minutes+seconds", A.fmtDur(83000), "1m23s");
+    eq("fmtDur hours+minutes", A.fmtDur((2 * 3600 + 4 * 60) * 1000), "2h04m");
+    eq("fmtDur clamps negatives to 0s", A.fmtDur(-5), "0s");
+    // ---- elapsed uses end when finished, now while running ----
+    eq("elapsed of a finished agent uses its end", A.elapsed(agents[0], now), 63000);
+    eq("elapsed of a running agent uses now", A.elapsed(agents[1], now), 5000);
+    // ---- panelRows ----
+    const idle = A.panelRows(agents, { now, sel: -1, width: 70 });
+    ok("empty registry renders nothing", A.panelRows([], { now, width: 70 }).length === 0);
+    ok("header summarises running + done counts", /1 running/.test(idle[0]) && /2 done/.test(idle[0]));
+    ok("idle header hints how to select", /to select/.test(idle[0]));
+    ok("lists each agent's task", idle.some((r) => /add unit tests/.test(r)) && idle.some((r) => /write the API docs/.test(r)) && idle.some((r) => /fix the lint errors/.test(r)));
+    ok("shows elapsed per agent", idle.some((r) => /1m03s/.test(r)) && idle.some((r) => /5s/.test(r)));
+    ok("idle panel shows no ▶ cursor", !idle.slice(1).some((r) => r.includes("▶")));
+    const foc = A.panelRows(agents, { now, sel: 1, width: 70 });
+    ok("focused header hints open/stop/back", /enter open/.test(foc[0]) && /stop/.test(foc[0]) && /esc back/.test(foc[0]));
+    ok("lanes are drawn as a tree (├─ … └─)", idle.some((r) => r.includes("├─")) && idle[idle.length - 1].includes("└─"));
+    ok("finished lanes show a status badge", idle.some((r) => /done/.test(r) && /add unit tests/.test(r)) && idle.some((r) => /failed/.test(r)));
+    ok("status column is aligned across lanes", (() => { const ends = idle.slice(1).map((r) => r.length); return ends.every((n) => n === ends[0]); })());
+    ok("no lane exceeds the width", foc.every((r) => r.length <= 70));
+    ok("a running lane animates (spinner + meter change over time)", A.panelRows(agents, { now, width: 70 })[2] !== A.panelRows(agents, { now: now + 300, width: 70 })[2]);
+    eq("meter lights two adjacent cells", (A.meter(0).match(/▰/g) || []).length, 2);
+    ok("meter bounces back (never runs off the end)", Array.from({ length: 40 }, (_, k) => A.meter(k * 140)).every((m) => m.length === 5 && /▰▰/.test(m)));
+    ok("focused lane carries the ▶ cursor on the selected task", foc.some((r) => r.includes("▶") && /write the API docs/.test(r)));
+    ok("long task is truncated with an ellipsis at a narrow width", A.panelRows([{ task: "x".repeat(200), status: "run", start: now }], { now, width: 40 }).some((r) => r.includes("…")));
+    const many = Array.from({ length: 9 }, (_, i) => ({ id: "a" + i, task: "task " + i, status: "run", start: now }));
+    const win = A.panelRows(many, { now, sel: -1, width: 70, max: 4 });
+    ok("caps the visible rows and notes the overflow", win.filter((r) => /task \d/.test(r)).length === 4 && win.some((r) => /\+5 more/.test(r)));
+    ok("unfocused window shows the most-recent agents", win.some((r) => /task 8/.test(r)) && !win.some((r) => /task 0\b/.test(r)));
+    // ---- windowStart ----
+    eq("no window when it fits", A.windowStart(3, 1, 5), 0);
+    eq("unfocused window pins to the tail", A.windowStart(9, -1, 4), 5);
+    eq("focused window follows the selection", A.windowStart(9, 7, 4), 5);
+    // ---- panelKey reducer ----
+    eq("down moves selection +1", A.panelKey({ sel: 0 }, "\x1b[B", 3).sel, 1);
+    eq("down clamps at the last agent", A.panelKey({ sel: 2 }, "\x1b[B", 3).sel, 2);
+    eq("up moves selection -1", A.panelKey({ sel: 2 }, "\x1b[A", 3).sel, 1);
+    ok("up off the top row leaves the panel", A.panelKey({ sel: 0 }, "\x1b[A", 3).leave === true);
+    ok("enter opens the selected agent", A.panelKey({ sel: 1 }, "\r", 3).open === 1);
+    ok("a digit opens that agent directly", A.panelKey({ sel: 0 }, "2", 3).open === 1);
+    ok("an out-of-range digit keeps focus (no open)", (() => { const r = A.panelKey({ sel: 0 }, "9", 3); return r.open == null && r.leave == null; })());
+    ok("s stops the selected agent", A.panelKey({ sel: 2 }, "s", 3).stop === 2);
+    ok("x clears the finished agents", A.panelKey({ sel: 0 }, "x", 3).clear === true);
+    ok("esc leaves the panel", A.panelKey({ sel: 1 }, "\x1b", 3).leave === true);
+    ok("an empty registry always leaves", A.panelKey({ sel: 0 }, "\x1b[B", 0).leave === true);
+    ok("an unrelated key keeps focus", (() => { const r = A.panelKey({ sel: 1 }, "z", 3); return r.sel === 1 && r.open == null && r.stop == null; })());
+    // ---- viewRows (transcript overlay) ----
+    const vr = A.viewRows(agents[0], 70, 24, 0, null, now);
+    ok("view shows the task", vr.some((r) => /add unit tests/.test(r)));
+    ok("view shows a done badge + elapsed", vr.some((r) => /done/.test(r)) && vr.some((r) => /1m03s/.test(r)));
+    ok("view shows the agent's result text", vr.some((r) => /Added 12 tests/.test(r)));
+    ok("view of a running agent with no output says running", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /running/.test(r)));
+    ok("running view offers a stop key; finished view does not", A.viewRows(agents[1], 70, 24, 0, null, now).some((r) => /s stop/.test(r)) && !A.viewRows(agents[0], 70, 24, 0, null, now).some((r) => /s stop/.test(r)));
+    ok("view never crashes on a bare agent", Array.isArray(A.viewRows({ task: "x", status: "run", start: now }, 40, 12, 99, null, now)));
+  }
+
+  group("prompt-cache warmth (/warm + status chip)");
+  {
+    const W = require("../lib/cli/cachewarm");
+    const now = 1e9, pr = { cr: 0.5, cw5: 6.25, cw1h: 10 };
+    eq("1h writes win the TTL vote", W.ttlFromWrites(10, 900, 0), W.TTL_1H);
+    eq("5m writes win the TTL vote", W.ttlFromWrites(900, 10, 0), W.TTL_5M);
+    eq("a pure cache read keeps the previous TTL", W.ttlFromWrites(0, 0, W.TTL_1H), W.TTL_1H);
+    eq("no cache touch yet -> none", W.cacheState({ lastAt: 0, now }).state, "none");
+    eq("fresh 5m cache is warm", W.cacheState({ lastAt: now - 60000, ttl: W.TTL_5M, now }).state, "warm");
+    eq("last minute is cooling", W.cacheState({ lastAt: now - 250000, ttl: W.TTL_5M, now }).state, "cooling");
+    eq("past the TTL is cold", W.cacheState({ lastAt: now - 400000, ttl: W.TTL_5M, now }).state, "cold");
+    eq("long-cold hides the chip", W.chip(W.cacheState({ lastAt: now - 3600000, ttl: W.TTL_5M, now })), "");
+    eq("1h TTL is still warm after 30m", W.cacheState({ lastAt: now - 1800000, ttl: W.TTL_1H, now }).state, "warm");
+    eq("warm chip shows minutes left", W.chip(W.cacheState({ lastAt: now - 60000, ttl: W.TTL_5M, now })), "cache 4m");
+    eq("cooling chip shows seconds", W.chip(W.cacheState({ lastAt: now - 250000, ttl: W.TTL_5M, now })), "cache 50s");
+    eq("cold chip", W.chip(W.cacheState({ lastAt: now - 400000, ttl: W.TTL_5M, now })), "cache cold");
+    const fc = W.followUpCost(1e6, pr, W.TTL_5M);
+    ok("follow-up: re-read at cr, re-write at cw5", fc.warm === 0.5 && fc.cold === 6.25);
+    eq("1h TTL re-writes at cw1h", W.followUpCost(1e6, pr, W.TTL_1H).cold, 10);
+    const ex = W.explain({ engine: "claude", lastAt: now - 60000, ttl: W.TTL_5M, now, ctxTok: 42000, price: pr }).join("\n");
+    ok("explainer shows warm, both prices and the ratio", /warm/.test(ex) && /\$0\.0210/.test(ex) && /\$0\.2625/.test(ex) && /13×/.test(ex));
+    ok("cold explainer drops the hurry-up tip", !/tip:/.test(W.explain({ engine: "claude", lastAt: now - 400000, ttl: W.TTL_5M, now, ctxTok: 1000, price: pr }).join("\n")));
+    ok("non-claude engines say it isn't tracked", /isn't|doesn't report/.test(W.explain({ engine: "ollama" })[0]));
+  }
+
+  group("token estimator (/tokens — price before attaching)");
+  {
+    const T = require("../lib/cli/tokcount");
+    eq("estimates ~chars/4 tokens", T.estimateTokens(4000), 1000);
+    eq("rounds up a partial token", T.estimateTokens(10), 3);
+    ok("detects a NUL byte as binary", T.looksBinary(Buffer.from([65, 66, 0, 67])) && !T.looksBinary(Buffer.from("plain text")));
+    ok("skip-dirs cover the usual noise", T.SKIP_DIRS.has("node_modules") && T.SKIP_DIRS.has(".git") && T.SKIP_DIRS.has(".nexus"));
+    const entries = [{ path: "src/big.js", chars: 40000 }, { path: "README.md", chars: 8000 }, { path: "logo.png", chars: 1000, binary: true }, { path: "huge.bin", chars: 9e9, skipped: true }];
+    const sm = T.summarize(entries, { in: 5, cr: 0.5 });
+    eq("counts only real text files", sm.files, 2);
+    eq("counts binary + skipped separately", sm.binary + sm.skipped, 2);
+    eq("sums estimated tokens", sm.tokens, 12000);
+    ok("prices the first send and a cached resend", Math.abs(sm.firstSend - 0.06) < 1e-9 && Math.abs(sm.cachedResend - 0.006) < 1e-9);
+    ok("no cache rate → no cached-resend figure", T.summarize(entries, { in: 5, cr: null }).cachedResend === null);
+    const rows = T.renderTokens(entries, { price: { in: 5, cr: 0.5 }, paid: true, model: "Opus", width: 80 });
+    ok("header shows the ≈ total + binary skip", /≈12\.0k tokens across 2 files/.test(rows[0]) && /1 binary/.test(rows[0]));
+    ok("ranks the heaviest file first with a share %", /src\/big\.js/.test(rows[1]) && /83%/.test(rows[1]));
+    ok("shows first-turn and cached cost", rows.some((r) => /\$0\.06/.test(r) && /first turn/.test(r) && /while cached/.test(r)));
+    ok("every row fits the width", rows.every((r) => r.replace(/\x1b\[[0-9;]*m/g, "").length <= 80));
+    ok("a local engine says it's free", T.renderTokens(entries, { paid: false, width: 80 }).some((r) => /free/.test(r)));
+    ok("warns when the attachment is large", T.renderTokens([{ path: "x", chars: 400000 }], { price: { in: 5 }, paid: true, width: 80 }).some((r) => /large/.test(r)));
+    ok("empty match explains usage", /\/tokens/.test(T.renderTokens([], { width: 60 })[0]));
+    ok("long paths are truncated keeping the end", (() => { const r = T.renderTokens([{ path: "a/very/deeply/nested/" + "x".repeat(90) + "/file.js", chars: 400 }], { price: { in: 5 }, paid: true, width: 60 }); return r.every((x) => x.replace(/\x1b\[[0-9;]*m/g, "").length <= 60) && r.some((x) => /file\.js/.test(x)); })());
+  }
+
+  group("cost ledger + advisor (/turns, /cheaper)");
+  {
+    const L = require("../lib/cli/ledger");
+    const turns = [
+      { inTok: 1200, outTok: 400, cost: 0.012, dt: 3, model: "opus", engine: "claude", label: "add a command", paid: true, cacheRead: 0 },
+      { inTok: 800, outTok: 120, cost: 0.004, dt: 1, model: "opus", engine: "claude", label: "add a command", paid: true, cacheRead: 500 },
+      { inTok: 40000, outTok: 1500, cost: 0.21, dt: 22, model: "opus", engine: "claude", label: "review the engine", paid: true, cacheRead: 0 },
+    ];
+    // ---- summarizeTurns ----
+    const sm = L.summarizeTurns(turns);
+    eq("sums input tokens", sm.inTok, 42000);
+    eq("sums output tokens", sm.outTok, 2020);
+    ok("sums cost", Math.abs(sm.cost - 0.226) < 1e-9);
+    eq("sums cache reads", sm.cacheRead, 500);
+    eq("flags the priciest turn", sm.topCostIdx, 2);
+    eq("counts a verbatim repeat", sm.dupTurns, 1);
+    eq("counts distinct repeated prompts", sm.dupPrompts, 1);
+    eq("empty ledger summarizes to zero turns", L.summarizeTurns([]).turns, 0);
+    eq("all-free session has no priciest turn", L.summarizeTurns([{ inTok: 9, outTok: 9, cost: 0, dt: 1, paid: false, label: "x" }]).topCostIdx, -1);
+    // ---- renderTurns ----
+    const rows = L.renderTurns(turns, { width: 80 });
+    ok("header totals the session", /3 turns/.test(rows[0]) && /42\.0k/.test(rows[0]) && /\$0\.2260/.test(rows[0]));
+    ok("lists each turn label", rows.some((r) => /add a command/.test(r)) && rows.some((r) => /review the engine/.test(r)));
+    ok("marks the priciest turn with ▲", rows.some((r) => r.includes("▲") && /review the engine/.test(r)));
+    ok("every row fits the width", rows.every((r) => r.replace(/\x1b\[[0-9;]*m/g, "").length <= 80));
+    ok("empty ledger says so", /no turns yet/.test(L.renderTurns([], { width: 60 })[0]));
+    ok("max caps the listed rows + notes earlier turns", (() => { const many = Array.from({ length: 20 }, (_, i) => ({ inTok: 1, outTok: 1, cost: 0.001, dt: 1, paid: true, label: "t" + i })); const r = L.renderTurns(many, { width: 80, max: 5 }); return r.filter((x) => /\dt\d|t\d+/.test(x)).length <= 7 && r.some((x) => /earlier turn/.test(x)); })());
+    // ---- costAdvice: lossless only ----
+    const tips = L.costAdvice(turns, { paid: true, cacheOn: false, effort: "high", engine: "claude", ctxPct: 62, autoCompact: false });
+    const tagset = tips.map((t) => t.tag);
+    ok("advises turning the exact-repeat cache on", tagset.includes("cache"));
+    ok("notes the verbatim repeats", tagset.includes("dups"));
+    ok("explains claude prompt-caching", tagset.includes("prompt-cache"));
+    ok("flags effort as a QUALITY tradeoff (not auto)", tips.find((t) => t.tag === "effort") && /quality tradeoff/.test(tips.find((t) => t.tag === "effort").text) && /not auto-applied/.test(tips.find((t) => t.tag === "effort").text));
+    ok("suggests /compact on a full context", tagset.includes("context"));
+    ok("a local engine short-circuits to free", (() => { const r = L.costAdvice(turns, { paid: false }); return r.length === 1 && r[0].tag === "free"; })());
+    ok("a tidy session says nothing to cut", (() => { const r = L.costAdvice([{ inTok: 50, outTok: 20, cost: 0.001, dt: 1, paid: true, label: "a" }], { paid: true, cacheOn: true, effort: "", engine: "claude", ctxPct: 10, autoCompact: true }); return r.some((t) => t.tag === "ok"); })());
+    ok("renderAdvice frames the tips", (() => { const r = L.renderAdvice(turns, { paid: true, cacheOn: false, engine: "claude" }); return /cost advisor/.test(r[0]) && r.length > 1; })());
+  }
+
+  group("compaction condenser animation");
+  {
+    const CA = require("../lib/cli/compact-anim");
+    const f0 = CA.squeezeBar(0, 21).plain, fEnd = CA.squeezeBar(CA.CYCLE_MS - 10, 21).plain;
+    ok("the core ◆ sits dead center", f0[10] === "◆" && fEnd[10] === "◆");
+    ok("jaws start at the edges", f0[0] === "▸" && f0[20] === "◂");
+    ok("jaws close in on the core over the cycle", fEnd.indexOf("▸") > f0.indexOf("▸") && fEnd.indexOf("◂") < f0.indexOf("◂"));
+    ok("folded-away cells become dots", /^·+▸/.test(fEnd));
+    ok("the bar loops (frame at one full cycle == frame 0)", CA.squeezeBar(CA.CYCLE_MS, 21).plain === f0);
+    ok("bar width is honored", CA.squeezeBar(700, 15).plain.length === 15);
+    const rows = CA.compactRows({ now: 13000, start: 1000, tok: 1234, before: 48200, width: 80 });
+    ok("title says Condensing conversation with elapsed + tokens + esc", /Condensing conversation/.test(rows[0]) && /12s/.test(rows[0]) && /1\.2k tokens/.test(rows[0]) && /esc to interrupt/.test(rows[0]));
+    ok("bar row shows the context being folded", /48\.2k tokens → folding/.test(rows[1]));
+    ok("rows stay within the width", rows.every((r) => r.length <= 80));
+    ok("a narrow terminal still renders", CA.compactRows({ now: 5, start: 0, width: 24 }).every((r) => typeof r === "string"));
+    ok("done marker is the closed frame + folded size", /^▸◆◂ condensed 48\.2k tokens/.test(CA.doneRow({ before: 48200 })));
+    ok("done marker notes auto + the summary toggle", /auto-condensed/.test(CA.doneRow({ before: 1, auto: true })) && /ctrl\+o shows the summary/.test(CA.doneRow({ hasSummary: true })) && /hides/.test(CA.doneRow({ hasSummary: true, expanded: true })));
   }
 
   group("api-server input validation (shell-out routes reject injection)");
@@ -2672,6 +2895,76 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     // nmap-parser: a present-but-non-numeric timestamp attribute must not throw RangeError
     ok("parseNmapXML tolerates a non-numeric start/finish time", noThrow(() =>
       npx.parseNmapXML("<nmaprun start=\"x\" scanner=\"nmap\"><runstats><finished time=\"y\"/></runstats></nmaprun>")));
+  }
+
+  group("engine MCP bridge — external engines get the Nexus ask_user popup");
+  {
+    const { buildEngineMcpServers, writeMcpConfigFile, codexMcpArgs, toOpencodeConfig, writeEngineConfigFile } = require("../lib/nexus/engine-mcp");
+    const { fmtAnswer, ASK_TOOL } = require("../lib/nexus/ask-mcp");
+    const { createAskServer } = require("../lib/nexus/ask-bridge");
+    const cp = require("child_process");
+
+    // --- config builder ---
+    const servers = buildEngineMcpServers({ sockPath: "/tmp/s.sock", askMcpPath: "/a/ask-mcp.js", nodePath: "/usr/bin/node", userServers: { github: { command: "npx", args: ["gh"] } } });
+    ok("bridge always adds the 'nexus' ask server", servers.nexus && servers.nexus.command === "/usr/bin/node" && servers.nexus.args[0] === "/a/ask-mcp.js");
+    ok("bridge passes the socket path via env", servers.nexus.env.NEXUS_ASK_SOCK === "/tmp/s.sock");
+    ok("user-configured servers are forwarded too", servers.github && servers.github.command === "npx");
+    ok("a malicious user 'nexus' override cannot shadow the bridge", buildEngineMcpServers({ sockPath: "/tmp/s.sock", askMcpPath: "/a.js", userServers: { nexus: { command: "evil" } } }).nexus.command !== "evil");
+    ok("no bridge when sockPath is missing", !buildEngineMcpServers({ askMcpPath: "/a.js" }).nexus);
+
+    const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), "nxmcpcfg-"));
+    const cfgPath = writeMcpConfigFile(cfgDir, servers);
+    ok("writeMcpConfigFile emits a { mcpServers } JSON file", cfgPath && JSON.parse(fs.readFileSync(cfgPath, "utf8")).mcpServers.nexus.command === "/usr/bin/node");
+
+    // --- codex -c override translation ---
+    const ca = codexMcpArgs("nexus", servers.nexus).join(" ");
+    ok("codexMcpArgs sets command/args/env as -c overrides", /mcp_servers\.nexus\.command=/.test(ca) && /mcp_servers\.nexus\.args=/.test(ca) && /mcp_servers\.nexus\.env=/.test(ca));
+    ok("codexMcpArgs returns nothing for a spec with no command", codexMcpArgs("x", {}).length === 0);
+    ok("codex engine declares mcpInject + injects the server into its args", engineCap("codex", "mcpInject") && ENGINES.codex.mcpMode === "cArgs" && ENGINES.codex.args("P", { mcpServers: servers }).join(" ").includes("mcp_servers.nexus.command="));
+    ok("non-MCP engines ignore mcpServers (no leakage)", !ENGINES.gemini.args("P", { mcpServers: servers }).join(" ").includes("mcp_servers"));
+
+    // --- opencode: env-mode, merge into (not replace) the user's config ---
+    ok("opencode declares env injection mode", engineCap("opencode", "mcpInject") && ENGINES.opencode.mcpMode === "env");
+    const oc = toOpencodeConfig(servers, { model: "anthropic/x", mcp: { mine: { type: "local", command: ["keep"], enabled: true } } });
+    ok("opencode config preserves the user's own settings + servers", oc.model === "anthropic/x" && oc.mcp.mine && oc.mcp.mine.command[0] === "keep");
+    ok("opencode config adds nexus as a local server (command is [bin,...args])", oc.mcp.nexus.type === "local" && oc.mcp.nexus.command[1] === "/a/ask-mcp.js" && oc.mcp.nexus.enabled === true);
+    ok("opencode config carries the socket under 'environment'", oc.mcp.nexus.environment.NEXUS_ASK_SOCK === "/tmp/s.sock");
+    const ocPath = writeEngineConfigFile(cfgDir, "opencode.json", oc);
+    ok("writeEngineConfigFile emits valid JSON", ocPath && JSON.parse(fs.readFileSync(ocPath, "utf8")).mcp.nexus.type === "local");
+
+    // --- gemini: env-mode via the system-overrides settings file (gemini MERGES mcpServers, so only 'nexus' is added) ---
+    ok("gemini declares env injection via GEMINI_CLI_SYSTEM_SETTINGS_PATH", engineCap("gemini", "mcpInject") && ENGINES.gemini.mcpMode === "env" && ENGINES.gemini.mcpEnvVar === "GEMINI_CLI_SYSTEM_SETTINGS_PATH" && ENGINES.gemini.mcpFormat === "mcpServers");
+    const gmPath = writeEngineConfigFile(cfgDir, ".gemini-settings.json", { mcpServers: servers });
+    const gm = JSON.parse(fs.readFileSync(gmPath, "utf8"));
+    ok("gemini settings file carries mcpServers.nexus with the bridge socket", gm.mcpServers.nexus.command === "/usr/bin/node" && gm.mcpServers.nexus.env.NEXUS_ASK_SOCK === "/tmp/s.sock");
+    ok("gemini settings file contains ONLY mcpServers (nothing to override user settings)", Object.keys(gm).length === 1 && gm.mcpServers);
+    ok("gemini still gets no mcp flags leaked into its argv", !ENGINES.gemini.args("P", { mcpServers: servers }).join(" ").includes("mcp"));
+
+    // --- MCP shim answer formatting (what the model reads back) ---
+    ok("fmtAnswer: free-text", fmtAnswer({ answer: "yes do it" }) === "The user answered: yes do it");
+    ok("fmtAnswer: single pick", fmtAnswer({ selected: "Option B", index: 1 }) === "The user chose: Option B");
+    ok("fmtAnswer: multi pick", fmtAnswer({ selected: ["A", "C"], indices: [0, 2] }) === "The user selected: A, C");
+    ok("fmtAnswer: dismissed/skip", /dismissed the question/.test(fmtAnswer({ skipped: true })) && /dismissed the question/.test(fmtAnswer(null)));
+    ok("ask_user tool schema requires a question", ASK_TOOL.name === "ask_user" && ASK_TOOL.inputSchema.required.includes("question"));
+
+    // --- real end-to-end: the stdio shim forwards a tools/call to the bridge and returns the user's answer ---
+    await new Promise((resolve) => {
+      const srv = createAskServer(async (req) => req.input ? { answer: "typed!" } : { selected: (req.options || [])[1], index: 1 });
+      const shim = cp.spawn(process.execPath, [path.join(__dirname, "..", "lib", "nexus", "ask-mcp.js")], { env: Object.assign({}, process.env, { NEXUS_ASK_SOCK: srv.sockPath }), stdio: ["pipe", "pipe", "ignore"] });
+      let out = "";
+      shim.stdout.on("data", (d) => { out += d.toString(); });
+      const send = (o) => shim.stdin.write(JSON.stringify(o) + "\n");
+      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } });
+      send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+      send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "ask_user", arguments: { question: "Pick", options: ["x", "y", "z"] } } });
+      setTimeout(() => {
+        const byId = {}; for (const l of out.trim().split("\n").filter(Boolean)) { try { const m = JSON.parse(l); byId[m.id] = m; } catch (_) {} }
+        ok("shim initialize → serverInfo name 'nexus'", byId[1] && byId[1].result.serverInfo.name === "nexus");
+        ok("shim tools/list → ask_user", byId[2] && byId[2].result.tools[0].name === "ask_user");
+        ok("shim tools/call → forwards to the bridge and returns the user's pick", byId[3] && /The user chose: y/.test(byId[3].result.content[0].text));
+        try { shim.kill(); } catch (_) {} srv.close(); resolve();
+      }, 800);
+    });
   }
 
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");

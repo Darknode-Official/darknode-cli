@@ -126,6 +126,22 @@ group("undo (Ctrl+_)");
   ok("undo reverts the last edit", m.text === "ab");
 }
 
+group("control bytes are never inserted as text");
+{
+  const m = new C.ComposerModel({ text: "abc" }); m.cursor = m.text.length;
+  C.feed(m, "\x7f", {}); // single DEL = backspace (keymap), deletes rather than inserting
+  eq("single DEL (0x7f) backspaces, not inserts", m.text, "ab");
+  // A batched control run (e.g. held Backspace "\x7f\x7f" that reached feed whole)
+  // must be dropped, not inserted — DEL slips past a naive `seq >= " "` compare.
+  const m2 = new C.ComposerModel({ text: "abc" }); m2.cursor = m2.text.length;
+  eq("batched DEL run is dropped, not inserted", C.feed(m2, "\x7f\x7f", {}).type, "none");
+  eq("  …buffer is left untouched", m2.text, "abc");
+  // Ordinary printable (incl. non-ASCII) still inserts.
+  const m3 = new C.ComposerModel();
+  C.feed(m3, "é", {});
+  eq("non-ASCII char still inserts", m3.text, "é");
+}
+
 group("word jumps");
 {
   const m = new C.ComposerModel({ text: "foo bar baz" }); m.cursor = m.text.length;
