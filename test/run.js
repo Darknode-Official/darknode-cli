@@ -2926,6 +2926,28 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       npx.parseNmapXML("<nmaprun start=\"x\" scanner=\"nmap\"><runstats><finished time=\"y\"/></runstats></nmaprun>")));
   }
 
+  group("nexus docs — the reference the model reads on questions about Nexus");
+  {
+    const ND = require("../lib/cli/nexus-docs");
+    const gen = require("../scripts/gen-nexus-docs.js");
+    const names = new Set(["/warm", "/btw", "/agents", "/cost"]);
+    ok("asks about a command → yes", ND.isNexusQuestion("what does /warm do?", names) && ND.isNexusQuestion("how do I use /btw", names));
+    ok("asks about nexus / shortcuts → yes", ND.isNexusQuestion("how do I open an agent in nexus", names) && ND.isNexusQuestion("what keyboard shortcuts are there?", names));
+    ok("ordinary coding prompts → no", !ND.isNexusQuestion("fix the bug in auth.js", names) && !ND.isNexusQuestion("why does this test fail?", names) && !ND.isNexusQuestion("add a /health route to the api", names));
+    ok("running a command or an unknown /path → no", !ND.isNexusQuestion("/cost", names) && !ND.isNexusQuestion("what is in /etc/hosts?", names));
+    const full = gen.generate();
+    ok("docs/NEXUS-COMMANDS.md is up to date (run: node scripts/gen-nexus-docs.js)", fs.readFileSync(path.join(__dirname, "..", "docs", "NEXUS-COMMANDS.md"), "utf8") === full);
+    const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+    const menu = [...new Set((src.slice(src.indexOf("const CMDS = ["), src.indexOf("const HELP_SECTIONS")).match(/\["\/[a-z0-9:-]+"/g) || []).map((x) => x.slice(2, -1)))];
+    ok("every menu command (" + menu.length + ") is in the reference", menu.length > 100 && menu.every((c) => full.includes("`" + c + "`")));
+    ok("reference covers /btw keys and the agent view", /Ctrl\+Y copies the answer/.test(full) && /full conversation like the main chat/.test(full));
+    const brief = ND.buildReference({ brief: true, cmds: [["/a", "x"]], help: [{ title: "H", rows: [["/a", "x"]] }], keys: [{ title: "K", rows: [["Esc", "stop"]] }], topics: { t: { title: "T", body: "b" } } });
+    ok("brief copy drops the repeated /help groups + topic guides, keeps keys", !/Command groups|Topic guides/.test(brief) && /Keyboard shortcuts/.test(brief));
+    const hits = ND.search(full, "copy answer");
+    ok("/docs search finds lines with every word, under their heading", hits.length >= 2 && /^## /.test(hits[0]) && hits.slice(1).every((h) => /^## /.test(h) || /cop(y|ies)/i.test(h)));
+    ok("forPrompt marks the reference as this-question-only", /Use it only for this question/.test(ND.forPrompt("x")));
+  }
+
   group("engine MCP bridge — external engines get the Nexus ask_user popup");
   {
     const { buildEngineMcpServers, writeMcpConfigFile, codexMcpArgs, toOpencodeConfig, writeEngineConfigFile } = require("../lib/nexus/engine-mcp");

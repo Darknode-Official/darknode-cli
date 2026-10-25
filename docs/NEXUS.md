@@ -4,6 +4,8 @@ Nexus is the AI coding agent inside Darknode CLI. It drives multiple AI engines
 from one terminal interface: Claude, Gemini, Codex, OpenCode, Aider, and local
 models via Ollama. This document explains every feature and how they work together.
 
+> Every command and key, generated from the live command tables: [NEXUS-COMMANDS.md](NEXUS-COMMANDS.md) (`npm run docs` regenerates it). Inside Nexus, `/docs <words>` searches it, and the AI reads it automatically when you ask about Nexus itself.
+
 ---
 
 ## Starting Nexus

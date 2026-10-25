@@ -23,7 +23,8 @@
     "start": "node darknode.js",
     "build": "pkg . --out-path dist",
     "test": "node test/run.js && node test/authz.test.js && node test/composer.test.js && node test/term.test.js",
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "docs": "node scripts/gen-nexus-docs.js"
   },
   "pkg": {
     "targets": [
