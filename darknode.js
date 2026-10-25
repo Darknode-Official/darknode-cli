@@ -1407,6 +1407,7 @@ const KNOWN_TOOLS = new Set(["read_file", "write_file", "edit_file", "list_dir",
 // {tool:"cat /etc/passwd"} or {tool:"ls /bin/*"} instead of run_command.
 const SHELL_CMD = /^(sudo\s+)?(ls|cat|grep|egrep|fgrep|echo|cd|pwd|whoami|id|uname|hostname|ps|top|df|du|free|date|env|printenv|which|type|find|locate|head|tail|awk|sed|cut|tr|sort|uniq|wc|xargs|tee|curl|wget|ping|traceroute|nmap|nc|ncat|dig|host|nslookup|ip|ifconfig|iwconfig|netstat|ss|arp|route|cp|mv|rm|mkdir|rmdir|touch|ln|stat|file|chmod|chown|tar|gzip|gunzip|zip|unzip|git|make|gcc|python3?|node|npm|npx|pip3?|bash|sh|zsh|kill|pkill|killall|systemctl|service|apt|apt-get|dpkg|ssh|scp|rsync|darknode|sentinel|nexus|nikto|sqlmap|hydra|john|hashcat|gobuster|ffuf|masscan|whatweb|searchsploit|msfconsole)(\s|$)/i;
 function looksLikeCommand(s) { s = String(s || "").trim(); return SHELL_CMD.test(s) || /^\.{0,2}\//.test(s) || (/\s/.test(s) && /[\/*.~|>]/.test(s)); }
+const PR = require("./lib/nexus/proto-reply");
 function normalizeToolCall(o) {
   let name = o && o.tool, a = o && o.args;
   if (name == null) return { name, a: (a && typeof a === "object") ? a : {} };
@@ -1644,11 +1645,12 @@ async function aiCoder(argv) {
       console.log("  " + ((reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it.") + "\n");
       if (printMode) return; continue;
     }
-    let didTool = false, nudges = 0;
+    let didTool = false, nudges = 0; const protoSt = { bad: 0 };
     for (let step = 1; step <= (lean ? 12 : 25); step++) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); break; }
       let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
-      if (!o || typeof o !== "object") { messages.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
+      if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, messages, protoSt); if (br.stop) { console.log("\n  " + (br.answer || PR.GAVE_UP) + "\n"); break; } continue; }
+      protoSt.bad = 0;
       // Strip thought from context to save tokens — it's displayed, not needed in history
       const compact = { action: o.action };
       if (o.tool) compact.tool = o.tool;
@@ -2355,13 +2357,14 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
   const fs = require("fs"), path = require("path");
   const policy = loadPolicy(cwd); // enterprise guardrails (.nexus/policy.json) — enforced here too, not just the in-process loop
   const messages = [{ role: "system", content: "Nexus sub-agent. Complete ONLY the TASK using tools, one action/step, then final. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} list_dir{path?} run_command{command}. JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Minimize calls; chain commands.\n" + ctx }, { role: "user", content: "TASK: " + task }];
-  let didTool = false, log = "";
+  let didTool = false, log = ""; const protoSt = { bad: 0 };
   const loopGuard = makeLoopGuard();
   for (let step = 1; step <= 15; step++) {
     if (signal && signal.aborted) return { ok: false, output: log + "\n(interrupted)" };
     let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA, signal); } catch (e) { return { ok: signal && signal.aborted ? false : false, output: (signal && signal.aborted) ? log + "\n(interrupted)" : "model error: " + e.message }; }
     let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
-    if (!o || typeof o !== "object") { messages.push({ role: "tool", content: "Reply with valid schema JSON." }); continue; }
+    if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, messages, protoSt); if (br.stop) return br.answer ? { ok: true, output: log + "\n" + br.answer } : { ok: false, output: log + "\n" + PR.GAVE_UP }; continue; }
+    protoSt.bad = 0;
     const compact = { action: o.action }; if (o.tool) compact.tool = o.tool; if (o.args) compact.args = o.args; if (o.final) compact.final = o.final;
     messages.push({ role: "assistant", content: JSON.stringify(compact) });
     if (o.thought) console.log("    " + gray("think: " + (o.thought || "").slice(0, 120)));
@@ -4194,6 +4197,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           // is "already in context" after that content was pruned away.
           let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = sess.readCache || (sess.readCache = {}); const fileSnap = sess.fileSnap || (sess.fileSnap = new Map()); const toolMemo = createToolMemo(); // per turn: the user may edit files between turns
           const loopGuard = makeLoopGuard(); // break the agent out of repeat/oscillation stalls
+          const protoSt = { bad: 0 }; // consecutive replies Nexus could not use (see lib/nexus/proto-reply.js)
           const stepLimit = lean ? 12 : (stepCap ? 20 : 100000); // step cap is opt-in: off by default = run until the model stops (lean keeps its own 12 cap)
           const turnStartTok = sess.outTok;
           // Within a long turn, old tool observations (up to 14KB each) otherwise
@@ -4215,7 +4219,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             let raw; try { raw = await ollamaChat(mdl, oMsgs, CODER_SCHEMA, aSignal(ctl)); } catch (e) { if (ctl && ctl.stopped) break; textItem().full += "\n" + explainEngineError(e && e.message, { engine, model: mdl }); break; }
             sess.outTok += Math.ceil(raw.length / 4); sess.liveOut += Math.ceil(raw.length / 4);
             let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
-            if (!o || typeof o !== "object") { oMsgs.push({ role: "tool", content: "Reply with valid schema JSON only." }); continue; }
+            if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, oMsgs, protoSt); if (br.stop) { const t = textItem(); t.full += (t.full ? (br.answer ? "\n\n" : "\n") : "") + (br.answer || PR.GAVE_UP); break; } continue; }
             // Strip `thought` from history (it's shown to the user below, not needed
             // as context) so past chain-of-thought isn't resent on every step.
             const _ctx = { action: o.action }; if (o.tool) _ctx.tool = o.tool; if (o.args) _ctx.args = o.args; if (o.final) _ctx.final = o.final;
@@ -4223,6 +4227,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
             if (o.thought) { const t = textItem(); t.full += (t.full ? "\n" : "") + o.thought; renderSoon(); }
             if (o.action === "final") { if (!didTool && !isChitchat(promptText) && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = textItem(); t.full += (t.full ? "\n\n" : "") + o.final; } break; }
             const { name, a } = normalizeToolCall(o);
+            if (!name) { if (PR.missingTool(o, oMsgs, protoSt).stop) { textItem().full += (textItem().full ? "\n" : "") + PR.GAVE_UP; break; } continue; } // action "tool" with no tool name
+            protoSt.bad = 0;
             const card = { type: "tool", id: "o" + step, name, input: a, label: olbl(name, a), status: "run", start: Date.now(), detail: JSON.stringify(a).slice(0, 400) };
             if (a.path && name === "write_file") card.diff = editDiff("Write", { file_path: a.path, content: a.content });
             else if (a.path && name === "edit_file") card.diff = editDiff("Edit", { file_path: a.path, old_string: a.find, new_string: a.replace });

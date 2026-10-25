@@ -3393,6 +3393,23 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("max_results honored", (await W.webSearchTool({ query: "x", max_results: 1 }, { get: (cb) => cb(null, 200, html) })).results.length, 1);
   }
 
+  // ── protocol recovery: one retry with the bad reply shown, then prose = the answer ──
+  {
+    const PR = require("../lib/nexus/proto-reply");
+    const st = { bad: 0 }, msgs = [];
+    eq("first bad reply retries", PR.badProtoReply("It adds numbers.", msgs, st).stop, false);
+    ok("model sees what it sent + the exact shape", msgs[0].role === "assistant" && msgs[0].content === "It adds numbers." && /ONE JSON object/.test(msgs[1].content));
+    const r2 = PR.badProtoReply("It adds two numbers.", msgs, st);
+    ok("second bad reply → prose becomes the answer", r2.stop && r2.answer === "It adds two numbers.");
+    const st2 = { bad: 1 };
+    ok("broken JSON is not shown as an answer", PR.badProtoReply('{"action": "too', [], st2).answer === null);
+    ok("empty reply pushes no assistant message", (() => { const m = []; PR.badProtoReply("", m, { bad: 0 }); return m.length === 1; })());
+    const st3 = { bad: 0 }, m3 = [];
+    ok("missing tool name → specific correction", !PR.missingTool({ action: "tool" }, m3, st3).stop && /Missing "tool"/.test(m3[0].content));
+    ok("unknown action → explains the two actions", (PR.missingTool({ action: "think" }, m3, st3), /must be "tool"/.test(m3[1].content)));
+    ok("gives up on the third", PR.missingTool({ action: "x" }, m3, st3).stop);
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
