@@ -983,6 +983,7 @@ group("-m/--model reaches the interactive TUI");
   // the flag was parsed but never handed to nexusTui, so `nexus -m <model>` ran the default model
   const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
   ok("launch passes -m and --lean to nexusTui", /return nexusTui\([^;]*\{ model: modelOverride, lean: leanFlag/.test(src));
+  ok("-p is short for --print (parser + first-run skip)", /a === "--print" \|\| a === "-p"/.test(src) && /!rest.includes\("-p"\) && firstRunPending/.test(src));
   ok("nexusTui applies them to the session", /function nexusTui\([^)]*launch\)/.test(src) && /if \(launch\.model\) \{ sess\.model = launch\.model;/.test(src) && /if \(launch\.lean\) lean = true;/.test(src));
 }
 
@@ -3646,7 +3647,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       let j = i + 1; while (j < L.length && L[j] !== "}") j++;
       const body = L.slice(i, j + 1).map((l) => l.replace(/\/\/.*$/, "")).join("\n");
       for (const v of ["lean", "trimOutput", "stepCap", "autoCompact", "cheapSide"]) {
-        const used = new RegExp("(?<![\\w$.\"'])" + v + "\\b(?!\\s*:)").test(body), declared = new RegExp("(?:const|let|var)\\s+[^;=]*\\b" + v + "\\b").test(body) || new RegExp("\\b" + v + "\\b").test(m[2]);
+        const used = new RegExp("(?<![\\w$.\"'/-])" + v + "\\b(?!\\s*:)").test(body), declared = new RegExp("(?:const|let|var)\\s+[^;=]*\\b" + v + "\\b").test(body) || new RegExp("\\b" + v + "\\b").test(m[2]);
         if (used && !declared) leaks.push(m[1] + ":" + v);
       }
       i = j;

@@ -1183,7 +1183,7 @@ async function cliRun(args, gate) {
     else if (sub === "shrink") { const r = await deviceTool("shrink", { test: rest.slice(1).join(" ") || undefined }, process.cwd()); formatToolLines("shrink", r).forEach((l) => console.log(l)); if (r && r.error) process.exitCode = 1; }
     else {
       // First launch on a real terminal: offer the one-time Ollama/Claude setup before the TUI.
-      if (process.stdout.isTTY && !rest.includes("--print") && firstRunPending()) { try { await nexusSetup({ ask, auto: rest.includes("-y") || rest.includes("--yes") }); } catch (_) {} }
+      if (process.stdout.isTTY && !rest.includes("--print") && !rest.includes("-p") && firstRunPending()) { try { await nexusSetup({ ask, auto: rest.includes("-y") || rest.includes("--yes") }); } catch (_) {} }
       await aiCoder(rest);
     }
   }
@@ -1523,17 +1523,16 @@ function nexusHelp() {
   console.log("    darknode nexus [options] [task]     one-shot task, or interactive REPL if no task given");
   console.log("    darknode nexus                      interactive session\n");
   console.log("  " + bold("OPTIONS"));
-  console.log("    -e, --engine <name>                claude (default if installed) | ollama | opencode");
-  console.log("    -m, --model <name>                 ollama model (ollama engine)");
+  console.log("    -e, --engine <name>                claude (default if installed) | gemini | codex | opencode | aider | ollama | api");
+  console.log("    -m, --model <name>                 model for this session (any engine that takes one)");
   console.log("    -y, --yes, --skip-permissions      auto-approve all file writes and commands");
-  console.log("        --tui                          full-screen UI: scrolling chat + fixed input box (claude/opencode)");
-  console.log("        --print                        headless: run one task, print the result, exit");
+  console.log("    -p, --print                        headless: run one task, print the result, exit (task can be piped in)");
+  console.log("        --lean                         minimal output (also /lean in the session)");
+  console.log("        --resume / --new               reopen the last chat (default) / start blank");
   console.log("    -h, --help                         show this help\n");
   console.log("  " + bold("IN-SESSION COMMANDS"));
-  console.log("    /help          list commands           /model [name]  show or switch model");
-  console.log("    /auto          toggle auto-approve      /clear         reset the conversation");
-  console.log("    /undo          revert last file change  /diff          list files changed this session");
-  console.log("    /exit          quit\n");
+  console.log("    /help lists every command  ·  /model [name]  ·  /clear  ·  /undo  ·  /diff  ·  /exit");
+  console.log("    shift+tab cycles the permission mode (accept edits · plan · bypass)\n");
   console.log("  " + gray("Attach a file to a task with @path  —  e.g.  fix the bug in @src/app.js") + "\n");
   console.log("  " + bold("ENV") + "   DARKNODE_MODEL (default model) · OLLAMA_HOST / OLLAMA_PORT (remote Ollama)");
   console.log("        DARKNODE_FAST / NO_MOTION (skip boot animation) · DARKNODE_NO_DEFAULT_MCP (no bundled MCP) · DARKNODE_TRUST_REPO (trust repo hooks/MCP) · NO_COLOR / FORCE_COLOR");
@@ -1551,7 +1550,7 @@ async function aiCoder(argv) {
   for (let i = 0; i < arr.length; i++) {
     const a = arr[i];
     if (a === "-y" || a === "--yes" || a === "--skip-permissions" || a === "--dangerously-skip-permissions") autoApprove = true;
-    else if (a === "--print") { printMode = true; autoApprove = true; }
+    else if (a === "--print" || a === "-p") { printMode = true; autoApprove = true; }
     else if (a === "--lean") leanFlag = true;
     else if (a === "--tui" || a === "--ui") tuiFlag = true;
     else if (a === "--resume") resumeFlag = true;
