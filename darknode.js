@@ -1589,7 +1589,7 @@ async function aiCoder(argv) {
     if (!parts.length) { console.error("  " + red("--print needs a task") + gray(" — e.g. nexus --print \"add tests for utils.js\"  (or pipe it in: echo task | nexus --print)")); process.exitCode = 2; return; }
   }
   const oneShot = parts.length > 0;
-  if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag === "new" ? false : (resumeFlag ? "restart" : "launch")); // like `claude -c`: the last chat comes back on every launch; --new starts blank
+  if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag === "new" ? false : (resumeFlag ? "restart" : "launch"), modelOverride); // like `claude -c`: the last chat comes back on every launch; --new starts blank
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
   let model = null, modelList = [];
   if (engine === "ollama") { modelList = await ollamaTags();
@@ -2540,7 +2540,7 @@ const CODEX_LOCAL = require("./lib/nexus/codex-local").codexLocal();
 if (CODEX_LOCAL.model) ENGINES.codex.model = CODEX_LOCAL.model;
 if (CODEX_LOCAL.models.length) ENGINES.codex.models = CODEX_LOCAL.models;
 const onPlan = (e) => (e === "claude" && !process.env.ANTHROPIC_API_KEY) || (e === "codex" && CODEX_LOCAL.authMode === "chatgpt"); // flat plan, not per-token billing
-function nexusTui(engine, cwd, nexusMd, autoResume) {
+function nexusTui(engine, cwd, nexusMd, autoResume, modelOverride) {
   return new Promise((resolve) => {
     const out = process.stdout, ESC = "\x1b";
     // Terminal-mode registry: every mode the TUI enables is recorded here so it
@@ -2697,6 +2697,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     let clearPending = false; // /clear asks once before wiping a non-empty conversation (reset by any other input)
     if (S.mode != null && typeof S.mode === "number" && S.mode >= 0 && S.mode <= 2) mode = S.mode; // restore last mode (shift+tab)
     if (S.model && engine === "claude") { sess.model = S.model; sess.userModel = true; } // restore the saved /model choice (the init event replaces it with the resolved id)
+    if (modelOverride) { sess.model = modelOverride; sess.userModel = true; } // -m/--model on the command line wins for this launch (not saved)
     const READONLY_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"]; // disallowed to enforce read-only (plan mode / /bench)
     const impact = { localTurns: 0, cloudTurns: 0, localTok: 0, cloudInTok: 0, cloudOutTok: 0, cloudCost: 0, ctxSavedTok: 0, coworkSaved: 0, delegated: 0, cachedHits: 0, cachedSaved: 0, squeezeTok: 0, repeatTok: 0, memoTok: 0, sideSkipped: 0 }; // Impact Receipt tallies
     const editUndo = require("./lib/nexus/edit-undo").createEditUndo(); // undo_edit: the agent's own per-file changes this session

@@ -978,6 +978,14 @@ group("OLLAMA_HOST in Ollama's own formats (host, host:port, http://host:port)")
   eq("IPv6 in brackets", ollamaAddr({ OLLAMA_HOST: "[::1]:11434" }), { host: "::1", port: 11434 });
 }
 
+group("-m/--model reaches the interactive TUI");
+{
+  // the flag was parsed but never handed to nexusTui, so `nexus -m <model>` ran the default model
+  const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+  ok("launch passes modelOverride to nexusTui", /return nexusTui\([^;]*modelOverride\)/.test(src));
+  ok("nexusTui applies it to the session", /function nexusTui\([^)]*modelOverride\)/.test(src) && /if \(modelOverride\) \{ sess\.model = modelOverride;/.test(src));
+}
+
 group("TUI crash handlers are really registered (not swallowed by a // comment)");
 {
   // 7df3d06 put a "// terminal closed" comment in the middle of the registration line, so
