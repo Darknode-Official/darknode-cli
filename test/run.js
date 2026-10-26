@@ -1393,6 +1393,10 @@ group("help reference (single source of truth)");
       ok("nexus --print piped: a successful answer is the whole of stdout, exit 0", good.status === 0 && good.stdout.trim() === "pong");
       fs.rmSync(bin, { recursive: true, force: true });
     }
+    {
+      const r = require("child_process").spawnSync(process.execPath, [path.join(__dirname, "..", "darknode.js"), "nexus", "-p", "-e", "ollama", "hi"], { encoding: "utf8", timeout: 30000, env: Object.assign({}, process.env, { HOME: require("os").tmpdir(), NO_COLOR: "1", OLLAMA_HOST: "127.0.0.1:1", DARKNODE_MODEL: "x", DARKNODE_API_BASE: "" }) });
+      ok("nexus -e ollama: an unreachable server is named as such (not 'No local model'), exit 1", r.status === 1 && /Can't reach Ollama at 127\.0\.0\.1:1/.test(r.stderr) && r.stdout.trim() === "");
+    }
     ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
   }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));
