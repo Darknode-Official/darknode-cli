@@ -1555,8 +1555,7 @@ async function aiCoder(argv) {
     else if (a === "--tui" || a === "--ui") tuiFlag = true;
     else if (a === "--resume") resumeFlag = true;
     else if (a === "--new" || a === "--fresh") resumeFlag = "new";
-    else if (a === "-m" || a === "--model") modelOverride = arr[++i] || "";
-    else if (a === "-e" || a === "--engine") enginePref = arr[++i] || "";
+    else if (a === "-m" || a === "--model" || a === "-e" || a === "--engine") { const v = arr[++i]; if (!v || v[0] === "-") { console.error("  " + red(a + " needs a value") + gray(a[1] === "e" || a === "--engine" ? " — e.g. -e ollama  (" + ENGINE_ORDER.join(", ") + ", api)" : " — e.g. -m gpt-oss:20b")); process.exitCode = 2; return; } if (a === "-m" || a === "--model") modelOverride = v; else enginePref = v; }
     else if (a === "-h" || a === "--help") return nexusHelp();
     else { if (a[0] === "-" && a.length > 1 && !/^-\d/.test(a)) unknownFlags.push(a); parts.push(a); } // a flag-looking token is probably a typo (e.g. --modell); warn but still pass it through as task text so nothing silently breaks
   }
@@ -1602,7 +1601,7 @@ async function aiCoder(argv) {
       if (explicit && /^darknode(:|$)/i.test(explicit)) { if (await ensureOllamaServer(dlog)) { if (await ensureDarknodeModel(dlog)) modelList = await ollamaTags(); } }
       else if (!explicit && chooseCoderToPull(modelList)) { if (await ensureOllamaServer(dlog)) { if (await ensureCoderModel(dlog)) modelList = await ollamaTags(); } }
     }
-    if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); return; } }
+    if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); console.log("  " + red("No local model. Install Ollama + `ollama pull gpt-oss:20b`, or use --engine claude.")); process.exitCode = 1; return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); process.exitCode = 1; return; } }
   if (!printMode) {
     const paint = useColor ? { brand: bold, accent: mag, muted: gray, faint: dim, rule: gray, value: cyan } : null;
     const cols = (process.stdout.columns || 80);
@@ -1642,7 +1641,8 @@ async function aiCoder(argv) {
     messages.push({ role: "user", content: userMsg }); task = "";
     console.log(cyan("  ▎ ") + bold("nexus") + gray("  " + engine) + "\n");
     if (engine !== "ollama") {
-      await runEngineTask(engine, userMsg, cwd, autoApprove, delegated);
+      const er = await runEngineTask(engine, userMsg, cwd, autoApprove, delegated, null, null, modelOverride || undefined);
+      if (er && !er.ok && !er.interrupted) { process.exitCode = 1; const t = er.streamed ? "" : (er.output || "").trim(); if (t) console.error("  " + red(t.split("\n").slice(-6).join("\n  "))); } // a failed engine ran silently with exit 0 before; scripts using --print need the nonzero code
       delegated = true; console.log("");
       if (printMode) return;
       continue;
@@ -1655,7 +1655,7 @@ async function aiCoder(argv) {
     }
     let didTool = false, nudges = 0; const protoSt = { bad: 0 };
     for (let step = 1; step <= (lean ? 12 : 25); step++) {
-      let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); break; }
+      let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); if (printMode) process.exitCode = 1; break; }
       let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
       if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, messages, protoSt); if (br.stop) { console.log("\n  " + (br.answer || PR.GAVE_UP) + "\n"); break; } continue; }
       protoSt.bad = 0;
@@ -1825,7 +1825,7 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
     p.stdout.setEncoding("utf8"); p.stderr.setEncoding("utf8"); // StringDecoder: a multi-byte char split across chunks isn't mangled into U+FFFD
     p.stdout.on("data", (s) => { to.touch(); out += s; if (out.length > 400000) out = out.slice(-400000); if (onChunk) onChunk(s); else if (!tuiActive) process.stdout.write(gray("    " + s.replace(/\n/g, "\n    "))); });
     p.stderr.on("data", (d) => { to.touch(); err += d; if (err.length > 20000) err = err.slice(-20000); }); // kept apart: stderr chatter ("Loaded cached credentials.") must not corrupt JSON stdout
-    p.on("close", (code) => { to.clear(); resolve({ ok: code === 0 && !killed, interrupted: killed, output: out.trim() ? out : err.slice(-12000) }); });
+    p.on("close", (code) => { to.clear(); resolve({ ok: code === 0 && !killed, interrupted: killed, streamed: !!out.trim(), output: out.trim() ? out : err.slice(-12000) }); });
     p.on("error", (e) => { to.clear(); resolve({ ok: false, output: "engine spawn error: " + e.message + " (is '" + engine + "' installed & logged in?)" }); });
   });
 }

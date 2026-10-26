@@ -984,6 +984,10 @@ group("-m/--model reaches the interactive TUI");
   const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
   ok("launch passes -m and --lean to nexusTui", /return nexusTui\([^;]*\{ model: modelOverride, lean: leanFlag/.test(src));
   ok("-p is short for --print (parser + first-run skip)", /a === "--print" \|\| a === "-p"/.test(src) && /!rest.includes\("-p"\) && firstRunPending/.test(src));
+  ok("-e/-m with no value stop with exit 2 instead of being ignored", /\(!v \|\| v\[0\] === "-"\)[^\n]*needs a value[^\n]*process\.exitCode = 2/.test(src));
+  ok("--print exits nonzero when the engine fails (and its error is shown once)", /if \(er && !er\.ok && !er\.interrupted\) \{ process\.exitCode = 1; const t = er\.streamed \? ""/.test(src) && /streamed: !!out\.trim\(\)/.test(src));
+  ok("--print exits nonzero on an Ollama error or no local model", /catch \(e\) \{ console\.log\("  " \+ red\(e\.message\)\); if \(printMode\) process\.exitCode = 1; break; \}/.test(src) && (src.match(/No local model\. Install Ollama[^\n]*?process\.exitCode = 1; return;/g) || []).length >= 1);
+  ok("one-shot passes -m to delegated engines", /runEngineTask\(engine, userMsg, cwd, autoApprove, delegated, null, null, modelOverride \|\| undefined\)/.test(src));
   ok("nexusTui applies them to the session", /function nexusTui\([^)]*launch\)/.test(src) && /if \(launch\.model\) \{ sess\.model = launch\.model;/.test(src) && /if \(launch\.lean\) lean = true;/.test(src));
 }
 
