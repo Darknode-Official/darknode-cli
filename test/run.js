@@ -966,6 +966,18 @@ group("command registry (batch 1)");
   eq("no migrated command still dispatched inline", doubled, []);
 }
 
+group("TUI crash handlers are really registered (not swallowed by a // comment)");
+{
+  // 7df3d06 put a "// terminal closed" comment in the middle of the registration line, so
+  // uncaughtException / unhandledRejection were never hooked: one stray rejected promise
+  // killed Nexus instead of printing "recovered from an internal error".
+  const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+  for (const ev of ["uncaughtException", "unhandledRejection", "SIGTERM", "SIGHUP"]) {
+    const line = src.split("\n").find((l) => l.includes('process.on("' + ev + '"')) || "";
+    ok(ev + " handler is live code", line && !/\/\/[^"]*process\.on\("/.test(line.slice(0, line.indexOf('process.on("' + ev + '"') + 12)));
+  }
+}
+
 group("render cache: only text items count as still revealing");
 {
   // thinking items carry `full` but never `shown` (no typewriter); treating them as

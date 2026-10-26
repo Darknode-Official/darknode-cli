@@ -3964,7 +3964,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
     // a rejected turn promise must never leave the UI wedged with busy=true
     const onRejection = (e) => { if (busy || (ctl)) { busy = false; ctl = null; try { transcript.push({ role: "system", text: "recovered from an internal error: " + (e && e.message || e) }); } catch (_) {} try { render(); } catch (_) {} } };
-    process.on("exit", cleanup); process.on("SIGINT", onSigint); process.on("SIGTERM", onSigterm); process.on("SIGHUP", () => { try { cleanup(); } catch (_) {} process.exit(129); }); // terminal closed: still stop background jobs (they run in their own process groups) process.on("uncaughtException", onFatal); process.on("unhandledRejection", onRejection);
+    process.on("exit", cleanup); process.on("SIGINT", onSigint); process.on("SIGTERM", onSigterm); process.on("SIGHUP", () => { try { cleanup(); } catch (_) {} process.exit(129); }); process.on("uncaughtException", onFatal); process.on("unhandledRejection", onRejection); // SIGHUP = terminal closed: still stop background jobs (they run in their own process groups)
     // ---- engine turn ----
     const submit = (text) => {
       if (compact.on) { nextQueue.push(text); render(); return; } // runs once the compaction finishes
