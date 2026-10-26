@@ -1379,6 +1379,7 @@ group("help reference (single source of truth)");
       const h = require("child_process").spawnSync(process.execPath, [path.join(__dirname, "..", "darknode.js"), "nexus", "--help"], { encoding: "utf8", env: Object.assign({}, process.env, { NO_COLOR: "1", HOME: require("os").tmpdir() }) });
       const wide = (h.stdout || "").split("\n").filter((l) => [...l].length > 80);
       ok("nexus --help fits an 80-column terminal (" + wide.length + " wide lines)", h.status === 0 && /run one task, then exit/.test(h.stdout) && wide.length === 0);
+      ok("nexus --help says --print implies -y", /implies -y/.test(h.stdout));
       ok("nexus --help documents serve and no longer claims local-only privacy", /nexus serve \[port\]/.test(h.stdout) && !/Local models only/.test(h.stdout));
     }
     ok("the nexus bin sends -h/--help to nexus help (not the darknode list) and names itself in --version", /!\["-v", "--version"\]\.includes\(args\[0\]\) && args\[0\] !== "nexus"/.test(src) && /\(_binName === "nexus" \? "nexus " : "darknode "\) \+ VERSION/.test(src));

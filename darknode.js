@@ -1536,6 +1536,7 @@ function nexusHelp() {
   console.log("    -y, --yes                     auto-approve every file write and command");
   console.log("    -p, --print                   for scripts: the answer alone on stdout,");
   console.log("                                  progress on stderr; piped input joins the task");
+  console.log("                                  (implies -y: nobody is there to approve)");
   console.log("        --lean                    minimal output (also /lean in the session)");
   console.log("        --resume / --new          reopen the last chat (default) / start blank");
   console.log("        --                        the rest is the task, even if it starts with -");
