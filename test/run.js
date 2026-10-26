@@ -982,8 +982,8 @@ group("-m/--model reaches the interactive TUI");
 {
   // the flag was parsed but never handed to nexusTui, so `nexus -m <model>` ran the default model
   const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
-  ok("launch passes modelOverride to nexusTui", /return nexusTui\([^;]*modelOverride\)/.test(src));
-  ok("nexusTui applies it to the session", /function nexusTui\([^)]*modelOverride\)/.test(src) && /if \(modelOverride\) \{ sess\.model = modelOverride;/.test(src));
+  ok("launch passes -m and --lean to nexusTui", /return nexusTui\([^;]*\{ model: modelOverride, lean: leanFlag/.test(src));
+  ok("nexusTui applies them to the session", /function nexusTui\([^)]*launch\)/.test(src) && /if \(launch\.model\) \{ sess\.model = launch\.model;/.test(src) && /if \(launch\.lean\) lean = true;/.test(src));
 }
 
 group("TUI crash handlers are really registered (not swallowed by a // comment)");
