@@ -116,7 +116,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/changelog` — release notes from git history, grouped by type
 - `/secrets` — scan the repo for leaked credentials
 - `/scan` — quick TCP port scan of a host
-- `/notify` — bell + desktop alert on long turns and questions
+- `/notify` — bell + desktop alert on long turns and questions · /notify on|off
 - `/watch` — run a cmd; auto-fix & re-run until it passes
 - `/commit` — AI commit message + commit the diff
 - `/diff` — colored word-level diff · /diff <file> · /diff --staged
