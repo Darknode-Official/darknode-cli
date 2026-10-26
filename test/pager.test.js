@@ -73,6 +73,32 @@ group("layout");
   eq("empty text still renders", pagerView(createPager("", "t"), W, H).length, H);
 }
 
+group("open with a query (/find)");
+{
+  const text = doc(100, (i) => (i === 10 || i === 60 || i === 90 ? "token leak " + i : "ok " + i));
+  const last = createPager(text, "find", { query: "leak", at: "last" }); const lv = pagerView(last, W, H).join("\n");
+  ok("lands on the newest match", lv.includes("{leak} 90") && last.hi === 2);
+  ok("says how many matches and how to go back", /3 matches · newest shown, N for older/.test(last.msg));
+  keys(last, ["N"]); ok("N steps to the older match", pagerView(last, W, H).join("\n").includes("{leak} 60"));
+  const first = createPager(text, "find", { query: "leak" }); pagerView(first, W, H);
+  eq("default lands on the first match", first.hi, 0);
+  const none = createPager(text, "find", { query: "zzz", at: "last" }); pagerView(none, W, H);
+  ok("no match is reported", /no match for "zzz"/.test(none.msg));
+  const end = createPager(doc(100), "conversation", { at: "last" });
+  ok("no query + at last opens at the end", pagerView(end, W, H)[BH].includes("line 100"));
+}
+{
+  const { conversationText } = require("../lib/cli/convo-text");
+  const t = conversationText([
+    { role: "user", text: "check the server" },
+    { role: "nexus", items: [{ type: "tool", label: "Bash(curl -I x)", status: "ok", result: { output: "HTTP/1.1 500\nServer: nginx" } }, { type: "text", full: "It returns **500**." }] },
+    { role: "system", text: "\x1b[32mdone\x1b[0m" },
+  ], (r) => (r && r.output) || String(r));
+  ok("prompts, tool output (indented) and answers are all searchable", t.includes("❯ check the server") && t.includes("● Bash(curl -I x)\n    HTTP/1.1 500\n    Server: nginx") && t.includes("It returns **500**."));
+  ok("system notes are included without colour codes", t.includes("done") && !t.includes("\x1b"));
+  eq("empty transcript is empty text", conversationText([], null), "");
+}
+
 group("limits");
 {
   const big = createPager(doc(250000), "big");

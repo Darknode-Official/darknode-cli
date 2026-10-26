@@ -57,7 +57,8 @@ const { CMD_MAP } = require("./lib/cli/registry"); // data-driven command regist
 const { renderMd } = require("./lib/cli/md-render");
 const { findLinks, openLink } = require("./lib/cli/links");
 const Tail = require("./lib/cli/tool-tail"); // live tail of a running command under its tool card
-const Pager = require("./lib/cli/pager"); // /pager: read a whole tool output in-place (less-style keys + search) // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
+const Pager = require("./lib/cli/pager");
+const { conversationText } = require("./lib/cli/convo-text"); // /find: the whole conversation (with tool output) as searchable text // /pager: read a whole tool output in-place (less-style keys + search) // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
 const { asText, sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
@@ -2816,7 +2817,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/autoupdate", "auto-update on launch: /autoupdate on | check | off"],
       ["/next", "queue a prompt after the current turn (Ctrl+X / Ctrl+S runs it now; clear / rm <n> to manage)"],
       ["/btw", "side question — answered from context, never saved to history"],
-      ["/pager", "read the newest tool output in full: /pager [n] | answer (j/k, space, g/G, / search, q)"],
+      ["/find", "search the whole conversation, tool output included: /find <text> (n/N step through matches, q closes)"], ["/pager", "read the newest tool output in full: /pager [n] | answer (j/k, space, g/G, / search, q)"],
       ["/compat", "which features this model supports (nothing is hidden)"],
       ["/mode", "capability preset: /mode power|cost|speed|reset (model-compatible only)"],
       ["/god-prompt", "arm max-quality mode for your NEXT message only (gold border, auto-reverts)"],
@@ -4799,7 +4800,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // only reads state, so it is safe to run while the agent is working.
     const SIDE_CMDS = new Set(["/cost", "/status", "/context", "/turns", "/ledger", "/cheaper", "/tokens", "/warm", "/savings", "/impact", "/session", "/activity", "/keys", "/compat", "/estimate", "/recent", "/tree", "/stats", "/pins", "/help", "/docs"]);
     const sideName = (t) => { const m = /^\/[^\s]+/.exec(String(t || "").trim()); return m ? m[0].toLowerCase() : ""; };
-    const isInstant = (t) => { const c = sideName(t); if (aliases[c] || customCmds[c]) return false; return c === "/btw" || c === "/pager" || c === "/less" || SIDE_CMDS.has(c); }; // your alias/custom command of the same name wins (it may start a turn)
+    const isInstant = (t) => { const c = sideName(t); if (aliases[c] || customCmds[c]) return false; return c === "/btw" || c === "/pager" || c === "/less" || c === "/find" || SIDE_CMDS.has(c); }; // your alias/custom command of the same name wins (it may start a turn)
     let _inSide = false;
     const runSide = (t) => {
       const n0 = transcript.length;
@@ -5242,6 +5243,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/lean") { lean = !lean; saveSetting("lean", lean); transcript.push({ role: "system", text: "lean mode " + (lean ? "ON — saves tokens:\n  • minimal output (no preamble/recap)\n  • agent steps capped at 12 per turn\n  • tool output truncated to 8K chars\n  • read_file capped at 8K chars\n  • @file inline capped at 3K chars\n  • per-turn output budget: 8K tokens\n  • history pruned to last 4 messages\n  • claude --max-turns 8\n  toggle off with /lean" : "OFF — full power, no token limits") }); }
       else if (cmd === "/style") { if (arg && styleMap[arg] !== undefined) { style = arg; saveSetting("style", arg); transcript.push({ role: "system", text: "output style: " + bold(arg) + (arg === "default" ? "" : " — " + styleDir(arg)) + gray("  (applies to every engine)") }); } else transcript.push({ role: "system", text: "output styles (shape HOW the AI works — add your own as .nexus/styles/<name>.md):\n" + Object.keys(styleMap).map((n) => "  " + (n === style ? cyan("● " + n) : "  " + n) + gray(n === "default" ? "" : "  " + styleDir(n).slice(0, 60))).join("\n") + "\n  usage: /style <name>" }); }
       else if (cmd === "/btw") { askBtw(argstr); }
+      else if (cmd === "/find") { // search the whole conversation, tool output included, in the pager — lands on the newest match
+        const q = argstr.trim(), txt = conversationText(transcript.filter((b) => !(b && b.ephemeral)), asText);
+        if (!txt.trim()) transcript.push({ role: "system", text: "nothing to search yet" });
+        else pager = Pager.createPager(txt, q ? "find \"" + q + "\"" : "conversation", q ? { query: q, at: "last" } : { at: "last" });
+      }
       else if (cmd === "/pager" || cmd === "/less") {
         // Newest first: every finished tool result, plus Nexus answers for "/pager answer".
         const a = (argstr || "").trim().toLowerCase(), want = a === "answer" ? "text" : "tool", n = Math.max(1, parseInt(a, 10) || 1);
