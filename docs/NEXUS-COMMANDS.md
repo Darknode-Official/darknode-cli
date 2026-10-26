@@ -32,7 +32,7 @@ Pasting an image path or attaching one with @ shows 'attached N image(s)' and se
 
 /btw <question> asks a quick side question answered from the conversation so far. It opens a framed card and is NOT saved to the chat history.
 
-/pager opens the newest tool output in full inside the TUI (the transcript only previews it): j/k or arrows scroll, space/b page, g/G jump to top/end, / searches (smart case), n/N step through matches, q closes. /pager 2 opens the one before; /pager answer pages the last answer. /less is the same command. While a shell command runs, its card shows the last lines it printed (Ctrl+O shows more), and /pager opens a snapshot of everything so far.
+/pager opens the newest tool output in full inside the TUI (the transcript only previews it): j/k or arrows scroll, space/b page, g/G jump to top/end, / searches (smart case), n/N step through matches, y copies everything shown, q closes. /pager 2 opens the one before; /pager answer pages the last answer. /less is the same command. While a shell command runs, its card shows the last lines it printed (Ctrl+O shows more), and /pager opens a snapshot of everything so far.
 
 /find <text> searches the whole conversation — your prompts, every answer and every tool output — in the same pager, landing on the newest match; N steps to older matches, n to newer. /find alone opens the whole conversation at the end.
 

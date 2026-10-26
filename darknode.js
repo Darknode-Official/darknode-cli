@@ -6128,7 +6128,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (pager && !pendingAsk && !pendingEffort) {
         const ph = Math.max(5, rows() - 4) - 2;
         if (isMouse) { const mm = /^\x1b\[<(\d+);/.exec(s); if (mm && (+mm[1] & ~3) === 64) { Pager.scrollBy(pager, (+mm[1] & 1) ? 3 : -3, ph); render(); } return; }
-        if (Pager.pagerKey(pager, s, ph) === "close") pager = null;
+        const _pr = Pager.pagerKey(pager, s, ph);
+        if (_pr === "close") pager = null;
+        else if (_pr === "copy") { const _how = copyToClipboard(pager.lines.join("\n"), out); pager.msg = "copied " + pager.lines.length.toLocaleString("en-US") + " line" + (pager.lines.length === 1 ? "" : "s") + " → " + _how; }
         render(); return;
       }
       // ---- the /btw side-question overlay owns the keyboard while open ----

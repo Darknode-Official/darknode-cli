@@ -29,6 +29,8 @@ group("movement");
   keys(st, ["G", "j", "j"]); eq("never scrolls past the end", firstNum(st), 100 - BH + 1);
   scrollBy(st, -5, BH); eq("wheel scroll", firstNum(st), 100 - BH - 4);
   eq("q closes", keys(st, ["q"]), "close");
+  eq("y asks the host to copy", pagerKey(open("a\nb"), "y", BH), "copy");
+  { const ty = open("x"); keys(ty, ["/", "y"]); ok("y while typing a search is text", ty.input === "y"); }
   eq("esc closes", pagerKey(open("x"), "\x1b", BH), "close");
 }
 
