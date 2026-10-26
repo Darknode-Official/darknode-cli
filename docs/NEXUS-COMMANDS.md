@@ -152,7 +152,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/cowork` — strong model codes, weak model does cheap work
 - `/cheap` — max token savings with ZERO quality loss (status · off)
 - `/tight` — surgical edits — change only what differs (lossless)
-- `/lean` — ask for minimal output (saves output tokens)
+- `/lean` — ask for minimal output (saves output tokens) · /lean on|off
 - `/style` — output style: concise·explanatory·review·tdd·secure·teacher
 - `/effort` — claude thinking level — interactive slider (or low|medium|high|xhigh|max|ultracode)
 - `/estimate` — rough token/cost of a prompt before sending (opens in the side panel)
@@ -178,7 +178,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/hack` — offensive-security mode — pentest/CTF persona + the Darknode toolkit
 - `/pentest` — HYDRA — interactive AI-assisted penetration testing · /pentest <target>
 - `/ai-prompt` — AI rewrites & sharpens your prompt, then loads it to edit/send
-- `/offline` — local-only privacy lock
+- `/offline` — local-only privacy lock · /offline on|off
 - `/todo` — scan the project for TODO/FIXME/HACK markers (/todo <TAG> filters)
 - `/stats` — codebase overview: files, lines & languages, largest files (opens in the side panel)
 - `/deps` — dependency hygiene: unused + undeclared package imports
