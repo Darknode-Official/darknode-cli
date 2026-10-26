@@ -1531,6 +1531,7 @@ function nexusHelp() {
   console.log("        --lean                         minimal output (also /lean in the session)");
   console.log("        --resume / --new               reopen the last chat (default) / start blank");
   console.log("        --                             end of options: the rest is task text, even if it starts with -");
+  console.log("    -v, --version                      print the version");
   console.log("    -h, --help                         show this help\n");
   console.log("  " + bold("IN-SESSION COMMANDS"));
   console.log("    /help lists every command  ·  /model [name]  ·  /clear  ·  /undo  ·  /diff  ·  /exit");
@@ -1559,6 +1560,7 @@ async function aiCoder(argv) {
     else if (a === "--new" || a === "--fresh") resumeFlag = "new";
     else if (a === "-m" || a === "--model" || a === "-e" || a === "--engine") { const v = arr[++i]; if (!v || v[0] === "-") { console.error("  " + red(a + " needs a value") + gray(a[1] === "e" || a === "--engine" ? " — e.g. -e ollama  (" + ENGINE_ORDER.join(", ") + ", api)" : " — e.g. -m gpt-oss:20b")); process.exitCode = 2; return; } if (a === "-m" || a === "--model") modelOverride = v; else enginePref = v; }
     else if (a === "-h" || a === "--help") return nexusHelp();
+    else if (a === "--version" || a === "-v" || a === "-V") { console.log("nexus " + VERSION); return; }
     else if (a === "--") { parts.push(...arr.slice(i + 1)); break; } // end of options: what follows is task text even if it starts with "-"
     else { if (a[0] === "-" && a.length > 1 && !/^-\d/.test(a)) unknownFlags.push(a); parts.push(a); } // a flag-looking token is probably a typo (e.g. --modell); warn but still pass it through as task text so nothing silently breaks
   }

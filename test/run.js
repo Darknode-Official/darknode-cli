@@ -991,6 +991,7 @@ group("-m/--model reaches the interactive TUI");
   ok("--print keeps stdout to the raw answer (progress to stderr, engine output unindented)", /if \(printMode\) console\.log = console\.error\.bind\(console\)/.test(src) && /delegated, printMode \? \(c\) => process\.stdout\.write\(c\) : null/.test(src) && /if \(printMode\) answer\(o\.final \|\| "done"\)/.test(src));
   ok("-p adds piped stdin to the task, only from a pipe or file (never waits on a parent's open socket), capped for argv", /if \(printMode && parts\.length && !process\.stdin\.isTTY\)/.test(src) && /st\.isFIFO\(\) \|\| st\.isFile\(\)/.test(src) && /--- stdin ---/.test(src) && /const CAP = 100000/.test(src));
   ok("-- ends options (task text may start with -), and nexus serve passes the goal after it with an optional model", /else if \(a === "--"\) \{ parts\.push\(\.\.\.arr\.slice\(i \+ 1\)\); break; \}/.test(src) && /"--print", "-e", eng, \.\.\.model, "--", goal\]/.test(src));
+  ok("darknode nexus --version / -v / -V print the version instead of sending it to the model", /a === "--version" \|\| a === "-v" \|\| a === "-V"\) \{ console\.log\("nexus " \+ VERSION\); return; \}/.test(src));
   ok("nexusTui applies them to the session", /function nexusTui\([^)]*launch\)/.test(src) && /if \(launch\.model\) \{ sess\.model = launch\.model;/.test(src) && /if \(launch\.lean\) lean = true;/.test(src));
 }
 
