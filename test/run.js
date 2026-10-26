@@ -1402,6 +1402,7 @@ group("help reference (single source of truth)");
       ok("nexus serve: a bad port (abc, 0, 99999) stops with exit 2 instead of serving on 8765 or a raw Node error", ["abc", "0", "99999"].every((p) => { const r = sv(p); return r.status === 2 && new RegExp("not a port: " + p).test(r.stderr); }));
       ok("nexus serve: a port in use says so and suggests the next one", /e\.code === "EADDRINUSE" \? "port " \+ port \+ " is already in use"/.test(src) && /pick another: nexus serve /.test(src));
     }
+    ok("/status names the model the status bar shows (also before the first turn)", /"\\n  model    " \+ \(modelLabel\(shownModel\(\)\) \|\| "engine default"\)/.test(src));
     ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
   }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));
