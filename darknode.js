@@ -752,14 +752,15 @@ async function nexusServe(args, ctx) {
         const goal = String(j.goal || j.task || "").trim();
         if (!goal) return send(400, { error: "missing 'goal'" });
         const eng = String(j.engine || engineDefault);
-        const child = _cp.spawn(process.execPath, [__filename, "nexus", "--print", "-e", eng, goal], { cwd: process.cwd(), env: Object.assign({}, process.env, { NO_COLOR: "1" }) });
+        const model = typeof j.model === "string" && j.model.trim() ? ["-m", j.model.trim()] : [];
+        const child = _cp.spawn(process.execPath, [__filename, "nexus", "--print", "-e", eng, ...model, "--", goal], { cwd: process.cwd(), env: Object.assign({}, process.env, { NO_COLOR: "1" }) });
         let out = "", err = ""; child.stdout.on("data", (b) => out += b); child.stderr.on("data", (b) => err += b);
         child.on("close", (code) => send(code ? 500 : 200, { ok: !code, engine: eng, output: out.trim(), error: code ? (err.trim() || "nexus exited " + code) : undefined }));
         child.on("error", (e) => send(500, { error: String((e && e.message) || e) }));
       });
       return;
     }
-    send(404, { error: "not found — GET /health · POST /run {goal}" });
+    send(404, { error: "not found — GET /health · POST /run {goal, engine?, model?}" });
   });
   srv.on("error", (e) => { console.log(red("  serve failed: " + (e && e.message || e))); process.exit(1); });
   srv.listen(port, "127.0.0.1", () => {
@@ -1529,6 +1530,7 @@ function nexusHelp() {
   console.log("    -p, --print                        headless for scripts: the answer alone on stdout, progress on stderr (piped input is added to the task)");
   console.log("        --lean                         minimal output (also /lean in the session)");
   console.log("        --resume / --new               reopen the last chat (default) / start blank");
+  console.log("        --                             end of options: the rest is task text, even if it starts with -");
   console.log("    -h, --help                         show this help\n");
   console.log("  " + bold("IN-SESSION COMMANDS"));
   console.log("    /help lists every command  ·  /model [name]  ·  /clear  ·  /undo  ·  /diff  ·  /exit");
@@ -1557,6 +1559,7 @@ async function aiCoder(argv) {
     else if (a === "--new" || a === "--fresh") resumeFlag = "new";
     else if (a === "-m" || a === "--model" || a === "-e" || a === "--engine") { const v = arr[++i]; if (!v || v[0] === "-") { console.error("  " + red(a + " needs a value") + gray(a[1] === "e" || a === "--engine" ? " — e.g. -e ollama  (" + ENGINE_ORDER.join(", ") + ", api)" : " — e.g. -m gpt-oss:20b")); process.exitCode = 2; return; } if (a === "-m" || a === "--model") modelOverride = v; else enginePref = v; }
     else if (a === "-h" || a === "--help") return nexusHelp();
+    else if (a === "--") { parts.push(...arr.slice(i + 1)); break; } // end of options: what follows is task text even if it starts with "-"
     else { if (a[0] === "-" && a.length > 1 && !/^-\d/.test(a)) unknownFlags.push(a); parts.push(a); } // a flag-looking token is probably a typo (e.g. --modell); warn but still pass it through as task text so nothing silently breaks
   }
   // Surface likely typos: an unrecognized --flag otherwise vanishes into the prompt
@@ -1651,7 +1654,7 @@ async function aiCoder(argv) {
     // @path attaches a file's contents to the prompt (e.g. "fix the bug in @src/app.js")
     const userMsg = task.replace(/(^|\s)@(\S+)/g, (m, pre, p) => { try { const c = fs.readFileSync(path.resolve(cwd, p), "utf8"); return pre + "\n\n--- " + p + " ---\n" + c.slice(0, lean ? 3000 : 6000) + "\n--- end " + p + " ---\n"; } catch (_) { return m; } });
     messages.push({ role: "user", content: userMsg }); task = "";
-    console.log(cyan("  ▎ ") + bold("nexus") + gray("  " + engine) + "\n");
+    if (!printMode) console.log(cyan("  ▎ ") + bold("nexus") + gray("  " + engine) + "\n");
     if (engine !== "ollama") {
       const er = await runEngineTask(engine, userMsg, cwd, autoApprove, delegated, printMode ? (c) => process.stdout.write(c) : null, null, modelOverride || undefined);
       if (er && !er.ok && !er.interrupted) { process.exitCode = 1; const t = er.streamed ? "" : (er.output || "").trim(); if (t) console.error("  " + red(t.split("\n").slice(-6).join("\n  "))); } // a failed engine ran silently with exit 0 before; scripts using --print need the nonzero code
