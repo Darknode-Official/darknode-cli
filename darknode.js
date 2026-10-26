@@ -1720,24 +1720,7 @@ function hasBin(b) {
   return (_binCache[b] = false);
 }
 
-// Best-effort desktop notification on every OS (was Linux-only notify-send, so
-// macOS/Windows got only a bell). Fire-and-forget; errors are swallowed. The
-// title/body are caller-controlled constant strings (no user input), so the
-// inline shell payloads below carry nothing that needs escaping.
-function osNotify(title, body) {
-  try {
-    if (process.platform === "darwin") {
-      _cp.spawn("osascript", ["-e", 'display notification "' + body + '" with title "' + title + '"'], { stdio: "ignore" }).on("error", () => {});
-    } else if (process.platform === "win32") {
-      const ps = "$ErrorActionPreference='SilentlyContinue';Add-Type -AssemblyName System.Windows.Forms;" +
-        "$n=New-Object System.Windows.Forms.NotifyIcon;$n.Icon=[System.Drawing.SystemIcons]::Information;" +
-        "$n.BalloonTipTitle='" + title + "';$n.BalloonTipText='" + body + "';$n.Visible=$true;$n.ShowBalloonTip(5000);Start-Sleep -Seconds 6;$n.Dispose()";
-      _cp.spawn("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps], { stdio: "ignore", windowsHide: true }).on("error", () => {});
-    } else {
-      _cp.spawn("notify-send", [title, body], { stdio: "ignore" }).on("error", () => {});
-    }
-  } catch (_) {}
-}
+const { osNotify } = require("./lib/nexus/os-notify"); // desktop notification; title/body never become script source
 
 // Copy text to the clipboard and report honestly which path was used. OSC-52 is
 // always emitted (the only thing that reaches the real terminal through SSH/tmux),
@@ -2809,7 +2792,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       ["/agents", "run tasks in parallel: /agents a ;; b ;; c"], ["/mcp", "list / connect MCP servers"], ["/hooks", "show configured tool hooks"],
       ["/race", "run a prompt on every engine at once"], ["/review", "second opinion from a different engine"], ["/codereview", "AI review of your changes for real bugs · /codereview [file|branch|PR#] [--fix]"], ["/redo", "reapply an undone change"],
       ["/ultrareview", "rigorous multi-lens review of the working diff (severity-ranked)"], ["/changelog", "release notes from git history, grouped by type"],
-      ["/secrets", "scan the repo for leaked credentials"], ["/scan", "quick TCP port scan of a host"], ["/notify", "bell + desktop alert on long turns"],
+      ["/secrets", "scan the repo for leaked credentials"], ["/scan", "quick TCP port scan of a host"], ["/notify", "bell + desktop alert on long turns and questions"],
       ["/watch", "run a cmd; auto-fix & re-run until it passes"], ["/commit", "AI commit message + commit the diff"], ["/diff", "colored word-level diff · /diff <file> · /diff --staged"],
       ["/pin", "keep a file in context every turn"], ["/pins", "list pinned files"], ["/unpin", "remove a pinned file"], ["/redact", "mask secrets before cloud sends"],
       ["/ensemble", "all engines answer, then synthesize the best"], ["/settings", "all options, neatly arranged (alias /options /config)"], ["/jobs", "background commands the agent started (run_background)"], ["/loop", "autonomous goal loop: /loop [-n rounds] <goal> until GOAL-DONE"], ["/team", "multi-model workspace: architect + builder + reviewer, loops to PASS"], ["/policy", "show the enterprise security policy (org + local)"], ["/audit", "audited tool actions · /audit verify (tamper check)"], ["/bench", "speed / tokens / cost table per engine"], ["/explain", "explain the diff or a file in plain English"], ["/test", "generate & run unit tests for a file"], ["/refactor", "restructure code for clarity without changing behavior"], ["/migrate", "migrate code: /migrate <from> to <to>"], ["/pr", "AI-write a PR title+body from the diff and open it (gh)"],
@@ -3780,6 +3763,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     // if they skip with Esc). The key loop drives pendingAsk via Ask.askKey. ----
     const askUser = (question, options, extra) => new Promise((resolve) => {
       pendingAsk = Object.assign({ question: String(question || ""), options: options || [], sel: 0, picked: [], text: "", resolve }, extra || {});
+      if (notify) { try { out.write("\x07"); } catch (_) {} osNotify("Nexus needs your answer", String(question || "")); } // the turn is paused on you — /notify also covers this
       scroll = 0; render();
     });
     // ---- the ask bridge: lets an EXTERNAL engine's model raise this same popup.
@@ -5091,7 +5075,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       else if (cmd === "/changelog") { (async () => { const range = arg && arg.trim() ? arg.trim() : null; let rng = range; if (!rng) { const t = await sh(["describe", "--tags", "--abbrev=0"]); const tag = (t.stdout || "").trim(); rng = tag ? tag + "..HEAD" : ""; } const lg = await sh(["log", "--no-color", "--pretty=%h%x09%s"].concat(rng ? [rng] : ["-40"])); const commits = parseCommits(lg.stdout || ""); const md = renderChangelog(commits, { title: "Changelog", range: rng || "recent" }); transcript.push({ role: "system", text: commits.length ? md : "no commits found" + (rng ? " in " + rng : "") }); render(); })(); }
       else if (cmd === "/secrets") { try { const files = _cp.execSync("git ls-files", { cwd, encoding: "utf8" }).split("\n").filter(Boolean).slice(0, 1500); const found = []; for (const f of files) { try { if (fs.statSync(path.join(cwd, f)).size > 400000) continue; const hits = scanSecrets(fs.readFileSync(path.join(cwd, f), "utf8")); if (hits.length) found.push("  " + f + " — " + hits.join(", ")); } catch (_) {} } transcript.push({ role: "system", text: found.length ? ("possible secrets found in tracked files:\n" + found.slice(0, 40).join("\n")) : "scanned tracked files — no obvious secrets found" }); } catch (_) { transcript.push({ role: "system", text: "/secrets needs a git repo (uses git ls-files)" }); } }
       else if (cmd === "/scan") { const host = arg || "127.0.0.1"; const COMMON = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 9000]; transcript.push({ role: "system", text: "scanning " + host + " (" + COMMON.length + " common TCP ports)…" }); render(); quickScan(host, COMMON).then((open) => { transcript.push({ role: "system", text: open.length ? ("open on " + host + ": " + open.join(", ")) : "no common ports open on " + host }); render(); }); }
-      else if (cmd === "/notify") { notify = !notify; saveSetting("notify", notify); transcript.push({ role: "system", text: "completion notifications " + (notify ? "ON — a bell rings (and a desktop notification) when a turn over ~15s finishes, so you can step away" : "off") }); }
+      else if (cmd === "/notify") { notify = !notify; saveSetting("notify", notify); transcript.push({ role: "system", text: "completion notifications " + (notify ? "ON — a bell rings (and a desktop notification) when a turn over ~15s finishes or Nexus stops to ask you something, so you can step away" : "off") }); }
       else if (cmd === "/watch") { if (!argstr) transcript.push({ role: "system", text: "usage: /watch <command>  — runs it, and if it fails has " + engine + " fix the code and re-run, up to 5 times (e.g. /watch npm test)" }); else watchFix(argstr); }
       else if (cmd === "/commit") commitChanges();
       else if (cmd === "/diff") {

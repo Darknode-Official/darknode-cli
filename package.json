@@ -22,7 +22,7 @@
   "scripts": {
     "start": "node darknode.js",
     "build": "pkg . --out-path dist",
-    "test": "node test/run.js && node test/authz.test.js && node test/composer.test.js && node test/term.test.js && node test/md-render.test.js && node test/links.test.js && node test/pager.test.js && node test/tool-tail.test.js",
+    "test": "node test/run.js && node test/authz.test.js && node test/composer.test.js && node test/term.test.js && node test/md-render.test.js && node test/links.test.js && node test/pager.test.js && node test/tool-tail.test.js && node test/os-notify.test.js",
     "postinstall": "node scripts/postinstall.js",
     "docs": "node scripts/gen-nexus-docs.js"
   },
