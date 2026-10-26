@@ -735,7 +735,9 @@ function fileHash(f) {
 // 127.0.0.1 only + Bearer token. `darknode nexus serve [port]`.
 async function nexusServe(args, ctx) {
   const crypto = require("crypto");
-  const port = parseInt((args || []).find((a) => /^\d+$/.test(a)) || process.env.DARKNODE_SERVE_PORT || "", 10) || 8765;
+  const rawPort = String((args || [])[0] || process.env.DARKNODE_SERVE_PORT || "8765").trim();
+  const port = /^\d+$/.test(rawPort) ? +rawPort : NaN;
+  if (!(port >= 1 && port <= 65535)) { console.error(red("  not a port: " + rawPort) + gray(" — use a number from 1 to 65535, e.g. nexus serve 8765")); process.exitCode = 2; return; }
   const token = process.env.DARKNODE_SERVE_TOKEN || crypto.randomBytes(24).toString("base64url");
   const engineDefault = (ctx && ctx.engine) || "claude";
   const srv = http.createServer((req, res) => {
@@ -765,7 +767,7 @@ async function nexusServe(args, ctx) {
     }
     send(404, { error: "not found — GET /health · POST /run {goal, engine?, model?}" });
   });
-  srv.on("error", (e) => { console.log(red("  serve failed: " + (e && e.message || e))); process.exit(1); });
+  srv.on("error", (e) => { console.error(red("  serve failed: " + (e && e.code === "EADDRINUSE" ? "port " + port + " is already in use" : (e && e.message || e))) + (e && e.code === "EADDRINUSE" ? gray(" — pick another: nexus serve " + (port < 65535 ? port + 1 : 8765)) : "")); process.exit(1); });
   srv.listen(port, "127.0.0.1", () => {
     h1("Nexus headless service");
     console.log("  " + green("listening ") + cyan("http://127.0.0.1:" + port) + gray("   (loopback only)"));
