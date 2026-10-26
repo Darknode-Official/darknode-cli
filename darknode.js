@@ -755,7 +755,10 @@ async function nexusServe(args, ctx) {
         const model = typeof j.model === "string" && j.model.trim() ? ["-m", j.model.trim()] : [];
         const child = _cp.spawn(process.execPath, [__filename, "nexus", "--print", "-e", eng, ...model, "--", goal], { cwd: process.cwd(), env: Object.assign({}, process.env, { NO_COLOR: "1" }) });
         let out = "", err = ""; child.stdout.on("data", (b) => out += b); child.stderr.on("data", (b) => err += b);
-        child.on("close", (code) => send(code ? 500 : 200, { ok: !code, engine: eng, output: out.trim(), error: code ? (err.trim() || "nexus exited " + code) : undefined }));
+        // a caller that hung up gets nothing back: stop the agent instead of letting it keep working unattended
+        res.on("close", () => { if (!res.writableEnded && child.exitCode === null) child.kill("SIGTERM"); });
+        // exit 2 is a usage error (unknown/uninstalled engine, bad model flag): the request's fault, not the server's
+        child.on("close", (code) => { if (!res.writableEnded && !res.destroyed) send(code === 2 ? 400 : code ? 500 : 200, { ok: !code, engine: eng, output: out.trim(), error: code ? (err.trim() || "nexus exited " + code) : undefined }); });
         child.on("error", (e) => send(500, { error: String((e && e.message) || e) }));
       });
       return;

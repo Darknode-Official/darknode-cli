@@ -1373,6 +1373,8 @@ group("help reference (single source of truth)");
     ok("nexus --print: an explicit -e engine that is not installed exits 2 instead of swapping engines", /if \(printMode && enginePref && engine === enginePref && engine !== "ollama" && !avail\[engine\]\)[^\n]*process\.exitCode = 2; return;/.test(src));
     ok("nexus --print -e api with no API configured exits 2 (and the note never goes to stdout)", /if \(printMode\) \{ console\.error\("  " \+ red\("-e api: no API configured"\)[^\n]*process\.exitCode = 2; return; \}/.test(src) && !/console\.log\("  " \+ yellow\("note: no API configured/.test(src));
     ok("nexus: blank task arguments are dropped (--print \"\" asks for a task)", /parts = parts\.filter\(\(x\) => String\(x\)\.trim\(\)\);/.test(src));
+    ok("nexus serve: a caller that hangs up stops its agent run", /res\.on\("close", \(\) => \{ if \(!res\.writableEnded && child\.exitCode === null\) child\.kill\("SIGTERM"\); \}\);/.test(src));
+    ok("nexus serve: a usage error from the child (exit 2) is a 400, not a 500", /send\(code === 2 \? 400 : code \? 500 : 200,/.test(src));
     ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
   }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));
