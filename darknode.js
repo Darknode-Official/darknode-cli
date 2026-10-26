@@ -1572,6 +1572,7 @@ async function aiCoder(argv) {
   if (typo) { console.error("  " + red("unknown option " + typo[0]) + " — did you mean " + cyan(typo[1]) + "?" + gray("  (to send it as task text, put it after --)")); process.exitCode = 2; return; }
   // Surface likely typos: an unrecognized --flag otherwise vanishes into the prompt
   // and silently wastes a (paid) turn. We keep passing it through — just say so.
+  parts = parts.filter((x) => String(x).trim()); // nexus --print "" is no task, not an empty one
   if (unknownFlags.length) console.error("  " + yellow("note: unrecognized option" + (unknownFlags.length > 1 ? "s " : " ") + unknownFlags.join(", ") + " — treated as task text. See `nexus --help`."));
   let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8")); } catch (_) {}
   const lean = leanFlag || !!cfg.lean; // minimal-output mode (also used for read/step budgets)
@@ -1582,11 +1583,19 @@ async function aiCoder(argv) {
   let nexusMd = ""; try { nexusMd = fs.readFileSync(path.join(cwd, ".nexus", "NEXUS.md"), "utf8"); } catch (_) {}
   const avail = {}; for (const e of ENGINE_ORDER) avail[e] = engineAvail(e);
   // "api" is an alias for the local tool loop pointed at the configured API.
-  if (enginePref === "api") { enginePref = "ollama"; if (!apiConfigured() && !cfg.apiModel) console.log("  " + yellow("note: no API configured — set DARKNODE_API_BASE (+ DARKNODE_API_KEY) or run /api <url> [model]")); }
+  if (enginePref === "api") {
+    enginePref = "ollama";
+    if (!apiConfigured() && !cfg.apiModel) {
+      // a script that asked for the API must not quietly get a local model instead
+      if (printMode) { console.error("  " + red("-e api: no API configured") + gray(" — set DARKNODE_API_BASE (+ DARKNODE_API_KEY), or apiBase in .nexus/config.json")); process.exitCode = 2; return; }
+      console.error("  " + yellow("note: no API configured — set DARKNODE_API_BASE (+ DARKNODE_API_KEY) or run /api <url> [model]"));
+    }
+  }
   // Default to Claude headless when installed, fall back to Ollama.
   if (enginePref && !ENGINES[enginePref]) { console.error("  " + red("unknown engine '" + enginePref + "'") + gray(" — choose one of: " + ENGINE_ORDER.join(", ") + " (or api)")); process.exitCode = 2; return; }
   let engine = enginePref || cfg.engine || (avail.claude ? "claude" : "ollama");
   if (!ENGINES[engine]) engine = avail.claude ? "claude" : "ollama"; // a stale/invalid config.json engine
+  if (printMode && enginePref && engine === enginePref && engine !== "ollama" && !avail[engine]) { console.error("  " + red("the " + engine + " engine isn't installed") + gray(" — install it, or pick another with -e (" + ENGINE_ORDER.filter((e) => avail[e] || e === "ollama").join(", ") + ")")); process.exitCode = 2; return; } // --print -e X runs X or nothing
   if (engine !== "ollama" && !avail[engine]) { const fb = avail.claude ? "claude" : "ollama"; console.error("  " + yellow("note: the " + engine + " engine isn't installed — using " + fb + " instead") + gray(" (install it, or pick one with -e)")); engine = fb; }
   // The full-screen TUI is the default interactive experience now — the old
   // line-based `darknode nexus` REPL has been retired for interactive use. Fall

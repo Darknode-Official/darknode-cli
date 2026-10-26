@@ -1370,6 +1370,9 @@ group("help reference (single source of truth)");
   {
     const src = require("fs").readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
     ok("nexus: a misspelled long option stops with exit 2 before any turn", /nearestFlag\(f, NEXUS_FLAGS\)[\s\S]{0,300}process\.exitCode = 2; return;/.test(src));
+    ok("nexus --print: an explicit -e engine that is not installed exits 2 instead of swapping engines", /if \(printMode && enginePref && engine === enginePref && engine !== "ollama" && !avail\[engine\]\)[^\n]*process\.exitCode = 2; return;/.test(src));
+    ok("nexus --print -e api with no API configured exits 2 (and the note never goes to stdout)", /if \(printMode\) \{ console\.error\("  " \+ red\("-e api: no API configured"\)[^\n]*process\.exitCode = 2; return; \}/.test(src) && !/console\.log\("  " \+ yellow\("note: no API configured/.test(src));
+    ok("nexus: blank task arguments are dropped (--print \"\" asks for a task)", /parts = parts\.filter\(\(x\) => String\(x\)\.trim\(\)\);/.test(src));
     ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
   }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));
