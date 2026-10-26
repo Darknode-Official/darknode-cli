@@ -1526,7 +1526,7 @@ function nexusHelp() {
   console.log("    -e, --engine <name>                claude (default if installed) | gemini | codex | opencode | aider | ollama | api");
   console.log("    -m, --model <name>                 model for this session (any engine that takes one)");
   console.log("    -y, --yes, --skip-permissions      auto-approve all file writes and commands");
-  console.log("    -p, --print                        headless: run one task, print the result, exit (task can be piped in)");
+  console.log("    -p, --print                        headless for scripts: the answer alone on stdout, progress on stderr (task can be piped in)");
   console.log("        --lean                         minimal output (also /lean in the session)");
   console.log("        --resume / --new               reopen the last chat (default) / start blank");
   console.log("    -h, --help                         show this help\n");
@@ -1589,6 +1589,9 @@ async function aiCoder(argv) {
   const oneShot = parts.length > 0;
   if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag === "new" ? false : (resumeFlag ? "restart" : "launch"), { model: modelOverride, lean: leanFlag, yes: autoApprove }); // like `claude -c`: the last chat comes back on every launch; --new starts blank
   if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
+  // --print is for scripts: stdout carries only the answer (raw), everything else — header, tool steps, errors — goes to stderr
+  const answer = (t) => process.stdout.write(String(t).trim() + "\n");
+  if (printMode) console.log = console.error.bind(console);
   let model = null, modelList = [];
   if (engine === "ollama") { modelList = await ollamaTags();
     // First run: auto-build the local "darknode" model when it's the effective default (nothing else chosen/installed) or explicitly requested, instead of erroring out.
@@ -1641,7 +1644,7 @@ async function aiCoder(argv) {
     messages.push({ role: "user", content: userMsg }); task = "";
     console.log(cyan("  ▎ ") + bold("nexus") + gray("  " + engine) + "\n");
     if (engine !== "ollama") {
-      const er = await runEngineTask(engine, userMsg, cwd, autoApprove, delegated, null, null, modelOverride || undefined);
+      const er = await runEngineTask(engine, userMsg, cwd, autoApprove, delegated, printMode ? (c) => process.stdout.write(c) : null, null, modelOverride || undefined);
       if (er && !er.ok && !er.interrupted) { process.exitCode = 1; const t = er.streamed ? "" : (er.output || "").trim(); if (t) console.error("  " + red(t.split("\n").slice(-6).join("\n  "))); } // a failed engine ran silently with exit 0 before; scripts using --print need the nonzero code
       delegated = true; console.log("");
       if (printMode) return;
@@ -1650,14 +1653,14 @@ async function aiCoder(argv) {
     // Greeting / trivial message → reply conversationally, never enter the tool loop.
     if (isChitchat(userMsg)) {
       let reply = ""; try { reply = await ollamaChat(model, [{ role: "system", content: "Nexus terminal assistant. Reply briefly. No tools." }, { role: "user", content: userMsg }]); } catch (_) {}
-      console.log("  " + ((reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it.") + "\n");
+      const r = (reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it."; if (printMode) answer(r); else console.log("  " + r + "\n");
       if (printMode) return; continue;
     }
     let didTool = false, nudges = 0; const protoSt = { bad: 0 };
     for (let step = 1; step <= (lean ? 12 : 25); step++) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); if (printMode) process.exitCode = 1; break; }
       let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
-      if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, messages, protoSt); if (br.stop) { console.log("\n  " + (br.answer || PR.GAVE_UP) + "\n"); break; } continue; }
+      if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, messages, protoSt); if (br.stop) { if (printMode) answer(br.answer || PR.GAVE_UP); else console.log("\n  " + (br.answer || PR.GAVE_UP) + "\n"); break; } continue; }
       protoSt.bad = 0;
       // Strip thought from context to save tokens — it's displayed, not needed in history
       const compact = { action: o.action };
@@ -1668,7 +1671,7 @@ async function aiCoder(argv) {
       if (o.thought && !printMode) console.log("  " + gray("think: " + o.thought.slice(0, 120)));
       if (o.action === "final") {
         if (!didTool && !isChitchat(userMsg) && nudges++ < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; }
-        console.log("\n  " + green("done: ") + bold(o.final || "done") + "\n"); break;
+        if (printMode) answer(o.final || "done"); else console.log("\n  " + green("done: ") + bold(o.final || "done") + "\n"); break;
       }
       const { name, a } = normalizeToolCall(o); let result;
       try {

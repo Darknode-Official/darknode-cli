@@ -987,7 +987,8 @@ group("-m/--model reaches the interactive TUI");
   ok("-e/-m with no value stop with exit 2 instead of being ignored", /\(!v \|\| v\[0\] === "-"\)[^\n]*needs a value[^\n]*process\.exitCode = 2/.test(src));
   ok("--print exits nonzero when the engine fails (and its error is shown once)", /if \(er && !er\.ok && !er\.interrupted\) \{ process\.exitCode = 1; const t = er\.streamed \? ""/.test(src) && /streamed: !!out\.trim\(\)/.test(src));
   ok("--print exits nonzero on an Ollama error or no local model", /catch \(e\) \{ console\.log\("  " \+ red\(e\.message\)\); if \(printMode\) process\.exitCode = 1; break; \}/.test(src) && (src.match(/No local model\. Install Ollama[^\n]*?process\.exitCode = 1; return;/g) || []).length >= 1);
-  ok("one-shot passes -m to delegated engines", /runEngineTask\(engine, userMsg, cwd, autoApprove, delegated, null, null, modelOverride \|\| undefined\)/.test(src));
+  ok("one-shot passes -m to delegated engines", /runEngineTask\(engine, userMsg, cwd, autoApprove, delegated, [^\n]*?, null, modelOverride \|\| undefined\)/.test(src));
+  ok("--print keeps stdout to the raw answer (progress to stderr, engine output unindented)", /if \(printMode\) console\.log = console\.error\.bind\(console\)/.test(src) && /delegated, printMode \? \(c\) => process\.stdout\.write\(c\) : null/.test(src) && /if \(printMode\) answer\(o\.final \|\| "done"\)/.test(src));
   ok("nexusTui applies them to the session", /function nexusTui\([^)]*launch\)/.test(src) && /if \(launch\.model\) \{ sess\.model = launch\.model;/.test(src) && /if \(launch\.lean\) lean = true;/.test(src));
 }
 
