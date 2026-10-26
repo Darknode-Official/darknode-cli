@@ -66,7 +66,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 
 ## All commands
 
-- `/help` — commands, input prefixes & keys (opens in the side panel)
+- `/help` — commands, input prefixes & keys · /help <word> searches them (opens in the side panel)
 - `/clear` — start a fresh chat
 - `/chat-clear` — clear the screen, keep the conversation memory
 - `/compact` — summarize & shrink the context

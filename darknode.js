@@ -2795,7 +2795,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
     const setAccent = (code) => { A.cyan = "\x1b[" + code + "m"; };
     try { const st = readGlobal("state.json", {}) || {}; if (st.accent) setAccent(st.accent); if (Array.isArray(st.gradient) && st.gradient.length) GRAD = st.gradient; } catch (_) {}
     const CMDS = [
-      ["/help", "commands, input prefixes & keys"], ["/clear", "start a fresh chat"], ["/chat-clear", "clear the screen, keep the conversation memory"], ["/compact", "summarize & shrink the context"],
+      ["/help", "commands, input prefixes & keys · /help <word> searches them"], ["/clear", "start a fresh chat"], ["/chat-clear", "clear the screen, keep the conversation memory"], ["/compact", "summarize & shrink the context"],
       ["/trust", "trust this workspace's .nexus MCP servers + hooks"],
       ["/connect", "connect an AI: local model · Claude (API) · any provider"],
       ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/cheaper", "lossless ways to spend fewer tokens"], ["/warm", "prompt-cache countdown + warm-vs-cold follow-up cost"], ["/tokens", "estimate what @-attaching a file/dir costs"], ["/alias", "make a shortcut: /alias name = text|/cmd"], ["/retry", "re-run your last prompt (fresh, no cache)"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
@@ -3334,7 +3334,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (fallback) parts.push(gray("fb:" + fallback.replace(/^claude-|-\d.*$/g, "")));
       return parts.join(gray("  ·  "));
     };
-    const hint = () => {
+    const hint = (room) => {
       if (composer.searchMode) return yellow("reverse search: ") + bold(composer.searchQuery) + gray("   ctrl+r older · enter accept · esc cancel");
       if (pasteNotice) return yellow("paste: ") + pasteNotice;
       if (linkNotice) return (linkNotice.ok ? green : yellow)(linkNotice.text);
@@ -3342,9 +3342,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       // persistent vim-mode tag whenever /vim is on (NORMAL is attention-grabbing)
       const vtag = composer.vim ? (composer.vimMode === "normal" ? bold(yellow("-- NORMAL --")) : green("-- INSERT --")) + gray(" · ") : "";
       if (scroll > 0) return vtag + yellow(scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  pgup/pgdn scroll · end jump to latest");
-      if (mode === 1) return vtag + green("⏵ accept edits on") + gray("  (shift+tab to cycle)");
-      if (mode === 2) return vtag + cyan("⏸ plan mode on") + gray("  (shift+tab to cycle)");
-      if (mode === 3) return vtag + bold(red("⏵⏵ bypass permissions on")) + gray("  (shift+tab to cycle)");
+      // the mode is safety state: on a narrow terminal the "(shift+tab…)" tip goes first, never the mode itself
+      const md = (lab) => vtag + lab + (room == null || strWidth(stripA(vtag + lab)) + 22 <= room ? gray("  (shift+tab to cycle)") : "");
+      if (mode === 1) return md(green("⏵ accept edits on"));
+      if (mode === 2) return md(cyan("⏸ plan mode on"));
+      if (mode === 3) return md(bold(red("⏵⏵ bypass permissions on")));
       return vtag + gray(composer.vim ? "esc: normal · i: insert · ? for shortcuts" : "? for shortcuts");
     };
     // matching slash commands for the popup menu (active when the input is a bare /command being typed)
@@ -3738,7 +3740,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
           for (const [label, cmd] of NAV_BUTTONS) chip(label, { kind: "run", cmd });
           frame.push(str);
         } else {
-          frame.push(footerLine(hint(), statusBar() + gray("  ···"), C));
+          const _sb = statusBar(), _room = C - 4 - strWidth(stripA(_sb)) - 5, _hl = hint(_room), _hw = strWidth(stripA(_hl));
+          // a mode that doesn't fit shortens the status side instead of being cut or dropped
+          frame.push(footerLine(_hl, (mode && _hw > _room ? clip(_sb, Math.max(0, C - 4 - _hw - 5 - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : _sb) + gray("  ···"), C));
           clickZones.push({ row, c0: C - 4, c1: C - 1, kind: "toggle" });
         }
       }
@@ -4832,7 +4836,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const clearWasPending = clearPending; if (cmd !== "/clear" && cmd !== "/new") clearPending = false;
       if (aliases[cmd]) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") { if (_aliasDepth >= 5) { transcript.push({ role: "system", text: "alias " + cmd + " loops back on itself (aliases calling aliases more than 5 deep) — fix it with /alias" }); return; } _aliasDepth++; try { handleSlash(body.trim()); } finally { _aliasDepth--; } } else submit(body.trim()); return; }
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
-      if (cmd === "/help") {
+      if (cmd === "/help" && argstr.trim()) { // /help <word>: every command, key and guide line that mentions it (same search as /docs)
+        const q = argstr.trim(), hits = NexusDocs.search(nexusRef(), q);
+        transcript.push({ role: "system", dismissable: true, text: hits.length ? bold("help — \"" + q + "\"") + "\n\n" + hits.map((h) => /^## /.test(h) ? cyan(h.slice(3)) : "  " + h.replace(/^- /, "").replace(/`([^`]+)`/g, (_, c) => cyan(c))).join("\n") : "no help mentions \"" + q + "\" — /help lists every command, / searches them by name" });
+      }
+      else if (cmd === "/help") {
         const HS = HELP_SECTIONS;
         transcript.push({ role: "system", dismissable: true, lines: helpLines(HS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }).concat(["", gray("  " + allCmds().length + " commands in total — type / to search them, or /keys for shortcuts."), gray("  (Esc closes this)")]) });
       }
