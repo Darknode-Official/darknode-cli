@@ -32,7 +32,7 @@ Pasting an image path or attaching one with @ shows 'attached N image(s)' and se
 
 /btw <question> asks a quick side question answered from the conversation so far. It opens a framed card and is NOT saved to the chat history.
 
-/pager opens the newest tool output in full inside the TUI (the transcript only previews it): j/k or arrows scroll, space/b page, g/G jump to top/end, / searches (smart case), n/N step through matches, q closes. /pager 2 opens the one before; /pager answer pages the last answer. /less is the same command.
+/pager opens the newest tool output in full inside the TUI (the transcript only previews it): j/k or arrows scroll, space/b page, g/G jump to top/end, / searches (smart case), n/N step through matches, q closes. /pager 2 opens the one before; /pager answer pages the last answer. /less is the same command. While a shell command runs, its card shows the last lines it printed (Ctrl+O shows more), and /pager opens a snapshot of everything so far.
 
 In the card: type a follow-up and press Enter to ask it · Enter or Esc on an empty field closes · Esc clears a typed follow-up · Left/Right step through earlier side answers · Up/Down, PgUp/PgDn and the mouse wheel scroll · Ctrl+Y copies the answer · Ctrl+X forgets all side questions. /btw with no question reopens the last one.
 
