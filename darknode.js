@@ -1522,28 +1522,39 @@ function nexusDocsText(topic) {
 }
 function nexusHelp() {
   banner();
-  console.log("  " + bold("Nexus") + " — terminal AI coding agent (Claude by default; also Gemini, Codex, OpenCode, Aider, local Ollama, or any OpenAI-compatible API)\n");
+  // kept within 80 columns: wrapped help lines in a standard terminal are hard to scan
+  console.log("  " + bold("Nexus") + " — terminal AI coding agent. Claude by default; also Gemini, Codex,");
+  console.log("  OpenCode, Aider, local Ollama, or any OpenAI-compatible API.\n");
   console.log("  " + bold("USAGE"));
-  console.log("    darknode nexus [options] [task]     one-shot task, or interactive REPL if no task given");
-  console.log("    darknode nexus                      interactive session\n");
+  console.log("    nexus                         full-screen session in this folder");
+  console.log("    nexus [options] \"task\"        run one task, then exit");
+  console.log("    nexus serve [port]            local HTTP API (loopback only, bearer token)\n");
   console.log("  " + bold("OPTIONS"));
-  console.log("    -e, --engine <name>                claude (default if installed) | gemini | codex | opencode | aider | ollama | api");
-  console.log("    -m, --model <name>                 model for this session (any engine that takes one)");
-  console.log("    -y, --yes, --skip-permissions      auto-approve all file writes and commands");
-  console.log("    -p, --print                        headless for scripts: the answer alone on stdout, progress on stderr (piped input is added to the task)");
-  console.log("        --lean                         minimal output (also /lean in the session)");
-  console.log("        --resume / --new               reopen the last chat (default) / start blank");
-  console.log("        --                             end of options: the rest is task text, even if it starts with -");
-  console.log("    -v, --version                      print the version");
-  console.log("    -h, --help                         show this help\n");
-  console.log("  " + bold("IN-SESSION COMMANDS"));
-  console.log("    /help lists every command  ·  /model [name]  ·  /clear  ·  /undo  ·  /diff  ·  /exit");
-  console.log("    shift+tab cycles the permission mode (accept edits · plan · bypass)\n");
-  console.log("  " + gray("Attach a file to a task with @path  —  e.g.  fix the bug in @src/app.js") + "\n");
-  console.log("  " + bold("ENV") + "   DARKNODE_MODEL (default model) · OLLAMA_HOST / OLLAMA_PORT (remote Ollama)");
-  console.log("        DARKNODE_FAST / NO_MOTION (skip boot animation) · DARKNODE_NO_DEFAULT_MCP (no bundled MCP) · DARKNODE_TRUST_REPO (trust repo hooks/MCP) · NO_COLOR / FORCE_COLOR");
-  console.log("        " + gray("Any model: DARKNODE_API_BASE + DARKNODE_API_KEY point Nexus at any OpenAI-compatible API (OpenRouter, Groq, DeepSeek, vLLM…), or use /api in the TUI") + "\n");
-  console.log("  " + gray("Nexus reads & writes files and runs commands in the current folder. Local models only — private.") + "\n");
+  console.log("    -e, --engine <name>           claude | gemini | codex | opencode | aider |");
+  console.log("                                  ollama | api   (default: claude if installed)");
+  console.log("    -m, --model <name>            model for this run (engines that take one)");
+  console.log("    -y, --yes                     auto-approve every file write and command");
+  console.log("    -p, --print                   for scripts: the answer alone on stdout,");
+  console.log("                                  progress on stderr; piped input joins the task");
+  console.log("        --lean                    minimal output (also /lean in the session)");
+  console.log("        --resume / --new          reopen the last chat (default) / start blank");
+  console.log("        --                        the rest is the task, even if it starts with -");
+  console.log("    -v, --version                 print the version");
+  console.log("    -h, --help                    show this help\n");
+  console.log("  " + bold("IN THE SESSION"));
+  console.log("    /help lists every command · /model · /clear · /undo · /diff · /exit");
+  console.log("    shift+tab cycles permissions (accept edits · plan · bypass)");
+  console.log("    " + gray("@path attaches a file:  fix the bug in @src/app.js") + "\n");
+  console.log("  " + bold("ENVIRONMENT"));
+  console.log("    DARKNODE_API_BASE, DARKNODE_API_KEY   any OpenAI-compatible API (or /api)");
+  console.log("    DARKNODE_MODEL                        default model");
+  console.log("    OLLAMA_HOST, OLLAMA_PORT              a remote Ollama");
+  console.log("    DARKNODE_TRUST_REPO                   trust this repo's hooks and MCP");
+  console.log("    DARKNODE_NO_DEFAULT_MCP               skip the bundled MCP servers");
+  console.log("    DARKNODE_FAST, NO_MOTION              skip the boot animation");
+  console.log("    NO_COLOR, FORCE_COLOR                 colour off / on\n");
+  console.log("  " + gray("Nexus reads and writes files and runs commands in the current folder."));
+  console.log("  " + gray("Prompts go to the engine you pick: -e ollama keeps everything on this machine.") + "\n");
 }
 
 const NEXUS_FLAGS = ["--yes", "--skip-permissions", "--dangerously-skip-permissions", "--print", "--lean", "--tui", "--ui", "--resume", "--new", "--fresh", "--model", "--engine", "--help", "--version"];
@@ -6527,11 +6538,12 @@ const args = process.argv.slice(2);
 // `nexus overnight …`, `nexus agents …` work the same as `darknode nexus …`, and a
 // bare `nexus` drops straight into the agent TUI (handled in the args.length===0 branch).
 const _binName = require("path").basename(process.argv[1] || "", ".js");
-if (_binName === "nexus" && args.length && !["-v", "--version", "-h", "--help"].includes(args[0]) && args[0] !== "nexus") {
+// (-h/--help also go to nexus: its help, not the darknode command list, is what a nexus user needs)
+if (_binName === "nexus" && args.length && !["-v", "--version"].includes(args[0]) && args[0] !== "nexus") {
   args.unshift("nexus");
 }
 if (args[0] === "-v" || args[0] === "--version") {
-  console.log("darknode " + VERSION);
+  console.log((_binName === "nexus" ? "nexus " : "darknode ") + VERSION);
   if (!args.includes("--short")) {
     console.log(gray("  node " + process.version + " · " + process.platform + "/" + process.arch));
     const inst = ENGINE_ORDER.filter((e) => e !== "ollama" && engineAvail(e));
