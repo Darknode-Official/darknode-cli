@@ -1687,8 +1687,11 @@ async function aiCoder(argv) {
     messages.push({ role: "user", content: userMsg }); task = "";
     if (!printMode) console.log(cyan("  ▎ ") + bold("nexus") + gray("  " + engine) + "\n");
     if (engine !== "ollama") {
-      const er = await runEngineTask(engine, userMsg, cwd, autoApprove, delegated, printMode ? (c) => process.stdout.write(c) : null, null, modelOverride || undefined);
-      if (er && !er.ok && !er.interrupted) { process.exitCode = 1; const t = er.streamed ? "" : (er.output || "").trim(); if (t) console.error("  " + red(t.split("\n").slice(-6).join("\n  "))); } // a failed engine ran silently with exit 0 before; scripts using --print need the nonzero code
+      // piped --print output is held until the engine exits, so a failure ("Not logged in") never lands on stdout as if it were the answer
+      const hold = printMode && !process.stdout.isTTY;
+      const er = await runEngineTask(engine, userMsg, cwd, autoApprove, delegated, printMode ? (hold ? () => {} : (c) => process.stdout.write(c)) : null, null, modelOverride || undefined);
+      if (hold && er && er.ok && er.streamed) process.stdout.write(er.output);
+      if (er && !er.ok && !er.interrupted) { process.exitCode = 1; const t = er.streamed && !hold ? "" : (er.output || "").trim(); if (t) console.error("  " + red(t.split("\n").slice(-6).join("\n  "))); if (/not logged in|\/login\b/i.test(t)) console.error("  " + gray("sign in by running `" + ENGINES[engine].bin + "` once in a terminal, then retry")); } // a failed engine ran silently with exit 0 before; scripts using --print need the nonzero code
       delegated = true; console.log("");
       if (printMode) return;
       continue;

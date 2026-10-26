@@ -985,10 +985,10 @@ group("-m/--model reaches the interactive TUI");
   ok("launch passes -m and --lean to nexusTui", /return nexusTui\([^;]*\{ model: modelOverride, lean: leanFlag/.test(src));
   ok("-p is short for --print (parser + first-run skip)", /a === "--print" \|\| a === "-p"/.test(src) && /!rest.includes\("-p"\) && firstRunPending/.test(src));
   ok("-e/-m with no value stop with exit 2 instead of being ignored", /\(!v \|\| v\[0\] === "-"\)[^\n]*needs a value[^\n]*process\.exitCode = 2/.test(src));
-  ok("--print exits nonzero when the engine fails (and its error is shown once)", /if \(er && !er\.ok && !er\.interrupted\) \{ process\.exitCode = 1; const t = er\.streamed \? ""/.test(src) && /streamed: !!out\.trim\(\)/.test(src));
+  ok("--print exits nonzero when the engine fails (and its error is shown once)", /if \(er && !er\.ok && !er\.interrupted\) \{ process\.exitCode = 1; const t = er\.streamed && !hold \? ""/.test(src) && /streamed: !!out\.trim\(\)/.test(src));
   ok("--print exits nonzero on an Ollama error or no local model", /catch \(e\) \{ console\.log\("  " \+ red\(e\.message\)\); if \(printMode\) process\.exitCode = 1; break; \}/.test(src) && (src.match(/No local model\. Install Ollama[^\n]*?process\.exitCode = 1; return;/g) || []).length >= 1);
   ok("one-shot passes -m to delegated engines", /runEngineTask\(engine, userMsg, cwd, autoApprove, delegated, [^\n]*?, null, modelOverride \|\| undefined\)/.test(src));
-  ok("--print keeps stdout to the raw answer (progress to stderr, engine output unindented)", /if \(printMode\) console\.log = console\.error\.bind\(console\)/.test(src) && /delegated, printMode \? \(c\) => process\.stdout\.write\(c\) : null/.test(src) && /if \(printMode\) answer\(o\.final \|\| "done"\)/.test(src));
+  ok("--print keeps stdout to the raw answer (progress to stderr, engine output unindented)", /if \(printMode\) console\.log = console\.error\.bind\(console\)/.test(src) && /delegated, printMode \? \(hold \? \(\) => \{\} : \(c\) => process\.stdout\.write\(c\)\) : null/.test(src) && /if \(printMode\) answer\(o\.final \|\| "done"\)/.test(src));
   ok("-p adds piped stdin to the task, only from a pipe or file (never waits on a parent's open socket), capped for argv", /if \(printMode && parts\.length && !process\.stdin\.isTTY\)/.test(src) && /st\.isFIFO\(\) \|\| st\.isFile\(\)/.test(src) && /--- stdin ---/.test(src) && /const CAP = 100000/.test(src));
   ok("-- ends options (task text may start with -), and nexus serve passes the goal after it with an optional model", /else if \(a === "--"\) \{ parts\.push\(\.\.\.arr\.slice\(i \+ 1\)\); break; \}/.test(src) && /"--print", "-e", eng, \.\.\.model, "--", goal\]/.test(src));
   ok("darknode nexus --version / -v / -V print the version instead of sending it to the model", /a === "--version" \|\| a === "-v" \|\| a === "-V"\) \{ console\.log\("nexus " \+ VERSION\); return; \}/.test(src));
@@ -1382,6 +1382,16 @@ group("help reference (single source of truth)");
       ok("nexus --help documents serve and no longer claims local-only privacy", /nexus serve \[port\]/.test(h.stdout) && !/Local models only/.test(h.stdout));
     }
     ok("the nexus bin sends -h/--help to nexus help (not the darknode list) and names itself in --version", /!\["-v", "--version"\]\.includes\(args\[0\]\) && args\[0\] !== "nexus"/.test(src) && /\(_binName === "nexus" \? "nexus " : "darknode "\) \+ VERSION/.test(src));
+    if (process.platform !== "win32") {
+      // a stand-in claude CLI: fails like a signed-out claude, or answers "pong"
+      const os = require("os"), fs = require("fs"), bin = fs.mkdtempSync(path.join(os.tmpdir(), "nx-fake-"));
+      fs.writeFileSync(path.join(bin, "claude"), '#!/bin/sh\ncase "$*" in *--version*) echo 1.0.0; exit 0;; esac\nif [ -n "$FAKE_FAIL" ]; then echo "Not logged in · Please run /login"; exit 1; fi\necho pong\n', { mode: 0o755 });
+      const run = (fail) => require("child_process").spawnSync(process.execPath, [path.join(__dirname, "..", "darknode.js"), "nexus", "-p", "-e", "claude", "hi"], { cwd: bin, encoding: "utf8", timeout: 30000, env: Object.assign({}, process.env, { PATH: bin + path.delimiter + process.env.PATH, HOME: bin, NO_COLOR: "1", FAKE_FAIL: fail ? "1" : "" }) });
+      const bad = run(true), good = run(false);
+      ok("nexus --print piped: an engine failure leaves stdout empty, says why on stderr, exits 1", bad.status === 1 && bad.stdout.trim() === "" && /Not logged in/.test(bad.stderr) && /sign in by running `claude`/.test(bad.stderr));
+      ok("nexus --print piped: a successful answer is the whole of stdout, exit 0", good.status === 0 && good.stdout.trim() === "pong");
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
     ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
   }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));
