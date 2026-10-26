@@ -81,7 +81,7 @@ const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA co
 // ---------- data ----------
 const { SERVICES } = require("./lib/toolkit/ports"); // port<->service map, used by scan (lib/ports.js)
 const { digests, genPass } = require("./lib/toolkit/hashing"); // hash digests + password gen (lib/hashing.js)
-const { COMMAND_GROUPS, renderCommands, documentedVerbs, nearestCommands } = require("./lib/cli/reference"); // help catalog = single source of truth (lib/reference.js)
+const { COMMAND_GROUPS, renderCommands, documentedVerbs, nearestCommands, nearestFlag } = require("./lib/cli/reference"); // help catalog = single source of truth (lib/reference.js)
 // Documented darknode verbs NOT bridged into the Nexus TUI as /commands: they
 // block (server/listener), prompt for input, or already have a richer in-TUI
 // handler. Everything else documented becomes a slash command automatically.
@@ -1543,6 +1543,8 @@ function nexusHelp() {
   console.log("  " + gray("Nexus reads & writes files and runs commands in the current folder. Local models only — private.") + "\n");
 }
 
+const NEXUS_FLAGS = ["--yes", "--skip-permissions", "--dangerously-skip-permissions", "--print", "--lean", "--tui", "--ui", "--resume", "--new", "--fresh", "--model", "--engine", "--help", "--version"];
+
 async function aiCoder(argv) {
   const fs = require("fs"), path = require("path");
   const cwd = process.cwd();
@@ -1564,6 +1566,10 @@ async function aiCoder(argv) {
     else if (a === "--") { parts.push(...arr.slice(i + 1)); break; } // end of options: what follows is task text even if it starts with "-"
     else { if (a[0] === "-" && a.length > 1 && !/^-\d/.test(a)) unknownFlags.push(a); parts.push(a); } // a flag-looking token is probably a typo (e.g. --modell); warn but still pass it through as task text so nothing silently breaks
   }
+  // A clear misspelling of a real option (--prnt, --modell=x) stops before any turn
+  // is spent; anything else is passed through as task text with a note.
+  const typo = unknownFlags.map((f) => [f, nearestFlag(f, NEXUS_FLAGS)]).find(([, n]) => n);
+  if (typo) { console.error("  " + red("unknown option " + typo[0]) + " — did you mean " + cyan(typo[1]) + "?" + gray("  (to send it as task text, put it after --)")); process.exitCode = 2; return; }
   // Surface likely typos: an unrecognized --flag otherwise vanishes into the prompt
   // and silently wastes a (paid) turn. We keep passing it through — just say so.
   if (unknownFlags.length) console.error("  " + yellow("note: unrecognized option" + (unknownFlags.length > 1 ? "s " : " ") + unknownFlags.join(", ") + " — treated as task text. See `nexus --help`."));
@@ -1831,7 +1837,9 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
     // Only this engine's own args() builds its flags — nothing crosses engines.
     // The "local" (Ollama) engine has no CLI form and is driven separately.
     if (!m || !m.args || m.kind === "local") return resolve({ ok: false, output: "engine '" + engine + "' cannot run as a CLI task" });
-    const cmd = m.bin, args = m.args(prompt, { cont, autonomous, model, effort, mcpServers: extra && extra.mcpServers });
+    // A prompt starting with "-" would be parsed as an option by every engine's CLI
+    // (claude: "unknown option"); a leading space keeps it a value for all of them.
+    const cmd = m.bin, args = m.args(/^-/.test(prompt) ? " " + prompt : prompt, { cont, autonomous, model, effort, mcpServers: extra && extra.mcpServers });
     let out = "";
     const spawnEnv = (extra && extra.env) ? Object.assign({}, process.env, extra.env) : process.env; // e.g. $OPENCODE_CONFIG pointing at the Nexus ask bridge
     const p = _cp.spawn(cmd, args, { cwd, env: spawnEnv, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree

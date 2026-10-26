@@ -1360,6 +1360,18 @@ group("help reference (single source of truth)");
   ok("nearestCommands: caps at max", nearestCommands("s", 2).length <= 2);
   ok("nearestCommands: empty input -> none", nearestCommands("").length === 0);
   ok("nearestCommands: gibberish -> no bogus match", nearestCommands("zzzzqqqq").length === 0);
+  const { nearestFlag } = require("../lib/cli/reference");
+  const NF = ["--print", "--model", "--engine", "--help", "--lean", "--tui", "--yes", "--version"];
+  ok("nearestFlag: --prnt -> --print", nearestFlag("--prnt", NF) === "--print");
+  ok("nearestFlag: --modell=x -> --model (value ignored)", nearestFlag("--modell=x", NF) === "--model");
+  ok("nearestFlag: swapped letters count once (--hepl -> --help)", nearestFlag("--hepl", NF) === "--help");
+  ok("nearestFlag: unrelated words are not guessed", ["--debug", "--verbose", "--json", "--foo"].every((f) => nearestFlag(f, NF) === ""));
+  ok("nearestFlag: short options are never guessed", nearestFlag("-x", ["-y", "-v"]) === "");
+  {
+    const src = require("fs").readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+    ok("nexus: a misspelled long option stops with exit 2 before any turn", /nearestFlag\(f, NEXUS_FLAGS\)[\s\S]{0,300}process\.exitCode = 2; return;/.test(src));
+    ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
+  }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));
 }
 
