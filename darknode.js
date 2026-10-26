@@ -1886,6 +1886,7 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
 // Claude Code stream-json driver — parses NDJSON events so the TUI can render
 // tool cards, live token usage, cost and context size exactly like Claude Code.
 const ULTRACODE_DIR = "ULTRACODE is ON for this session: the user turned it on and it stands for every message until they turn it off. Aim for the most thorough, correct result you can produce; token cost is not a constraint. For any substantive task, orchestrate: use the Workflow tool (or Agent subagents) to split the work into parallel pieces, cover it from independent angles, and adversarially verify findings and changes before reporting them. Multi-phase work (understand, design, implement, review) can be several workflows in sequence. Work solo only on conversational replies or trivial mechanical edits.";
+const CLAUDE_SIGNED_OUT = "Claude Code is not signed in. Run `claude` in a terminal, sign in there (its /login), then send this again. (Nexus's own /login is your Darknode account and does not sign in Claude.)";
 function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
   opts = opts || {};
   const ultra = opts.effort === "ultracode"; // Nexus level above max: max thinking + standing multi-agent orchestration
@@ -1921,6 +1922,8 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
         else if (ev.type === "rate_limit_event") { h.onRateLimit && h.onRateLimit(ev.rate_limit_info || {}); }
         else if (ev.type === "assistant" && ev.message) {
           const pid = ev.parent_tool_use_id || null; // set on a sub-agent's (Task) own messages
+          // claude's own "Not logged in · Please run /login" points at ITS /login; in Nexus /login is the Darknode account
+          if (ev.error === "authentication_failed") ev.message.content = [{ type: "text", text: CLAUDE_SIGNED_OUT }];
           for (const c of ev.message.content || []) {
             if (c.type === "text" && c.text) { if (!pid) finalText += c.text; h.onText && h.onText(c.text, pid); }
             else if (c.type === "thinking" && c.thinking) { h.onThinking && h.onThinking(c.thinking, pid); }
@@ -1936,7 +1939,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
         else if (ev.type === "user" && ev.message) {
           for (const c of ev.message.content || []) if (c.type === "tool_result") h.onToolResult && h.onToolResult({ id: c.tool_use_id, content: c.content, isError: c.is_error }, ev.parent_tool_use_id || null);
         }
-        else if (ev.type === "result") { res = ev; if (ev.result && !finalText.trim()) finalText = ev.result; h.onResult && h.onResult(ev); }
+        else if (ev.type === "result") { res = ev; if (ev.is_error && /not logged in/i.test(ev.result || "")) ev.result = CLAUDE_SIGNED_OUT; if (ev.result && !finalText.trim()) finalText = ev.result; h.onResult && h.onResult(ev); }
       }
     });
     cp.stderr.on("data", () => { to.touch(); });

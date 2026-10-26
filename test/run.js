@@ -1403,6 +1403,7 @@ group("help reference (single source of truth)");
       ok("nexus serve: a port in use says so and suggests the next one", /e\.code === "EADDRINUSE" \? "port " \+ port \+ " is already in use"/.test(src) && /pick another: nexus serve /.test(src));
     }
     ok("/status names the model the status bar shows (also before the first turn)", /"\\n  model    " \+ \(modelLabel\(shownModel\(\)\) \|\| "engine default"\)/.test(src));
+    ok("claude stream: a signed-out claude (error authentication_failed) is told to sign in to Claude, not sent to Nexus's /login", /if \(ev\.error === "authentication_failed"\) ev\.message\.content = \[\{ type: "text", text: CLAUDE_SIGNED_OUT \}\]/.test(src) && /Nexus's own \/login is your Darknode account/.test(src));
     ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
   }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));
