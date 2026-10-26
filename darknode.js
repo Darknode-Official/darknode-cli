@@ -3334,7 +3334,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       if (fallback) parts.push(gray("fb:" + fallback.replace(/^claude-|-\d.*$/g, "")));
       return parts.join(gray("  ·  "));
     };
+    let hintIsMode = false; // set by hint() when the left footer is showing the permission mode
     const hint = (room) => {
+      hintIsMode = false;
       if (composer.searchMode) return yellow("reverse search: ") + bold(composer.searchQuery) + gray("   ctrl+r older · enter accept · esc cancel");
       if (pasteNotice) return yellow("paste: ") + pasteNotice;
       if (linkNotice) return (linkNotice.ok ? green : yellow)(linkNotice.text);
@@ -3343,7 +3345,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const vtag = composer.vim ? (composer.vimMode === "normal" ? bold(yellow("-- NORMAL --")) : green("-- INSERT --")) + gray(" · ") : "";
       if (scroll > 0) return vtag + yellow(scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  pgup/pgdn scroll · end jump to latest");
       // the mode is safety state: on a narrow terminal the "(shift+tab…)" tip goes first, never the mode itself
-      const md = (lab) => vtag + lab + (room == null || strWidth(stripA(vtag + lab)) + 22 <= room ? gray("  (shift+tab to cycle)") : "");
+      const md = (lab) => (hintIsMode = true, vtag + lab) + (room == null || strWidth(stripA(vtag + lab)) + 22 <= room ? gray("  (shift+tab to cycle)") : "");
       if (mode === 1) return md(green("⏵ accept edits on"));
       if (mode === 2) return md(cyan("⏸ plan mode on"));
       if (mode === 3) return md(bold(red("⏵⏵ bypass permissions on")));
@@ -3723,7 +3725,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
       const _curM = modelLabel(shownModel()) || engine;
       for (let i = 0; i < menuReserve; i++) {
         if (i >= menuRows) { frame.push(""); continue; }
-        const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); frame.push(clip((sel ? cyan(" › ") : "   ") + nmShown + tail + pos, C - 2));
+        const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); const head = (sel ? cyan(" › ") : "   ") + nmShown, room = C - 2 - strWidth(stripA(head)) - strWidth(stripA(pos)); frame.push(clip(head + (strWidth(stripA(tail)) > room ? clip(tail, Math.max(0, room - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : tail) + pos, C - 2)); /* a long description ends in … (and the n/N position stays visible) */
       }
       }
       for (const r of agentPanelRows) frame.push(clip(r, C)); // the Agents panel, under the prompt bar
@@ -3742,7 +3744,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume) {
         } else {
           const _sb = statusBar(), _room = C - 4 - strWidth(stripA(_sb)) - 5, _hl = hint(_room), _hw = strWidth(stripA(_hl));
           // a mode that doesn't fit shortens the status side instead of being cut or dropped
-          frame.push(footerLine(_hl, (mode && _hw > _room ? clip(_sb, Math.max(0, C - 4 - _hw - 5 - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : _sb) + gray("  ···"), C));
+          frame.push(footerLine(_hl, (hintIsMode && _hw > _room ? clip(_sb, Math.max(0, C - 4 - _hw - 5 - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : _sb) + gray("  ···"), C));
           clickZones.push({ row, c0: C - 4, c1: C - 1, kind: "toggle" });
         }
       }
