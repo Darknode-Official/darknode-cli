@@ -966,6 +966,18 @@ group("command registry (batch 1)");
   eq("no migrated command still dispatched inline", doubled, []);
 }
 
+group("OLLAMA_HOST in Ollama's own formats (host, host:port, http://host:port)");
+{
+  const { ollamaAddr } = require("../lib/nexus/ollama");
+  eq("unset = local default", ollamaAddr({}), { host: "127.0.0.1", port: 11434 });
+  eq("bare host", ollamaAddr({ OLLAMA_HOST: "gpu-box" }), { host: "gpu-box", port: 11434 });
+  eq("host:port", ollamaAddr({ OLLAMA_HOST: "10.0.0.5:8080" }), { host: "10.0.0.5", port: 8080 });
+  eq("http://host:port (what ollama docs show)", ollamaAddr({ OLLAMA_HOST: "http://192.168.1.5:11500/" }), { host: "192.168.1.5", port: 11500 });
+  eq("0.0.0.0 is a bind address -> loopback", ollamaAddr({ OLLAMA_HOST: "0.0.0.0" }), { host: "127.0.0.1", port: 11434 });
+  eq("OLLAMA_PORT used when the host has no port", ollamaAddr({ OLLAMA_HOST: "gpu-box", OLLAMA_PORT: "9000" }), { host: "gpu-box", port: 9000 });
+  eq("IPv6 in brackets", ollamaAddr({ OLLAMA_HOST: "[::1]:11434" }), { host: "::1", port: 11434 });
+}
+
 group("TUI crash handlers are really registered (not swallowed by a // comment)");
 {
   // 7df3d06 put a "// terminal closed" comment in the middle of the registration line, so
@@ -3632,6 +3644,16 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       i = j;
     }
     eq("no module-level function reads a TUI-only setting", leaks, []);
+  }
+
+  group("Ollama unreachable is told apart from 'no model pulled'");
+  {
+    const { ollamaTags } = require("../lib/nexus/ollama");
+    const saved = { h: process.env.OLLAMA_HOST, b: process.env.DARKNODE_API_BASE };
+    process.env.OLLAMA_HOST = "127.0.0.1:1"; delete process.env.DARKNODE_API_BASE;
+    await ollamaTags().then((t) => ok("nothing listening -> [] marked unreachable", Array.isArray(t) && t.length === 0 && t.unreachable === true));
+    if (saved.h === undefined) delete process.env.OLLAMA_HOST; else process.env.OLLAMA_HOST = saved.h;
+    if (saved.b !== undefined) process.env.DARKNODE_API_BASE = saved.b;
   }
 
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
