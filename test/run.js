@@ -989,6 +989,7 @@ group("-m/--model reaches the interactive TUI");
   ok("--print exits nonzero on an Ollama error or no local model", /catch \(e\) \{ console\.log\("  " \+ red\(e\.message\)\); if \(printMode\) process\.exitCode = 1; break; \}/.test(src) && (src.match(/No local model\. Install Ollama[^\n]*?process\.exitCode = 1; return;/g) || []).length >= 1);
   ok("one-shot passes -m to delegated engines", /runEngineTask\(engine, userMsg, cwd, autoApprove, delegated, [^\n]*?, null, modelOverride \|\| undefined\)/.test(src));
   ok("--print keeps stdout to the raw answer (progress to stderr, engine output unindented)", /if \(printMode\) console\.log = console\.error\.bind\(console\)/.test(src) && /delegated, printMode \? \(c\) => process\.stdout\.write\(c\) : null/.test(src) && /if \(printMode\) answer\(o\.final \|\| "done"\)/.test(src));
+  ok("-p adds piped stdin to the task, only from a pipe or file (never waits on a parent's open socket), capped for argv", /if \(printMode && parts\.length && !process\.stdin\.isTTY\)/.test(src) && /st\.isFIFO\(\) \|\| st\.isFile\(\)/.test(src) && /--- stdin ---/.test(src) && /const CAP = 100000/.test(src));
   ok("nexusTui applies them to the session", /function nexusTui\([^)]*launch\)/.test(src) && /if \(launch\.model\) \{ sess\.model = launch\.model;/.test(src) && /if \(launch\.lean\) lean = true;/.test(src));
 }
 

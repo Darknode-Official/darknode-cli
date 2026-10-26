@@ -1526,7 +1526,7 @@ function nexusHelp() {
   console.log("    -e, --engine <name>                claude (default if installed) | gemini | codex | opencode | aider | ollama | api");
   console.log("    -m, --model <name>                 model for this session (any engine that takes one)");
   console.log("    -y, --yes, --skip-permissions      auto-approve all file writes and commands");
-  console.log("    -p, --print                        headless for scripts: the answer alone on stdout, progress on stderr (task can be piped in)");
+  console.log("    -p, --print                        headless for scripts: the answer alone on stdout, progress on stderr (piped input is added to the task)");
   console.log("        --lean                         minimal output (also /lean in the session)");
   console.log("        --resume / --new               reopen the last chat (default) / start blank");
   console.log("    -h, --help                         show this help\n");
@@ -1582,8 +1582,17 @@ async function aiCoder(argv) {
   // through to the non-TUI path only for a one-shot task (`darknode nexus
   // "..."`), --print, or a non-interactive stdout.
   if (parts[0] === "serve") return nexusServe(parts.slice(1), { engine });
+  const readStdin = () => new Promise((res) => { let b = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (d) => { b += d; }); process.stdin.on("end", () => res(b)); process.stdin.on("error", () => res(b)); });
+  if (printMode && parts.length && !process.stdin.isTTY) {
+    // `git diff | nexus -p "review this"`: piped input rides along with the task. Only a shell
+    // pipe or a `< file` redirect counts — a parent process's open stdin socket (nexus serve,
+    // the API server) never ends and must not be waited on.
+    let st = null; try { st = fs.fstatSync(0); } catch (_) {}
+    if (st && (st.isFIFO() || st.isFile())) { let piped = (await readStdin()).replace(/\s+$/, ""); const CAP = 100000; // the task travels as one argv entry (128 KB limit on Linux)
+      if (piped.trim()) { if (piped.length > CAP) { console.error("  " + yellow("note: piped input is " + piped.length + " chars — sending the first " + CAP)); piped = piped.slice(0, CAP) + "\n[truncated]"; } parts.push("\n\n--- stdin ---\n" + piped + "\n--- end stdin ---"); } }
+  }
   if (printMode && !parts.length) {
-    if (!process.stdin.isTTY) { const piped = await new Promise((res) => { let b = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (d) => { b += d; }); process.stdin.on("end", () => res(b)); process.stdin.on("error", () => res(b)); }); if (piped.trim()) parts.push(piped.trim()); }
+    if (!process.stdin.isTTY) { const piped = await readStdin(); if (piped.trim()) parts.push(piped.trim()); }
     if (!parts.length) { console.error("  " + red("--print needs a task") + gray(" — e.g. nexus --print \"add tests for utils.js\"  (or pipe it in: echo task | nexus --print)")); process.exitCode = 2; return; }
   }
   const oneShot = parts.length > 0;
