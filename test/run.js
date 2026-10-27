@@ -1407,6 +1407,7 @@ group("help reference (single source of truth)");
     ok("tui: a failed engine turn ends with \"failed\", not \"done\", and is not learned from", /res && res\.ok === false \? "failed " : "done "/.test(src) && /if \(!\(res && \(res\.interrupted \|\| res\.ok === false\)\)\) \{ try \{ const answerText/.test(src));
     ok("undo: a turn that changed no file leaves no checkpoint, so /undo reverts the last real change", /if \(ckObj\.paths\.length\) bits\.push\("undo #" \+ checkpoints\.length\); else \{ const _i = checkpoints\.indexOf\(ckObj\); if \(_i >= 0\) checkpoints\.splice\(_i, 1\); \}/.test(src));
     ok("undo: restore checks files out of the snapshot tree (no commit, so no git identity needed); the agents base commit falls back to a nexus identity", /const commit = tree;/.test(src) && !/commit-tree " \+ tree \+ " -m nexus-restore/.test(src) && /env: gitIdEnv\(cwd\) \}\)/.test(src));
+    ok("side panel: a known /command typed in the follow-up box runs (or queues mid-turn) instead of being sent to the model as a question; a /path question still asks", /if \(\/\^\\\/\[a-z\]\/i\.test\(q\) && allCmds\(\)\.some\(\(c\) => c\[0\] === sideName\(q\)\)\) \{ btw = null; if \(busy && !isInstant\(q\)\) nextQueue\.push\(q\); else handleSlash\(q\);/.test(src));
     ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
   }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));

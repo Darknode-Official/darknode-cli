@@ -6217,7 +6217,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         if (s === "\x18") { btwLog.length = 0; btw = null; render(); return; } // ctrl+x: forget every side question
         if (s === "\x15") { btw.input = ""; render(); return; }                 // ctrl+u
         if (s === "\x7f" || s === "\b") { btw.input = [...(btw.input || "")].slice(0, -1).join(""); render(); return; }
-        if (s === "\r" || s === "\n") { const q = (btw.input || "").trim(); if (q) askBtw(q); else { btw = null; render(); } return; } // send the follow-up, or close
+        if (s === "\r" || s === "\n") { const q = (btw.input || "").trim(); if (/^\/[a-z]/i.test(q) && allCmds().some((c) => c[0] === sideName(q))) { btw = null; if (busy && !isInstant(q)) nextQueue.push(q); else handleSlash(q); render(); return; } if (q) askBtw(q); else { btw = null; render(); } return; } // a /command runs as one (never sent to the model as a question); else send the follow-up, or close
         if (s === "\x1b") { if (btw.input) btw.input = ""; else btw = null; render(); return; }
         if (s === "\x03") { btw = null; render(); return; }
         const typed = s.replace(/\x1b\[20[01]~/g, "").replace(/[\r\n\t]+/g, " "); // typed text or a paste → the follow-up field
