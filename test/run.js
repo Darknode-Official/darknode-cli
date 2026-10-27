@@ -3342,6 +3342,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("literal mode: $ in the replacement is literal", fs.readFileSync(path.join(dir, "price.txt"), "utf8"), "cost: $1.00\n");
     r = run({ find: "cost: (\\S+)", replace: "price=$1", regex: true });
     eq("regex mode: $1 groups", fs.readFileSync(path.join(dir, "price.txt"), "utf8"), "price=$1.00\n");
+    fs.writeFileSync(path.join(dir, "crlf.cs"), "a\r\nfoo();\r\nbar();\r\n");
+    run({ find: "foo();\nbar();", replace: "baz();\nqux();", glob: "*.cs" });
+    eq("CRLF file: multi-line LF find matches, replacement keeps CRLF", fs.readFileSync(path.join(dir, "crlf.cs"), "utf8"), "a\r\nbaz();\r\nqux();\r\n");
     r = run({ find: "price", replace: "p" }, { check: (rel) => rel === "price.txt" ? "BLOCKED by policy: protected path" : null });
     ok("policy check skips + reports the file", r.files === 0 && /protected/.test(r.skipped[0].reason) && fs.readFileSync(path.join(dir, "price.txt"), "utf8").startsWith("price"));
     ok("no matches is a note, not an error", /no matches/.test(run({ find: "zzz_nope", replace: "y" }).note));
