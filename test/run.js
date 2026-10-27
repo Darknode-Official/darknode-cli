@@ -2585,6 +2585,29 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("lintFormatTool allows an in-root path", !inside.error);
   }
 
+  group("syntax gate (warn when an edit introduces a syntax error)");
+  {
+    const SG = require("../lib/nexus/syntax-gate");
+    const os = require("os"), d = fs.mkdtempSync(path.join(os.tmpdir(), "nxsg-"));
+    ok("valid JS passes", SG.check("a.js", "const a = 1;\n").ok === true);
+    ok("broken JS fails with a line", /^line 1: SyntaxError/.test(SG.check("a.js", "const a = ;\n").error || ""));
+    ok("ESM syntax in a .js file is not a false positive", SG.check("a.js", "import x from \"y\";\nexport const z = 1;\n").ok === true);
+    ok("broken JSON fails", SG.check("a.json", "{\"a\":1,}").ok === false);
+    ok("tsconfig.json (JSON with comments) is skipped, not failed", SG.check("tsconfig.json", "{ // c\n}").checked === false);
+    ok("unknown file types are not checked", SG.check("a.md", "#").checked === false);
+    ok("JSX in a .js file is not run through node --check", SG.check("a.js", "const A = () => (<div>hi</div>);\n").ok !== false || SG.check("a.js", "const A = () => (<div>hi</div>);\n").checked === false);
+    const f = path.join(d, "x.js");
+    fs.writeFileSync(f, "const a = 1;\n"); let c = SG.capture(f); fs.writeFileSync(f, "const a = (1;\n");
+    ok("an introduced error produces a warning that says the edit was applied", /syntax error it did not have before.*WAS applied/.test(SG.afterEdit(c, "x.js") || ""));
+    c = SG.capture(f); fs.writeFileSync(f, "const a = (2;\n");
+    ok("a file that was already broken is not blamed on the edit", SG.afterEdit(c) === null);
+    c = SG.capture(path.join(d, "new.json")); fs.writeFileSync(path.join(d, "new.json"), "{bad");
+    ok("a NEW file written broken is reported", /syntax error/.test(SG.afterEdit(c, "new.json") || ""));
+    c = SG.capture(f); ok("an unchanged file is not re-checked", SG.afterEdit(c) === null);
+    fs.rmSync(d, { recursive: true, force: true });
+    const NS = require("../lib/cli/nexus-settings");
+    ok("syntaxGate defaults to warn and NEXUS_SYNTAX_GATE accepts only off|warn", NS.DEFAULTS.syntaxGate === "warn" && NS.ENV_NAME.syntaxGate === "NEXUS_SYNTAX_GATE");
+  }
   group("notebook_edit (.ipynb cell ops)");
   {
     const NB = require("../lib/nexus/notebook-edit");
