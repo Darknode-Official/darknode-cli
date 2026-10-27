@@ -1968,11 +1968,13 @@ function nexusCheckpoint(cwd) {
 // Restore a snapshot. If `paths` is given (repo-relative), restore ONLY those files
 // (via a throwaway commit) so unrelated manual edits are never clobbered. Otherwise
 // full-tree restore (fallback). Returns true on success.
+// An internal throwaway commit still needs an author; fall back to one when git has none set.
+function gitIdEnv(cwd) { const e = process.env, id = { GIT_AUTHOR_NAME: "nexus", GIT_AUTHOR_EMAIL: "nexus@localhost", GIT_COMMITTER_NAME: "nexus", GIT_COMMITTER_EMAIL: "nexus@localhost" }; try { _cp.execSync("git var GIT_AUTHOR_IDENT", { cwd, stdio: "ignore" }); return e; } catch (_) { return Object.assign({}, e, id); } }
 function nexusRestore(cwd, tree, paths) {
   try {
     const path = require("path"), fs = require("fs");
     if (!paths || !paths.length) return true; // never full-clobber the tree — only restore files Nexus recorded changing
-    const commit = _cp.execSync("git commit-tree " + tree + " -m nexus-restore", { cwd, encoding: "utf8" }).trim();
+    const commit = tree; // files come straight from the snapshot tree: no commit, so it works without a git user.name/email
     const present = [], created = [];
     for (const p of paths) { try { _cp.execSync("git cat-file -e " + commit + ":./" + p.replace(/"/g, ""), { cwd, stdio: "ignore" }); present.push(p); } catch (_) { created.push(p); } }
     if (present.length) _cp.execSync("git checkout " + commit + " -- " + present.map((p) => JSON.stringify(p)).join(" "), { cwd, stdio: "ignore" });
@@ -2077,7 +2079,7 @@ async function runSubagents(engine, tasks, cwd, model, onProgress, ctl, pickMode
   // corrupt each other; merge their changes back sequentially at the end.
   let baseCommit = null, isGit = false;
   try { _cp.execSync("git rev-parse --is-inside-work-tree", { cwd, stdio: "ignore" }); isGit = true; } catch (_) {}
-  if (isGit) { try { const tree = nexusCheckpoint(cwd); if (tree) baseCommit = _cp.execSync("git commit-tree " + tree + " -m nexus-agents-base", { cwd, encoding: "utf8" }).trim(); } catch (_) {} }
+  if (isGit) { try { const tree = nexusCheckpoint(cwd); if (tree) baseCommit = _cp.execSync("git commit-tree " + tree + " -m nexus-agents-base", { cwd, encoding: "utf8", env: gitIdEnv(cwd) }).trim(); } catch (_) {} }
   const useWt = !!(isGit && baseCommit);
   const worktrees = new Array(tasks.length).fill(null);
   const stamp = Date.now().toString(36);
@@ -4136,7 +4138,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         if (PAID[engine] && dcost > 0) bits.push("$" + dcost.toFixed(4));
         bits.push(fmtDur(+dt));
         { const cw = sess.ctxWindow || 200000; bits.push(Math.min(100, Math.round((sess.ctxUsed / cw) * 100)) + "% ctx"); }
-        if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); try { bisectPersist(cwd, ckObj); } catch (_) {} } // persist the turn snapshot so `bisect` can search the timeline later
+        if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); if (ckObj.paths.length) bits.push("undo #" + checkpoints.length); else { const _i = checkpoints.indexOf(ckObj); if (_i >= 0) checkpoints.splice(_i, 1); } try { bisectPersist(cwd, ckObj); } catch (_) {} } // a turn that changed no file leaves nothing to undo: keep it off the stack so /undo reverts the last real change // persist the turn snapshot so `bisect` can search the timeline later
         const clock = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
         block.summary = (recap.length ? recap.join(". ") + "." + gray(" · ") : "") + bits.join(" · ") + gray(" · " + (res && res.interrupted ? "interrupted " : res && res.ok === false ? "failed " : "done ") + clock);
         // Cache read-only answers (no file/command side-effects) so an exact repeat is free.
@@ -5135,7 +5137,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       else if (cmd === "/savings" || cmd === "/impact") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet — the savings analysis needs some Nexus turns in .nexus/usage.jsonl first" }); } else { const a = analyzeSavings(recs); transcript.push({ role: "system", text: (parts[0] === "json" ? JSON.stringify(a, null, 2) : renderSavings(a, { project: path.basename(cwd) }) + "\n\n  headless: darknode savings") }); } }
       else if (cmd === "/compliance") { try { const key = process.env.DARKNODE_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (DARKNODE_SIGNING_KEY)" : "\n  tip: set DARKNODE_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: darknode compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
-      else if (cmd === "/undo") { if (!checkpoints.length) transcript.push({ role: "system", text: "nothing to undo (no checkpoints this session, or not a git repo)" }); else { const ck = checkpoints.pop(); const nowTree = nexusCheckpoint(cwd); const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok && nowTree) redoStack.push({ tree: nowTree, label: ck.label, paths: ck.paths }); transcript.push({ role: "system", text: ok ? ("undid \"" + ck.label + "\" — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed this turn (unrelated edits untouched)" : "the working tree") + " (/redo to reapply)") : "undo failed (git error)" }); } }
+      else if (cmd === "/undo") { if (!checkpoints.length) transcript.push({ role: "system", text: "nothing to undo (no checkpoints this session, or not a git repo)" }); else { const ck = checkpoints.pop(); const nowTree = nexusCheckpoint(cwd); const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok && nowTree) redoStack.push({ tree: nowTree, label: ck.label, paths: ck.paths }); transcript.push({ role: "system", text: ok ? ("undid \"" + ck.label + "\" — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed this turn (unrelated edits untouched)" : "nothing (that turn changed no file Nexus tracked)") + " (/redo to reapply)") : "undo failed (git error)" }); } }
       else if (cmd === "/redo") { const r = redoStack.pop(); if (!r) transcript.push({ role: "system", text: "nothing to redo" }); else { const ok = nexusRestore(cwd, r.tree, r.paths); if (ok) checkpoints.push({ tree: r.tree, label: r.label, ts: Date.now(), paths: r.paths }); transcript.push({ role: "system", text: ok ? ("redid — reapplied the changes from \"" + r.label + "\"") : "redo failed (git error)" }); } }
       else if (cmd === "/race") { if (!argstr) transcript.push({ role: "system", text: "usage: /race <prompt>  — runs it on every available engine (claude/local/opencode) at once and shows all answers" }); else raceEngines(argstr); }
       else if (cmd === "/review") { reviewLast(arg); }
