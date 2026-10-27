@@ -3500,6 +3500,17 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("non-http schemes refused", /only http/.test((await HF.httpFetchTool({ url: "file:///etc/passwd" }, deps)).error));
     const { isLocalTarget } = require("../lib/governance/default-guard");
     ok("the real guard blocks cloud metadata", /SSRF/.test((await HF.httpFetchTool({ url: "http://169.254.169.254/" }, { isLocal: isLocalTarget })).error));
+    ok("IPv4-mapped / NAT64 / unspecified IPv6 forms of a private address count as local", isLocalTarget(new URL("http://[::ffff:169.254.169.254]/").href) && isLocalTarget("http://[::ffff:7f00:1]/") && isLocalTarget("http://[64:ff9b::a9fe:a9fe]/") && isLocalTarget("http://[::]/") && !isLocalTarget("http://[::ffff:8.8.8.8]/") && !isLocalTarget("http://[2606:4700::1]/"));
+    { // a public-looking name that RESOLVES to a private address is refused at connect time (DNS rebinding / nip.io)
+      const dns = require("dns"), real = dns.lookup;
+      dns.lookup = (h, o, cb) => { if (typeof o === "function") { cb = o; o = {}; } if (/^(pub|rebind)\.example\.org$/.test(h)) return o && o.all ? cb(null, [{ address: "127.0.0.1", family: 4 }]) : cb(null, "127.0.0.1", 4); return real(h, o, cb); };
+      try {
+        r = await HF.httpFetchTool({ url: "http://rebind.example.org:" + srv.address().port + "/page" }, { isLocal: isLocalTarget });
+        ok("a name resolving to 127.0.0.1 is blocked by the SSRF guard, naming the address", /SSRF/.test(r.error || "") && /resolves to a local\/private address \(127\.0\.0\.1\)/.test(r.error || ""));
+        r = await HF.httpFetchTool({ url: "http://pub.example.org:" + srv.address().port + "/page" }, deps);
+        ok("the connection uses the checked address (a guard that allows it still connects)", r.status === 200);
+      } finally { dns.lookup = real; }
+    }
     srv.close();
   }
 
