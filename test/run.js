@@ -3040,6 +3040,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
         fs.symlinkSync(outside, path.join(jroot, "link"));
         symRan = true;
         ok("a symlink escaping the root resolves outside the jail", resolveInJail("link/secret.txt", jroot).inside === false);
+        // a DANGLING link (target not yet there) fails realpath like a missing file, but a write through it creates the outside target
+        fs.symlinkSync(path.join(outside, "planted.txt"), path.join(jroot, "dangle"));
+        fs.symlinkSync("inside-later.txt", path.join(jroot, "dangle-in"));
+        ok("a dangling symlink pointing outside is refused; one pointing inside still resolves inside", resolveInJail("dangle", jroot).inside === false && (() => { try { assertInJail("dangle", jroot); return false; } catch (_) { return true; } })() && resolveInJail("dangle-in", jroot).inside === true);
         fs.rmSync(outside, { recursive: true, force: true });
       } catch (_) { /* symlinks may be unavailable (e.g. Windows without privilege) */ }
       if (!symRan) ok("symlink escape test skipped (symlinks unavailable)", process.platform === "win32");
