@@ -60,7 +60,7 @@ The status bar shows context use and, on the claude engine, the prompt-cache cou
 
 A git checkpoint is taken before every file-changing turn: /undo, /redo, /rewind N, /checkpoints. Only files Nexus changed are restored.
 
-File tools are confined to the project folder; secrets are blocked from being written; destructive shell commands are checked by /guard; .nexus/permissions.json holds allow/deny rules (/allow, /deny, /perms) and .nexus/policy.json the security policy.
+File tools are confined to the project folder; secrets are blocked from being written; destructive shell commands are checked by /guard; .nexus/permissions.json holds allow/deny rules (/allow, /deny, /perms; a repo's own allow rules apply only after /trust) and .nexus/policy.json the security policy.
 
 ### Your own commands
 
@@ -72,7 +72,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/clear` — start a fresh chat
 - `/chat-clear` — clear the screen, keep the conversation memory
 - `/compact` — summarize & shrink the context
-- `/trust` — trust this workspace's .nexus MCP servers + hooks
+- `/trust` — trust this workspace's .nexus MCP servers, hooks + allow rules
 - `/connect` — connect an AI: local model · Claude (API) · any provider
 - `/context` — show token / context usage (opens in the side panel)
 - `/cost` — session cost at exact list prices (opens in the side panel)

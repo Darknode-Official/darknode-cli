@@ -2856,7 +2856,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     try { const st = readGlobal("state.json", {}) || {}; if (st.accent) setAccent(st.accent); if (Array.isArray(st.gradient) && st.gradient.length) GRAD = st.gradient; } catch (_) {}
     const CMDS = [
       ["/help", "commands, input prefixes & keys · /help <word> searches them"], ["/clear", "start a fresh chat"], ["/chat-clear", "clear the screen, keep the conversation memory"], ["/compact", "summarize & shrink the context"],
-      ["/trust", "trust this workspace's .nexus MCP servers + hooks"],
+      ["/trust", "trust this workspace's .nexus MCP servers, hooks + allow rules"],
       ["/connect", "connect an AI: local model · Claude (API) · any provider"],
       ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/cheaper", "lossless ways to spend fewer tokens"], ["/warm", "prompt-cache countdown + warm-vs-cold follow-up cost"], ["/tokens", "estimate what @-attaching a file/dir costs"], ["/alias", "make a shortcut: /alias name = text|/cmd"], ["/retry", "re-run your last prompt (fresh, no cache)"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
       ["/report", "cost & usage report for chargeback (/report json|save|since <date>)"],
@@ -3609,8 +3609,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         } catch (err) { done("error: " + (err && err.message || err)); }
       })();
     };
-    let perms = { allow: [], deny: [] }; try { const p = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "permissions.json"), "utf8")); perms = { allow: p.allow || [], deny: p.deny || [] }; } catch (_) {} // permission allowlist
-    const savePerms = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "permissions.json"), JSON.stringify(perms, null, 2)); } catch (_) {} };
+    let perms = { allow: [], deny: [] }, heldAllow = []; try { const p = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "permissions.json"), "utf8")); const strs = (v) => (Array.isArray(v) ? v : []).filter((r) => typeof r === "string" && r.trim()); perms = { allow: strs(p && p.allow), deny: strs(p && p.deny) }; } catch (_) {} // permission allowlist
+    if (perms.allow.length && !isRepoTrusted(cwd)) { heldAllow = perms.allow; perms.allow = []; _untrustedRepoConfig = true; } // a cloned repo's allow rules would skip the guard - held until /trust (deny rules only restrict, so they load)
+    const savePerms = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "permissions.json"), JSON.stringify({ allow: heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))), deny: perms.deny }, null, 2)); } catch (_) {} };
     let curBranch = "main"; // conversation branch (session branching)
     const imgPaths = new Map(); // [Image#N] -> the image file it stands for (dropped path or Ctrl+V capture), resolved at submit
     let nextQueue = []; // /next queue — prompts to run after the current turn (declared here so the status bar can show the count)
@@ -4987,7 +4988,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         });
       }
       else if (cmd === "/trust") {
-        if (trustRepo(cwd)) { _untrustedRepoConfig = false; mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "trusted this workspace (" + gray(cwd) + ") — its .nexus MCP servers now load; hooks apply on next launch." }); }
+        if (trustRepo(cwd)) { _untrustedRepoConfig = false; if (heldAllow.length) { perms.allow = heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))); heldAllow = []; } mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "trusted this workspace (" + gray(cwd) + ") — its .nexus MCP servers and permission allow rules now load; hooks apply on next launch." }); }
         else transcript.push({ role: "system", text: red("could not record trust") });
       }
       else if (cmd === "/mcp") {
@@ -5820,8 +5821,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       else if (cmd === "/expand") expanded = !expanded;
       else if (cmd === "/permissions" || cmd === "/perms") {
-        if ((argstr || "").trim() === "clear") { perms = { allow: [], deny: [] }; savePerms(); transcript.push({ role: "system", text: "cleared all permission rules." }); }
-        else transcript.push({ role: "system", text: "permission rules " + gray("(.nexus/permissions.json)") + "\n  " + green("allow") + gray(" (auto-run, bypass guard): ") + (perms.allow.length ? perms.allow.join(", ") : gray("none")) + "\n  " + red("deny") + gray(" (block): ") + (perms.deny.length ? perms.deny.join(", ") : gray("none")) + "\n  " + gray("/allow <rule> · /deny <rule> · /permissions clear") + "\n  " + gray("rule = tool | tool:glob | Bash(glob) | *   e.g. /allow run_command:npm* · /deny Bash(rm *) · /allow read_file") });
+        if ((argstr || "").trim() === "clear") { perms = { allow: [], deny: [] }; heldAllow = []; savePerms(); transcript.push({ role: "system", text: "cleared all permission rules." }); }
+        else transcript.push({ role: "system", text: "permission rules " + gray("(.nexus/permissions.json)") + "\n  " + green("allow") + gray(" (auto-run, bypass guard): ") + (perms.allow.length ? perms.allow.join(", ") : gray("none")) + (heldAllow.length ? "\n  " + yellow("held") + gray(" (from the repo file, not applied until /trust): ") + heldAllow.join(", ") : "") + "\n  " + red("deny") + gray(" (block): ") + (perms.deny.length ? perms.deny.join(", ") : gray("none")) + "\n  " + gray("/allow <rule> · /deny <rule> · /permissions clear") + "\n  " + gray("rule = tool | tool:glob | Bash(glob) | *   e.g. /allow run_command:npm* · /deny Bash(rm *) · /allow read_file") });
         render();
       }
       else if (cmd === "/allow" || cmd === "/deny") {
@@ -6077,7 +6078,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       } catch (_) {}
     })();
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
-    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("warning: this workspace defines MCP servers and/or hooks that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
+    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("warning: this workspace defines MCP servers, hooks and/or permission allow rules that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
     try { Composer.cleanupDroppedTails(); } catch (_) {} // sweep paste-remainder temp files older than 24h
     let imgCounter = 0; // fallback running number when an image's folder position can't be read
