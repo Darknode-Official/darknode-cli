@@ -3491,11 +3491,15 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
   {
     const HF = require("../lib/nexus/http-fetch");
     const http = require("http");
+    const seenAuth = {};
     const srv = http.createServer((req, res) => {
       if (req.url === "/r1") { res.writeHead(302, { location: "/page" }); return res.end(); }
       if (req.url === "/evil") { res.writeHead(301, { location: "http://blocked.internal/latest/meta-data" }); return res.end(); }
       if (req.url === "/page") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end("<html><head><title>Page</title><script>x()</script></head><body><p>héllo wörld ✓</p><a href=\"/next\">Next</a></body></html>"); }
       if (req.url === "/img") { res.writeHead(200, { "content-type": "image/png" }); return res.end(Buffer.alloc(300)); }
+      if (req.url === "/stream") { res.writeHead(200, { "content-type": "text/event-stream" }); const t = setInterval(() => res.write("data: " + "x".repeat(4000) + "\n\n"), 2); res.on("close", () => clearInterval(t)); return; }
+      if (req.url === "/xhost") { seenAuth.a = req.headers.authorization; res.writeHead(302, { location: "http://localhost:" + srv.address().port + "/land" }); return res.end(); }
+      if (req.url === "/land") { seenAuth.b = req.headers.authorization; seenAuth.trace = req.headers["x-trace"]; res.writeHead(200, { "content-type": "text/plain" }); return res.end("landed"); }
       if (req.url === "/big") { res.writeHead(200, { "content-type": "text/plain" }); return res.end("x".repeat(25000)); }
       // multi-byte character split across two chunks
       if (req.url === "/split") { res.writeHead(200, { "content-type": "text/plain" }); const b = Buffer.from("añb"); res.write(b.subarray(0, 2)); setTimeout(() => res.end(b.subarray(2)), 20); return; }
@@ -3514,6 +3518,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("binary is described, not dumped", r.binary === true && r.bytes === 300 && r.body === undefined);
     r = await HF.httpFetchTool({ url: base + "/big" }, deps);
     ok("a cut body says so", r.body.length === 20000 && /of 25000 chars/.test(r.truncated));
+    { const t0 = Date.now(); r = await HF.httpFetchTool({ url: base + "/stream", timeout_s: 20 }, deps);
+      ok("an endless stream stops at the download cap instead of hanging", r.status === 200 && /over/.test(r.truncated) && Date.now() - t0 < 15000); }
+    r = await HF.httpFetchTool({ url: base + "/xhost", headers: { Authorization: "Bearer s3cret", "X-Trace": "1" } }, deps);
+    ok("Authorization is not forwarded to another host on redirect; other headers are", r.body === "landed" && seenAuth.a === "Bearer s3cret" && seenAuth.b === undefined && seenAuth.trace === "1");
     eq("UTF-8 split across chunks decodes whole", (await HF.httpFetchTool({ url: base + "/split" }, deps)).body, "añb");
     ok("non-http schemes refused", /only http/.test((await HF.httpFetchTool({ url: "file:///etc/passwd" }, deps)).error));
     const { isLocalTarget } = require("../lib/governance/default-guard");
