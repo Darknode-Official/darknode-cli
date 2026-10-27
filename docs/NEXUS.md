@@ -533,14 +533,21 @@ Then: `/style minimal`
 `.nexus/hooks.json`:
 ```json
 {
-  "UserPromptSubmit": [{ "command": "echo 'Prompt: $NEXUS_PROMPT'" }],
-  "PreToolUse": [{ "command": "echo 'Tool: $NEXUS_TOOL'" }],
+  "UserPromptSubmit": [{ "command": "echo \"Prompt: $NEXUS_PROMPT\"" }],
+  "PreToolUse": [{ "matcher": "write_file|edit_file", "command": "echo \"Tool: $TOOL_NAME\"" }],
   "PostToolUse": [],
   "Stop": []
 }
 ```
 
 Hooks run shell commands on events. If a hook exits non-zero, the action is blocked.
+`matcher` is a regex on the tool name; `timeout` is in seconds (default 15).
+
+Variables: `NEXUS_ENGINE`, `NEXUS_PROMPT` (UserPromptSubmit), `TOOL_NAME`, `TOOL_ARGS`
+(JSON), `TOOL_RESULT` (PostToolUse). Each variable is capped at 100,000 characters; the
+complete event is also written to the hook's stdin as one JSON object
+(`hook_event_name` plus the same keys), so a hook that inspects large file writes
+should read stdin. A hook that cannot be started at all blocks the action.
 
 ---
 

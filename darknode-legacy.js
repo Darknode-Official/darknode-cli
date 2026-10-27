@@ -1718,7 +1718,12 @@ function runHooks(hooks, event, env, cwd) {
   for (const h of list) {
     if (!h || !h.command) continue;
     try { if (h.matcher && env.TOOL_NAME && !(new RegExp(h.matcher).test(env.TOOL_NAME))) continue; } catch (_) { continue; } // bad matcher regex must not crash the turn
-    try { const r = _cp.spawnSync(h.command, { shell: true, cwd, env: Object.assign({}, process.env, env), encoding: "utf8", timeout: (h.timeout || 15) * 1000 }); if (r.status && r.status !== 0) return { block: true, out: ((r.stdout || "") + (r.stderr || "")).trim().slice(0, 400) }; } catch (_) {} }
+    // Linux refuses a single env var over 128 KB (E2BIG) and the hook would never start: cap each var,
+    // hand the full event to the hook on stdin, and block when a hook cannot be started at all
+    const capped = {}; for (const k of Object.keys(env)) { const v = String(env[k] == null ? "" : env[k]); capped[k] = v.length > 100000 ? v.slice(0, 100000) : v; }
+    try { const r = _cp.spawnSync(h.command, { shell: true, cwd, env: Object.assign({}, process.env, capped), input: JSON.stringify(Object.assign({ hook_event_name: event }, env)), encoding: "utf8", maxBuffer: 1024 * 1024, timeout: (h.timeout || 15) * 1000 });
+      if (r.error && r.error.code !== "ETIMEDOUT" && r.error.code !== "EPIPE") return { block: true, out: "hook could not run (" + (r.error.code || r.error.message) + "): " + h.command };
+      if (r.status && r.status !== 0) return { block: true, out: ((r.stdout || "") + (r.stderr || "")).trim().slice(0, 400) }; } catch (_) {} }
   return { block: false };
 }
 // build an AbortSignal wired to a ctl's kill list (so ctrl+c aborts in-flight ollama requests)
