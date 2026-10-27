@@ -339,6 +339,9 @@ group("security (secrets + destructive-command preflight)");
   ok("scanSecrets clean text → []", scanSecrets("just some normal code").length === 0);
   ok("maskSecrets redacts aws key", maskSecrets("AKIA" + "ABCDEFGHIJKLMNOP").includes("[redacted:aws-key]"));
   ok("maskSecrets leaves clean text", maskSecrets("hello world") === "hello world");
+  ok("scanSecrets finds Stripe live / GitLab / SendGrid / npm tokens", ["sk_live_" + "a1".repeat(12), "rk_live_" + "b2".repeat(12), "glpat-" + "c".repeat(20), "SG." + "d".repeat(22) + "." + "e".repeat(43), "npm_" + "f".repeat(36)].every((t) => scanSecrets("k=" + t).length > 0 && !maskSecrets("k=" + t).includes(t)));
+  ok("scanSecrets finds a connection-string password and masks it", scanSecrets("postgres://admin:Xk92fLq@db.local/app").includes("password in a connection string") && !/Xk92fLq/.test(maskSecrets("postgres://admin:Xk92fLq@db.local/app")));
+  ok("connection-string placeholders are not flagged", ["postgres://user:password@h/db", "mysql://u:${DB_PASS}@h/db", "redis://u:changeme@h", "amqp://u:<token>@h", "mongodb://u:%s@h"].every((s) => !scanSecrets(s).includes("password in a connection string")));
   ok("maskSecrets redacts a private key with no END line", (() => { const body = "MIIEpQ" + "A".repeat(40); const out = maskSecrets("-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n"); return out.includes("[redacted:private-key]") && !out.includes(body); })());
   // git-security.maskSecret (display mask): a SHORT value must never print in full.
   {
