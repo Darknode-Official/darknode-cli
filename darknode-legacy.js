@@ -2874,7 +2874,7 @@ function nexusTui(engine, cwd, nexusMd) {
         let msg = ""; try { if (cowork.on) msg = await weakChat(prompt); else if (engine === "ollama") { const mdl = sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags()); msg = await ollamaChat(mdl, [{ role: "user", content: prompt }], undefined, aSignal(ctl)); } else { msg = (await runEngineTask(engine, prompt, cwd, false, false, null, ctl, auxModel())).output; } } catch (_) {}
         msg = (msg || "").replace(/```[a-z]*\n?|```/g, "").trim().split("\n").slice(0, 8).join("\n").trim() || "chore: update";
         card.status = "ok"; card.end = Date.now();
-        let done = false; try { const subj = msg.split("\n")[0], body = msg.split("\n").slice(1).join("\n").trim(); _cp.execSync("git commit -m " + JSON.stringify(subj) + (body ? " -m " + JSON.stringify(body) : ""), { cwd, stdio: "ignore" }); done = true; } catch (_) {}
+        let done = false; try { const subj = msg.split("\n")[0], body = msg.split("\n").slice(1).join("\n").trim(); _cp.execFileSync("git", ["commit", "-m", subj].concat(body ? ["-m", body] : []), { cwd, stdio: "ignore" }); /* argv, not a shell: the message is model output */ done = true; } catch (_) {}
         ensureText().full = (done ? "committed:\n\n" : "generated message (commit failed — commit manually):\n\n") + msg;
         busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
       })();
@@ -2899,7 +2899,7 @@ function nexusTui(engine, cwd, nexusMd) {
         card.status = "ok"; card.end = Date.now();
         let out = "", opened = false;
         if (hasBin("gh")) {
-          try { out = _cp.execSync("gh pr create --title " + JSON.stringify(title) + " --body " + JSON.stringify(body || title) + " 2>&1", { cwd, encoding: "utf8" }).trim(); opened = /https?:\/\//.test(out); }
+          try { const r = _cp.spawnSync("gh", ["pr", "create", "--title", title, "--body", body || title], { cwd, encoding: "utf8" }); if (r.error) throw r.error; out = ((r.stdout || "") + (r.stderr || "")).trim(); opened = r.status === 0 && /https?:\/\//.test(out); } /* argv, not a shell: title/body are model output */
           catch (e) { out = ((e.stdout || "") + (e.stderr || "") || e.message || "").toString().trim(); }
         }
         ensureText().full = opened

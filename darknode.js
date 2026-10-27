@@ -3100,7 +3100,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const _bodySig = () => {
       const m = transcript[transcript.length - 1];
       let last = "";
-      if (m) { last = (m.role || "") + ":" + (m.text ? m.text.length : 0); if (m.items) { last += ":" + m.items.length; for (const it of m.items) last += "," + (it.status || "") + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? it.detail.length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0); } }
+      if (m) { last = (m.role || "") + ":" + (m.text ? m.text.length : 0); if (m.items) { last += ":" + m.items.length; for (const it of m.items) last += "," + (it.status || "") + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? it.detail.length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0) + (it.type === "text" ? "." + String(it.full || "").length + "/" + (it.shown | 0) : ""); } } // text progress too: an async command (/commit, /review ...) fills its reply after the turn ends, and a stale cache hid it
       return transcript.length + "|" + cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + effort + "|" + engine + "|" + shownModel() + "|" + guard + "|" + (gitBranch || "") + "|" + mcpServers.filter((s) => s && !s.error).length + "|" + (_welcomeTip || "") + "|" + nextQueue.length + "/" + nextQueue.join("\u0001").length + "|" + last;
     };
     let _blCache = null, _blSig = "";
@@ -4720,8 +4720,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         let msg = ""; try { if (cowork.on) msg = await weakChat(prompt); else if (engine === "ollama") { const mdl = sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags()); msg = await ollamaChat(mdl, [{ role: "user", content: prompt }], undefined, aSignal(ctl)); } else { msg = (await runEngineTask(engine, prompt, cwd, false, false, null, ctl, auxModel())).output; } } catch (_) {}
         msg = (msg || "").replace(/```[a-z]*\n?|```/g, "").trim().split("\n").slice(0, 8).join("\n").trim() || "chore: update";
         card.status = "ok"; card.end = Date.now();
-        let done = false; try { const subj = msg.split("\n")[0], body = msg.split("\n").slice(1).join("\n").trim(); _cp.execSync("git commit -m " + JSON.stringify(subj) + (body ? " -m " + JSON.stringify(body) : ""), { cwd, stdio: "ignore" }); done = true; } catch (_) {}
-        ensureText(block).full = (done ? "committed:\n\n" : "generated message (commit failed — commit manually):\n\n") + msg;
+        // argv, never a shell string: the message is model output, and "$(...)" or backticks in it must stay text
+        let done = false, why = ""; try { const subj = msg.split("\n")[0], body = msg.split("\n").slice(1).join("\n").trim(); _cp.execFileSync("git", ["commit", "-m", subj].concat(body ? ["-m", body] : []), { cwd, stdio: ["ignore", "ignore", "pipe"] }); done = true; } catch (e) { const gl = String((e && e.stderr) || "").trim().split("\n").filter(Boolean), fe = gl.filter((l) => /^(fatal|error):/.test(l)); why = (fe.length ? fe : gl.slice(-3)).join("\n") + (/identity|auto-detect email/i.test(gl.join(" ")) ? "\n(set it once with: git config --global user.name \"Your Name\" and user.email you@example.com)" : ""); }
+        ensureText(block).full = (done ? "committed:\n\n" : "generated message (commit failed — commit manually):\n\n") + msg + (why ? "\n\ngit said: " + why : "");
         busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
       })();
     };
@@ -4729,7 +4730,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       let branch = "", diff = "", base = "main";
       try { branch = _cp.execSync("git rev-parse --abbrev-ref HEAD", { cwd, encoding: "utf8" }).trim(); } catch (_) { transcript.push({ role: "system", text: "/pr needs a git repo" }); render(); return; }
       try { base = (_cp.execSync("git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p'", { cwd, encoding: "utf8" }).trim()) || "main"; } catch (_) {}
-      try { diff = _cp.execSync("git -c color.ui=never diff " + JSON.stringify(base) + "...HEAD", { cwd, encoding: "utf8" }); } catch (_) {}
+      try { diff = _cp.execFileSync("git", ["-c", "color.ui=never", "diff", base + "...HEAD"], { cwd, encoding: "utf8" }); } catch (_) {}
       if (!diff.trim()) { try { diff = _cp.execSync("git -c color.ui=never diff HEAD", { cwd, encoding: "utf8" }); } catch (_) {} }
       if (!diff.trim()) { transcript.push({ role: "system", text: "no changes to open a PR for — commit or make changes first" }); render(); return; }
       transcript.push({ role: "user", text: "/pr" });
@@ -4745,7 +4746,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         card.status = "ok"; card.end = Date.now();
         let out = "", opened = false;
         if (hasBin("gh")) {
-          try { out = _cp.execSync("gh pr create --title " + JSON.stringify(title) + " --body " + JSON.stringify(body || title) + " 2>&1", { cwd, encoding: "utf8" }).trim(); opened = /https?:\/\//.test(out); }
+          try { const r = _cp.spawnSync("gh", ["pr", "create", "--title", title, "--body", body || title], { cwd, encoding: "utf8" }); if (r.error) throw r.error; out = ((r.stdout || "") + (r.stderr || "")).trim(); opened = r.status === 0 && /https?:\/\//.test(out); } /* argv, not a shell: title/body are model output */
           catch (e) { out = ((e.stdout || "") + (e.stderr || "") || e.message || "").toString().trim(); }
         }
         ensureText(block).full = opened
