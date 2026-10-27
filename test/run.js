@@ -1412,6 +1412,7 @@ group("help reference (single source of truth)");
     ok("nexus \"task\" runs the task then exits, as --help promises (no line-mode chat afterwards)", /if \(printMode \|\| oneShot\) return;/.test(src));
     ok("/commit and /pr pass model-written messages to git/gh as argv (never a shell string), and /commit shows why git refused", !/execSync\("git commit -m "/.test(src) && !/execSync\("gh pr create/.test(src) && /_cp\.execFileSync\("git", \["commit", "-m", subj\]/.test(src) && /_cp\.spawnSync\("gh", \["pr", "create", "--title", title/.test(src) && /git said: /.test(src));
     ok("idle screen cache includes text progress, so an async command reply (/commit, /review) is not hidden by a stale frame", /\(it\.type === "text" \? "\." \+ String\(it\.full \|\| ""\)\.length \+ "\/" \+ \(it\.shown \| 0\) : ""\)/.test(src));
+    ok("undo/redo/rewind restore files via argv: a model-written file name containing $(...) is never run by a shell", /_cp\.execFileSync\("git", \["cat-file", "-e", commit \+ ":\.\/" \+ p\]/.test(src) && /_cp\.execFileSync\("git", \["checkout", commit, "--"\]\.concat\(present\)/.test(src) && !/execSync\("git checkout " \+ commit/.test(src));
     ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
   }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));

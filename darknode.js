@@ -1976,8 +1976,8 @@ function nexusRestore(cwd, tree, paths) {
     if (!paths || !paths.length) return true; // never full-clobber the tree — only restore files Nexus recorded changing
     const commit = tree; // files come straight from the snapshot tree: no commit, so it works without a git user.name/email
     const present = [], created = [];
-    for (const p of paths) { try { _cp.execSync("git cat-file -e " + commit + ":./" + p.replace(/"/g, ""), { cwd, stdio: "ignore" }); present.push(p); } catch (_) { created.push(p); } }
-    if (present.length) _cp.execSync("git checkout " + commit + " -- " + present.map((p) => JSON.stringify(p)).join(" "), { cwd, stdio: "ignore" });
+    for (const p of paths) { try { _cp.execFileSync("git", ["cat-file", "-e", commit + ":./" + p], { cwd, stdio: "ignore" }); present.push(p); } catch (_) { created.push(p); } }
+    if (present.length) _cp.execFileSync("git", ["checkout", commit, "--"].concat(present), { cwd, stdio: "ignore" }); // argv: these names come from the model's file writes, so "$(...)" in one must stay a name
     for (const p of created) { try { fs.rmSync(path.resolve(cwd, p), { force: true }); } catch (_) {} } // files the turn created → remove them on undo
     return true;
   } catch (_) { return false; }
