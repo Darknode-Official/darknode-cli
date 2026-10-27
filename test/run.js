@@ -3542,6 +3542,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const r2 = await coderShell("sleep 30 & echo started; wait", os.tmpdir(), { timeoutMs: 1000 });
     ok("timeout returns promptly even with a child holding the pipe", Date.now() - t0 < 5000 && r2.timedOut === true && r2.code === 124);
     ok("timeout note keeps the output and points at run_background", /^started/.test(r2.output) && /timed out after 1s/.test(r2.output) && /run_background/.test(r2.output));
+    const t1 = Date.now(); const r2b = await coderShell("echo started; sleep 30 &", os.tmpdir(), { timeoutMs: 20000 });
+    ok("a command that exits leaving a '&' child on the pipe returns its own exit code in ~1.5s (not a timeout), says why, and the child is stopped", Date.now() - t1 < 5000 && r2b.code === 0 && !r2b.timedOut && /^started/.test(r2b.output) && /left a background process/.test(r2b.output) && /run_background/.test(r2b.output));
     const ctl = { stopped: false }; setTimeout(() => { ctl.stopped = true; }, 300);
     const r3 = await coderShell("sleep 30", os.tmpdir(), { ctl });
     ok("interrupt via ctl kills it", r3.interrupted === true && r3.code === 130 && /interrupted/.test(r3.output));
