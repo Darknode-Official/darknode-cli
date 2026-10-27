@@ -96,7 +96,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/shrink` — delta-debug the edits to the minimal breaking file set (/shrink [test cmd])
 - `/resume` — reload the last saved session
 - `/branch` — fork & switch conversation branches (/branch new <name>)
-- `/export` — save the conversation to a markdown file
+- `/export` — save the conversation to markdown (/export <file> to pick where)
 - `/copy` — copy the last reply to the clipboard
 - `/status` — session engine, model, tokens & cost (opens in the side panel)
 - `/session` — this session's uptime, files changed & tools used (opens in the side panel)
@@ -218,7 +218,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/chat-clear` — clear the screen but keep the conversation in memory
 - `/compact` — summarize the conversation to free up context
 - `/resume` — reload the last saved session
-- `/export` — save the conversation to a markdown file
+- `/export` — save the conversation to markdown (/export <file> to pick where)
 - `/copy` — copy the last reply to the clipboard
 - `/undo` — revert the last turn's file changes
 - `/status` — engine, model, tokens & cost
