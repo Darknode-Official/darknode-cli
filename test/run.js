@@ -3282,6 +3282,13 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const q = (f, query, extra) => JQ.jsonQueryTool(Object.assign({ path: f, query }, extra || {}), dir, rp);
     eq("dotted path", q("p.json", "scripts.test").value, '"node t.js"');
     eq("bracket key with @ and /", q("p.json", 'deps["@a/b"]').value, '"1.0.0"');
+    fs.writeFileSync(path.join(dir, "bom.json"), "\uFEFF" + '{"a":1}');
+    eq("a UTF-8 BOM (Windows editors) still parses", q("bom.json", "a").value, "1");
+    fs.writeFileSync(path.join(dir, "jc.json"), '{\n // c\n "p": "[a,]", "q": [1, 2 ,\n],\n}');
+    eq("JSONC: a ',]' inside a string value is kept", q("jc.json", "p").value, '"[a,]"');
+    eq("JSONC: trailing commas still dropped", q("jc.json", "q").type, "array(2)");
+    (() => { const dsrc = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+      ok("every config JSON read in darknode.js strips a BOM first (a BOM'd permissions/policy.json was silently dropped)", /function stripBom\(t\)/.test(dsrc) && !/JSON\.parse\(fs\.readFileSync\(/.test(dsrc)); })();
     eq("negative index = from the end", q("p.json", "items[-1].n").value, "3");
     eq("* maps over elements", JSON.parse(q("p.json", "items.*.n").value), [1, 2, 3]);
     eq("keys_only lists keys", q("p.json", "deps", { keys_only: true }).keys, ["@a/b", "c"]);

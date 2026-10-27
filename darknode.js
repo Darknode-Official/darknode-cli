@@ -1121,7 +1121,7 @@ async function cliRun(args, gate) {
     const fs = require("fs");
     if (rest[0] === "verify") {
       const f = rest[1]; if (!f) { console.log(red("usage: darknode compliance verify <bundle.json>")); process.exit(2); }
-      try { const b = JSON.parse(fs.readFileSync(f, "utf8")); const key = process.env.DARKNODE_SIGNING_KEY || ""; const v = verifyBundle(b, key || undefined);
+      try { const b = JSON.parse(stripBom(fs.readFileSync(f, "utf8"))); const key = process.env.DARKNODE_SIGNING_KEY || ""; const v = verifyBundle(b, key || undefined);
         const sig = v.sigOk === null ? (b.signature ? gray("signature present — set DARKNODE_SIGNING_KEY to verify it") : gray("unsigned")) : (v.sigOk ? green("signature valid") : red("signature INVALID"));
         console.log("  integrity  " + (v.hashOk ? green("OK — bundle not altered") : red("TAMPERED")) + "\n  signature  " + sig);
         process.exit(v.hashOk && v.sigOk !== false ? 0 : 1); // CI gate
@@ -1139,7 +1139,7 @@ async function cliRun(args, gate) {
     const sub = (rest[0] || "").toLowerCase();
     const globalMp = path.join(os.homedir(), ".darknode", "marketplace");
     if (sub === "list" || sub === "ls" || !sub) {
-      try { const pkgs = fs.readdirSync(globalMp).filter((f) => f.endsWith(".json")).map((f) => { try { return JSON.parse(fs.readFileSync(path.join(globalMp, f), "utf8")); } catch (_) { return null; } }).filter(Boolean);
+      try { const pkgs = fs.readdirSync(globalMp).filter((f) => f.endsWith(".json")).map((f) => { try { return JSON.parse(stripBom(fs.readFileSync(path.join(globalMp, f), "utf8"))); } catch (_) { return null; } }).filter(Boolean);
       if (!pkgs.length) console.log("  " + gray("no marketplace packages installed"));
       else { h1("Installed packages"); pkgs.forEach((p) => console.log("  " + cyan((p.name || "?").padEnd(20)) + gray((p.type || "agent").padEnd(10)) + gray("v" + (p.version || "?")))); }
       } catch (_) { console.log("  " + gray("no marketplace packages installed")); }
@@ -1148,7 +1148,7 @@ async function cliRun(args, gate) {
   else if (cmd === "cron") {
     const fs = require("fs"), path = require("path");
     const cronFile = path.join(process.cwd(), ".nexus", "cron.json");
-    try { const jobs = JSON.parse(fs.readFileSync(cronFile, "utf8"));
+    try { const jobs = JSON.parse(stripBom(fs.readFileSync(cronFile, "utf8")));
     if (!jobs.length) console.log("  " + gray("no scheduled jobs"));
     else { h1("Scheduled jobs"); jobs.forEach((j) => console.log("  " + (j.enabled ? green("●") : gray("○")) + " " + cyan((j.id || "?").padEnd(16)) + gray(j.schedule.padEnd(16)) + (j.goal || "").slice(0, 50))); }
     } catch (_) { console.log("  " + gray("no scheduled jobs — use /cron in the TUI to create some")); }
@@ -1210,7 +1210,7 @@ async function cliRun(args, gate) {
 // ~/.darknode/ so a signed-in session and installed models persist across every
 // project, unlike the per-project .nexus/ dir.
 function darknodeHome() { const os = require("os"), path = require("path"), fs = require("fs"); const d = path.join(os.homedir(), ".darknode"); try { fs.mkdirSync(d, { recursive: true }); } catch (_) {} if (!fs.existsSync(d)) { const old = path.join(os.homedir(), ".sentinel"); if (fs.existsSync(old)) return old; } return d; }
-function readGlobal(name, def) { const fs = require("fs"), path = require("path"); try { return JSON.parse(fs.readFileSync(path.join(darknodeHome(), name), "utf8")); } catch (_) { return def === undefined ? null : def; } }
+function readGlobal(name, def) { const fs = require("fs"), path = require("path"); try { return JSON.parse(stripBom(fs.readFileSync(path.join(darknodeHome(), name), "utf8"))); } catch (_) { return def === undefined ? null : def; } }
 function writeGlobal(name, obj) { const fs = require("fs"), path = require("path"); try { const p = path.join(darknodeHome(), name); fs.writeFileSync(p, JSON.stringify(obj, null, 2)); try { fs.chmodSync(p, 0o600); } catch (_) {} return true; } catch (_) { return false; } } // 0600: tokens are secrets
 
 // Minimal dependency-free HTTP(S) JSON client (the whole CLI ships with zero deps).
@@ -1591,7 +1591,7 @@ async function aiCoder(argv) {
   // and silently wastes a (paid) turn. We keep passing it through — just say so.
   parts = parts.filter((x) => String(x).trim()); // nexus --print "" is no task, not an empty one
   if (unknownFlags.length) console.error("  " + yellow("note: unrecognized option" + (unknownFlags.length > 1 ? "s " : " ") + unknownFlags.join(", ") + " — treated as task text. See `nexus --help`."));
-  let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8")); } catch (_) {}
+  let cfg = {}; try { cfg = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8"))); } catch (_) {}
   const lean = leanFlag || !!cfg.lean; // minimal-output mode (also used for read/step budgets)
   // Any-model support: an OpenAI-compatible endpoint (from .nexus/config.json or
   // env) turns the local engine into a driver for ANY model. Env wins over config.
@@ -2021,7 +2021,7 @@ function keepTrust(cwd, write) { let was = false; try { was = trustState(cwd) ==
 function loadMcpConfig(cwd) {
   const fs = require("fs"), path = require("path");
   for (const f of [path.join(cwd, ".nexus", "mcp.json"), path.join(cwd, ".mcp.json")]) {
-    try { const j = JSON.parse(fs.readFileSync(f, "utf8")); if (j && j.mcpServers && Object.keys(j.mcpServers).length) {
+    try { const j = JSON.parse(stripBom(fs.readFileSync(f, "utf8"))); if (j && j.mcpServers && Object.keys(j.mcpServers).length) {
       if (!isRepoTrusted(cwd)) { _untrustedRepoConfig = true; return null; }   // don't spawn servers from an untrusted repo
       return j.mcpServers;
     } } catch (_) {}
@@ -2048,8 +2048,11 @@ function mcpConnect(name, spec, cwd) {
 }
 // ---------- Hooks: run project-defined shell commands around events (Claude-Code style) ----------
 // does the repo itself define anything that runs commands (MCP servers or hooks)? read raw, regardless of trust
-function repoDefinesCommands(cwd) { const fs = require("fs"), path = require("path"); const has = (f, k) => { try { const j = JSON.parse(fs.readFileSync(path.join(cwd, f), "utf8")); const o = k ? j && j[k] : j; return !!(o && typeof o === "object" && Object.keys(o).length); } catch (_) { return false; } }; return has(".nexus/mcp.json", "mcpServers") || has(".mcp.json", "mcpServers") || has(".nexus/hooks.json"); }
-function loadHooks(cwd) { const fs = require("fs"), path = require("path"); try { const h = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "hooks.json"), "utf8")); if (h && Object.keys(h).length && !isRepoTrusted(cwd)) { _untrustedRepoConfig = true; return null; } return h; } catch (_) { return null; } }
+// a UTF-8 BOM (Windows editors) made JSON.parse throw, and the catch then silently dropped the
+// whole file - permissions/policy deny rules included
+function stripBom(t) { return String(t).replace(/^\uFEFF/, ""); }
+function repoDefinesCommands(cwd) { const fs = require("fs"), path = require("path"); const has = (f, k) => { try { const j = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, f), "utf8"))); const o = k ? j && j[k] : j; return !!(o && typeof o === "object" && Object.keys(o).length); } catch (_) { return false; } }; return has(".nexus/mcp.json", "mcpServers") || has(".mcp.json", "mcpServers") || has(".nexus/hooks.json"); }
+function loadHooks(cwd) { const fs = require("fs"), path = require("path"); try { const h = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "hooks.json"), "utf8"))); if (h && Object.keys(h).length && !isRepoTrusted(cwd)) { _untrustedRepoConfig = true; return null; } return h; } catch (_) { return null; } }
 
 // ================= enterprise guardrails: policy + audit =================
 // A declarative, per-project security policy the agent is HELD TO — protected
@@ -2063,13 +2066,13 @@ const { resolveOperator } = require("./lib/governance/identity"); // operator/te
 const { buildBundle, verifyBundle, renderBundleMd } = require("./lib/governance/compliance"); // signed audit+usage compliance bundle (lib/compliance.js)
 const { validatePolicy, validateTeam } = require("./lib/cli/validate"); // config validation (lib/validate.js)
 // Read + validate the raw .nexus/policy.json and ~/.darknode/policy.json; returns warning strings.
-function policyWarnings(cwd) { const fs = require("fs"), path = require("path"); const w = []; for (const [label, p] of [["local .nexus/policy.json", path.join(cwd, ".nexus", "policy.json")], ["org ~/.darknode/policy.json", path.join(darknodeHome(), "policy.json")]]) { let raw; try { raw = fs.readFileSync(p, "utf8"); } catch (_) { continue; } let obj; try { obj = JSON.parse(raw); } catch (e) { w.push(label + ": invalid JSON (" + e.message + ")"); continue; } for (const m of validatePolicy(obj)) w.push(label + ": " + m); } return w; }
+function policyWarnings(cwd) { const fs = require("fs"), path = require("path"); const w = []; for (const [label, p] of [["local .nexus/policy.json", path.join(cwd, ".nexus", "policy.json")], ["org ~/.darknode/policy.json", path.join(darknodeHome(), "policy.json")]]) { let raw; try { raw = stripBom(fs.readFileSync(p, "utf8")); } catch (_) { continue; } let obj; try { obj = JSON.parse(raw); } catch (e) { w.push(label + ": invalid JSON (" + e.message + ")"); continue; } for (const m of validatePolicy(obj)) w.push(label + ": " + m); } return w; }
 // Two-tier policy: an ORG floor at ~/.darknode/policy.json (set by an admin) that a
 // local .nexus/policy.json can only make STRICTER, never weaken — protected paths and
 // denied commands union, boolean guards ratchet on, and the file limit takes the min.
 function loadPolicy(cwd) {
   const fs = require("fs"), path = require("path");
-  const read = (p) => { try { return JSON.parse(fs.readFileSync(p, "utf8")) || {}; } catch (_) { return {}; } };
+  const read = (p) => { try { return JSON.parse(stripBom(fs.readFileSync(p, "utf8"))) || {}; } catch (_) { return {}; } };
   const org = read(path.join(darknodeHome(), "policy.json"));
   const local = read(path.join(cwd, ".nexus", "policy.json"));
   const uniq = (a) => [...new Set(a.filter(Boolean))];
@@ -2510,7 +2513,7 @@ async function nexusAgents(argv) {
   for (let i = 0; i < arr.length; i++) { if (arr[i] === "-e" || arr[i] === "--engine") engine = arr[++i] || ""; else tasks.push(arr[i]); }
   const cwd = process.cwd();
   if (!tasks.length) { banner(); console.log("  " + bold("Nexus agents") + " — run independent tasks in parallel\n\n  " + gray("usage: ") + cyan("darknode nexus agents \"add tests\" \"write docs\" \"fix lint\"") + gray("  [-e claude|gemini|codex|opencode|aider|ollama]") + "\n"); return; }
-  let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8")); } catch (_) {}
+  let cfg = {}; try { cfg = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8"))); } catch (_) {}
   engine = engine || cfg.engine || (hasBin("claude") ? "claude" : "ollama");
   let model = cfg.model || process.env.DARKNODE_MODEL || "";
   if (engine === "ollama" && !model) { const ms = await ollamaTags(); model = pickCoderModel(ms); }
@@ -2548,7 +2551,7 @@ async function nexusRun(argv) {
     else model = modelOverride || process.env.DARKNODE_MODEL || pickCoderModel(ms);
   }
   let state;
-  if (resume && fs.existsSync(stateFile)) { try { state = JSON.parse(fs.readFileSync(stateFile, "utf8")); } catch (_) { console.log("  " + red("can't resume — the saved run state is unreadable")); return; } banner(); h1("Nexus — resuming run"); }
+  if (resume && fs.existsSync(stateFile)) { try { state = JSON.parse(stripBom(fs.readFileSync(stateFile, "utf8"))); } catch (_) { console.log("  " + red("can't resume — the saved run state is unreadable")); return; } banner(); h1("Nexus — resuming run"); }
   else {
     const goal = goalParts.join(" ").trim();
     if (!goal) { console.log("  " + red("provide a goal:  darknode nexus run \"build X\"")); return; }
@@ -2975,11 +2978,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     let mcpServers = []; // connected { name, call, tools } (or { name, error })
     const mcpToolList = () => mcpServers.filter((s) => !s.error).flatMap((s) => (s.tools || []).map((t) => ({ full: "mcp__" + s.name + "__" + t.name, srv: s, name: t.name, desc: t.description || "" })));
     // saved prompt macros (.nexus/snippets.json) + a lightweight local codebase index (.nexus/index.json)
-    let snippets = {}; try { snippets = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "snippets.json"), "utf8")) || {}; } catch (_) {}
+    let snippets = {}; try { snippets = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "snippets.json"), "utf8"))) || {}; } catch (_) {}
     const saveSnippets = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "snippets.json"), JSON.stringify(snippets, null, 2)); } catch (_) {} };
-    let plan = []; try { const pj = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "plan.json"), "utf8")); if (Array.isArray(pj)) plan = pj; } catch (_) {}
+    let plan = []; try { const pj = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "plan.json"), "utf8"))); if (Array.isArray(pj)) plan = pj; } catch (_) {}
     const savePlan = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "plan.json"), JSON.stringify(plan, null, 2)); } catch (_) {} };
-    let index = null; try { const raw = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "index.json"), "utf8")); if (raw && raw.files) index = raw; } catch (_) {}
+    let index = null; try { const raw = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "index.json"), "utf8"))); if (raw && raw.files) index = raw; } catch (_) {}
     const buildIndex = () => {
       const files = {}; const SKIP = /(^|\/)(\.git|node_modules|\.nexus|dist|build|\.cache|\.next|target|__pycache__)(\/|$)/;
       const CODE = /\.(js|jsx|ts|tsx|py|rb|go|rs|java|c|h|cpp|cc|cs|php|swift|kt|sh|css|scss|html|json|md|yml|yaml|toml)$/i;
@@ -3627,7 +3630,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         } catch (err) { done("error: " + (err && err.message || err)); }
       })();
     };
-    let perms = { allow: [], deny: [] }, heldAllow = []; try { const p = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "permissions.json"), "utf8")); const strs = (v) => (Array.isArray(v) ? v : []).filter((r) => typeof r === "string" && r.trim()); perms = { allow: strs(p && p.allow), deny: strs(p && p.deny) }; } catch (_) {} // permission allowlist
+    let perms = { allow: [], deny: [] }, heldAllow = []; try { const p = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "permissions.json"), "utf8"))); const strs = (v) => (Array.isArray(v) ? v : []).filter((r) => typeof r === "string" && r.trim()); perms = { allow: strs(p && p.allow), deny: strs(p && p.deny) }; } catch (_) {} // permission allowlist
     if (perms.allow.length && !isRepoTrusted(cwd)) { heldAllow = perms.allow; perms.allow = []; _untrustedRepoConfig = true; } // a cloned repo's allow rules would skip the guard - held until /trust (deny rules only restrict, so they load)
     const savePerms = () => keepTrust(cwd, () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "permissions.json"), JSON.stringify({ allow: heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))), deny: perms.deny }, null, 2)); } catch (_) {} });
     let curBranch = "main"; // conversation branch (session branching)
@@ -3912,7 +3915,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       if (m.mcpMode === "env") {
         let obj, fname;
         if (m.mcpFormat === "opencode") { // opencode's own schema; merge INTO a copy of the user's project config
-          let base = {}; for (const f of ["opencode.json", "opencode.jsonc"]) { try { base = JSON.parse(fs.readFileSync(path.join(cwd, f), "utf8")); break; } catch (_) {} }
+          let base = {}; for (const f of ["opencode.json", "opencode.jsonc"]) { try { base = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, f), "utf8"))); break; } catch (_) {} }
           obj = toOpencodeConfig(servers, base); fname = "opencode.json";
         } else { // claude-style { mcpServers } (gemini's system-overrides settings file — gemini merges it, so only 'nexus' is added)
           obj = { mcpServers: servers }; fname = ".gemini-settings.json";
@@ -5071,7 +5074,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           render();
         }).catch(() => { blk.text += "\n  " + no("Ollama unreachable"); render(); });
       }
-      else if (cmd === "/resume") { try { const s = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8")); restoreSession(s); scroll = 0; transcript.push({ role: "system", text: "resumed the saved session from " + new Date(s.ts).toLocaleString() + " (" + engine + ")" }); } catch (e) { transcript.push({ role: "system", text: e && e.code === "ENOENT" ? "no saved session to resume (sessions are saved to .nexus/session.json after each turn)" : "the saved session (.nexus/session.json) could not be read: " + String((e && e.message) || e).split("\n")[0] }); } }
+      else if (cmd === "/resume") { try { const s = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8"))); restoreSession(s); scroll = 0; transcript.push({ role: "system", text: "resumed the saved session from " + new Date(s.ts).toLocaleString() + " (" + engine + ")" }); } catch (e) { transcript.push({ role: "system", text: e && e.code === "ENOENT" ? "no saved session to resume (sessions are saved to .nexus/session.json after each turn)" : "the saved session (.nexus/session.json) could not be read: " + String((e && e.message) || e).split("\n")[0] }); } }
       else if (cmd === "/export") { try { const L = ["# Nexus conversation", "", "_" + new Date().toLocaleString() + " · " + engine + " · " + cwd + "_", ""]; for (const m of transcript) { if (m.role === "user") L.push("## You", "", m.text, ""); else if (m.role === "nexus") { L.push("## Nexus", ""); for (const it of (m.items || [])) { if (it.type === "text") L.push(it.full); else if (it.type === "tool") L.push("- `" + it.label + "`"); } L.push(""); } else if (m.role === "system") L.push("> " + String(m.text).replace(/\n/g, " "), ""); } const dir = path.join(cwd, ".nexus"); try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {} const fp = arg && arg.trim() ? path.resolve(cwd, arg.trim().replace(/^~(?=\/|$)/, require("os").homedir())) : path.join(dir, "export-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, L.join("\n")); /* /export <file> writes there (its folder must exist) */ transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) + " (" + fp + ")" }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
       else if (cmd === "/copy") { let last = ""; for (let i = transcript.length - 1; i >= 0; i--) { const m = transcript[i]; if (m.role === "nexus") { last = (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join("\n").trim(); if (last) break; } } if (last) { const via = copyToClipboard(last, out); transcript.push({ role: "system", text: "copied Nexus's last reply to the " + via }); } else transcript.push({ role: "system", text: "nothing to copy yet" }); }
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed" : "the working tree")) : "rewind failed (git error)" }); } } }
@@ -5246,7 +5249,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         const task = argstr.trim();
         if (!task) { transcript.push({ role: "system", text: "multi-model workspace — an architect plans, a builder implements, an independent reviewer checks; each role can be a different model.\n  usage: /team <task>\n  configure roles in .nexus/team.json:  {\"roles\":[{\"role\":\"architect\",\"engine\":\"claude\"},{\"role\":\"builder\",\"engine\":\"codex\",\"model\":\"gpt-5-codex\"},{\"role\":\"reviewer\",\"engine\":\"gemini\"}]}\n  default picks distinct available engines so the reviewer is genuinely independent." }); }
         else {
-          let roles, maxRounds = 3; try { const c = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "team.json"), "utf8")); const tw = validateTeam(c, ENGINE_ORDER); if (tw.length) transcript.push({ role: "system", text: "team.json warnings:\n  " + tw.join("\n  ") }); if (c && Array.isArray(c.roles) && c.roles.length) roles = c.roles.map((r) => ({ role: r.role || "member", engine: r.engine || engine, model: r.model || "" })); if (c && c.maxRounds) maxRounds = Math.max(1, Math.min(5, c.maxRounds | 0)); } catch (_) {}
+          let roles, maxRounds = 3; try { const c = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "team.json"), "utf8"))); const tw = validateTeam(c, ENGINE_ORDER); if (tw.length) transcript.push({ role: "system", text: "team.json warnings:\n  " + tw.join("\n  ") }); if (c && Array.isArray(c.roles) && c.roles.length) roles = c.roles.map((r) => ({ role: r.role || "member", engine: r.engine || engine, model: r.model || "" })); if (c && c.maxRounds) maxRounds = Math.max(1, Math.min(5, c.maxRounds | 0)); } catch (_) {}
           if (!roles) { const other = engineAvail("claude") && engine !== "claude" ? "claude" : (engine === "claude" ? "ollama" : "claude"); roles = [{ role: "architect", engine: engineAvail("claude") ? "claude" : engine, model: "" }, { role: "builder", engine, model: "" }, { role: "reviewer", engine: other, model: "" }]; }
           roles = roles.filter((r) => r.engine === "ollama" || engineAvail(r.engine));
           if (!roles.length) transcript.push({ role: "system", text: "no available engines for the team — install an AI CLI or run Ollama, then retry" });
@@ -5581,7 +5584,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       else if (cmd === "/tree") { const root = path.resolve(cwd, arg || "."); const out = { lines: [], count: 0 }; const walk = (dir, prefix, depth) => { if (depth > 4 || out.count > 250) return; let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; } ents = ents.filter((e) => !/^(\.git|node_modules|\.nexus|dist|build|\.cache|\.next|target|__pycache__)$/.test(e.name)).sort((a, b) => (b.isDirectory() - a.isDirectory()) || a.name.localeCompare(b.name)); ents.forEach((e, i) => { if (out.count > 250) return; const last = i === ents.length - 1; out.lines.push(prefix + (last ? "└─ " : "├─ ") + e.name + (e.isDirectory() ? "/" : "")); out.count++; if (e.isDirectory()) walk(path.join(dir, e.name), prefix + (last ? "   " : "│  "), depth + 1); }); }; walk(root, "", 0); transcript.push({ role: "system", text: (arg || ".") + "/\n" + (out.lines.join("\n") || "(empty)") + (out.count > 250 ? "\n… (truncated at 250 entries)" : "") }); }
       else if (cmd === "/stats") { const s = summarizeStats(scanStats(cwd)); if (!s.totalFiles) { transcript.push({ role: "system", text: "no recognized source files found here" }); } else { const kb = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : (n / 1e3).toFixed(0) + " KB"; const langs = rankedLangs(s); const w = Math.max.apply(null, langs.map((l) => l[0].length)); const rows = langs.slice(0, 12).map(([k, v]) => "  " + cyan(k.padEnd(w)) + "  " + String(v.files).padStart(4) + gray(" files ") + String(v.lines).padStart(7) + gray(" lines")); const big = s.largest.slice(0, 6).map((f) => "  " + gray(String(f.lines).padStart(6) + "  ") + f.file); transcript.push({ role: "system", text: bold("codebase") + gray("  " + s.totalFiles + " files · " + s.totalLines.toLocaleString() + " lines · " + kb(s.totalBytes) + " · " + langs.length + " languages") + "\n" + rows.join("\n") + "\n\n" + bold("largest files") + "\n" + big.join("\n") }); } }
       else if (cmd === "/env") { const { used, files: sf } = scanEnvTree(cwd); const { declared, files: ef } = readEnvFiles(cwd); const a = auditEnv({ used, declared }); const lines = [bold("env vars") + gray("  " + used.length + " referenced in code · " + declared.length + " documented" + (ef.length ? " (" + ef.join(", ") + ")" : " (no .env.example)"))]; if (a.undocumented.length) lines.push(red("  undocumented (" + a.undocumented.length + ")") + gray(" — used in code, missing from .env.example:") + "\n    " + a.undocumented.join(", ")); if (a.unused.length) lines.push(yellow("  unused (" + a.unused.length + ")") + gray(" — in a .env template but never read:") + "\n    " + a.unused.join(", ")); if (!a.undocumented.length && !a.unused.length) lines.push(green("  clean") + gray(" — code and .env templates agree (common runtime vars ignored)")); transcript.push({ role: "system", text: lines.join("\n") }); }
-      else if (cmd === "/deps") { let pkg = null; try { pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")); } catch (_) {} if (!pkg) { transcript.push({ role: "system", text: "no package.json here — /deps audits Node/JS dependency hygiene" }); } else { const a = auditDeps({ pkg, specifiers: scanImports(cwd) }); const lines = [bold("dependencies") + gray("  " + a.declared.length + " declared · " + a.used.length + " imported")]; if (a.missing.length) lines.push(red("  missing (" + a.missing.length + ")") + gray(" — imported but NOT in package.json:") + "\n    " + a.missing.join(", ")); if (a.unused.length) lines.push(yellow("  unused (" + a.unused.length + ")") + gray(" — declared but never imported (may be CLI/config-only):") + "\n    " + a.unused.join(", ")); if (!a.missing.length && !a.unused.length) lines.push(green("  clean") + gray(" — declared and imported sets match")); transcript.push({ role: "system", text: lines.join("\n") }); } }
+      else if (cmd === "/deps") { let pkg = null; try { pkg = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, "package.json"), "utf8"))); } catch (_) {} if (!pkg) { transcript.push({ role: "system", text: "no package.json here — /deps audits Node/JS dependency hygiene" }); } else { const a = auditDeps({ pkg, specifiers: scanImports(cwd) }); const lines = [bold("dependencies") + gray("  " + a.declared.length + " declared · " + a.used.length + " imported")]; if (a.missing.length) lines.push(red("  missing (" + a.missing.length + ")") + gray(" — imported but NOT in package.json:") + "\n    " + a.missing.join(", ")); if (a.unused.length) lines.push(yellow("  unused (" + a.unused.length + ")") + gray(" — declared but never imported (may be CLI/config-only):") + "\n    " + a.unused.join(", ")); if (!a.missing.length && !a.unused.length) lines.push(green("  clean") + gray(" — declared and imported sets match")); transcript.push({ role: "system", text: lines.join("\n") }); } }
       else if (cmd === "/todo") { const filter = (arg || "").trim().toUpperCase(); const { items, files } = scanTodos(cwd); const list = filter ? items.filter((it) => it.tag === filter) : items; if (!list.length) { transcript.push({ role: "system", text: filter ? ("no " + filter + " markers found in " + files + " file(s)") : ("no TODO/FIXME/HACK markers in " + files + " scanned file(s) — clean.") }); } else { const s = summarizeTodos(list); const shown = rankTodos(list).slice(0, 60); const head = bold("tech debt") + gray("  " + s.total + " marker" + (s.total === 1 ? "" : "s") + " · " + s.files + " file" + (s.files === 1 ? "" : "s") + "   ") + TODO_TAGS.filter((t) => s.byTag[t]).map((t) => yellow(t) + " " + s.byTag[t]).join(gray(" · ")); const body = shown.map((it) => "  " + cyan(it.file + ":" + it.line) + "  " + yellow(it.tag) + (it.text ? "  " + it.text : "")).join("\n"); transcript.push({ role: "system", text: head + "\n" + body + (s.total > shown.length ? gray("\n  … +" + (s.total - shown.length) + " more") : "") + gray("\n  /todo <TAG> to filter · ask me to fix them") }); } }
       else if (cmd === "/theme") {
         if (arg && THEMES[arg]) { applyTheme(arg); saveSetting("theme", arg); const st = readGlobal("state.json", {}) || {}; st.theme = arg; writeGlobal("state.json", st); transcript.push({ role: "system", text: "theme set to " + arg + " — recolored the accent, logo & boot gradient (saved)" }); }
@@ -5654,7 +5657,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         const sub = (arg || "").toLowerCase();
         const mpDir = path.join(cwd, ".nexus", "marketplace");
         const globalMp = path.join(os.homedir(), ".darknode", "marketplace");
-        const loadPkgs = (dir) => { try { return fs.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")); } catch (_) { return null; } }).filter(Boolean); } catch (_) { return []; } };
+        const loadPkgs = (dir) => { try { return fs.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => { try { return JSON.parse(stripBom(fs.readFileSync(path.join(dir, f), "utf8"))); } catch (_) { return null; } }).filter(Boolean); } catch (_) { return []; } };
         if (sub === "init" || sub === "publish") {
           const pkgPath = path.join(mpDir, "package.json");
           if (fs.existsSync(pkgPath)) transcript.push({ role: "system", text: "marketplace package already exists at .nexus/marketplace/package.json" });
@@ -5675,7 +5678,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             const src = path.resolve(cwd, name);
             if (fs.existsSync(path.join(src, "package.json"))) {
               try {
-                const pkg = JSON.parse(fs.readFileSync(path.join(src, "package.json"), "utf8"));
+                const pkg = JSON.parse(stripBom(fs.readFileSync(path.join(src, "package.json"), "utf8")));
                 const dest = path.join(globalMp, pkg.name || path.basename(src));
                 fs.mkdirSync(dest, { recursive: true });
                 for (const f of fs.readdirSync(src)) { fs.copyFileSync(path.join(src, f), path.join(dest, f)); }
@@ -5711,7 +5714,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       else if (cmd === "/cron") {
         const cronFile = path.join(cwd, ".nexus", "cron.json");
-        const loadCron = () => { try { return JSON.parse(fs.readFileSync(cronFile, "utf8")); } catch (_) { return []; } };
+        const loadCron = () => { try { return JSON.parse(stripBom(fs.readFileSync(cronFile, "utf8"))); } catch (_) { return []; } };
         const saveCron = (jobs) => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(cronFile, JSON.stringify(jobs, null, 2)); } catch (_) {} };
         const sub = (arg || "").toLowerCase();
         const cronMatch = (expr) => { try { const parts = expr.split(/\s+/); if (parts.length !== 5) return false; return parts.every((p) => /^[\d*,\/-]+$/.test(p)); } catch (_) { return false; } };
@@ -5859,7 +5862,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         const bfile = (n) => path.join(bdir, String(n).replace(/[^\w.-]/g, "_") + ".json");
         const listB = () => { try { return fs.readdirSync(bdir).filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, "")); } catch (_) { return []; } };
         const saveB = (n) => { try { fs.mkdirSync(bdir, { recursive: true }); fs.writeFileSync(bfile(n), JSON.stringify({ engine, model: sess.model, transcript, sess, oMsgs, ts: Date.now() })); return true; } catch (_) { return false; } };
-        const loadB = (n) => { try { const s = JSON.parse(fs.readFileSync(bfile(n), "utf8")); transcript.length = 0; for (const b of s.transcript) transcript.push(b); if (s.sess) { Object.assign(sess, s.sess); if (engine !== "claude" && CTXW[engine]) sess.ctxWindow = CTXW[engine]; } if (Array.isArray(s.oMsgs)) { oMsgs.length = 0; for (const m of s.oMsgs) oMsgs.push(m); } return true; } catch (_) { return false; } };
+        const loadB = (n) => { try { const s = JSON.parse(stripBom(fs.readFileSync(bfile(n), "utf8"))); transcript.length = 0; for (const b of s.transcript) transcript.push(b); if (s.sess) { Object.assign(sess, s.sess); if (engine !== "claude" && CTXW[engine]) sess.ctxWindow = CTXW[engine]; } if (Array.isArray(s.oMsgs)) { oMsgs.length = 0; for (const m of s.oMsgs) oMsgs.push(m); } return true; } catch (_) { return false; } };
         if (!ps.length) { const bs = listB(); if (!bs.includes(curBranch)) bs.unshift(curBranch); transcript.push({ role: "system", text: "conversation branches:\n" + bs.map((b) => "  " + (b === curBranch ? cyan("● " + b) + gray("  (current)") : "  " + b)).join("\n") + "\n  " + gray("/branch new <name>   fork this conversation here") + "\n  " + gray("/branch <name>        switch (auto-saves the current branch first)") + "\n  " + gray("/branch delete <name>") }); }
         else if (ps[0] === "new" && ps[1]) { saveB(curBranch); curBranch = ps[1]; saveB(curBranch); transcript.push({ role: "system", text: "forked → branch " + cyan(curBranch) + gray(" (a copy from here — explore freely; /branch <other> to switch back)") }); }
         else if (ps[0] === "delete" && ps[1]) { if (ps[1] === curBranch) transcript.push({ role: "system", text: "can't delete the current branch — switch away first." }); else { try { fs.unlinkSync(bfile(ps[1])); transcript.push({ role: "system", text: "deleted branch " + ps[1] }); } catch (_) { transcript.push({ role: "system", text: "no branch '" + ps[1] + "'" }); } } }
@@ -6062,7 +6065,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     let loading = true;
     // Boot animation control: any key skips it; DARKNODE_FAST / NO_MOTION goes straight to the chat.
     let bootTimer = null, bootDone = false;
-    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); if (autoResume) { try { const s = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8")); const hadConvo = (s.transcript || []).some((b) => b.role === "user" && b.text && String(b.text).trim()); if (hadConvo) { restoreSession(s); transcript.push({ role: "system", ephemeral: true, text: autoResume === "restart" ? "restarted with latest code — session restored" : "previous session restored (" + new Date(s.ts).toLocaleString() + ") · /clear for a fresh chat · `nexus --new` to launch blank" }); } else { transcript.length = 0; transcript.push({ role: "art" }); } } catch (_) {} autoResume = false; } render(); };
+    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); if (autoResume) { try { const s = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8"))); const hadConvo = (s.transcript || []).some((b) => b.role === "user" && b.text && String(b.text).trim()); if (hadConvo) { restoreSession(s); transcript.push({ role: "system", ephemeral: true, text: autoResume === "restart" ? "restarted with latest code — session restored" : "previous session restored (" + new Date(s.ts).toLocaleString() + ") · /clear for a fresh chat · `nexus --new` to launch blank" }); } else { transcript.length = 0; transcript.push({ role: "art" }); } } catch (_) {} autoResume = false; } render(); };
     const fastBoot = !!(process.env.DARKNODE_FAST || process.env.NO_MOTION);
     // auto-connect MCP servers (non-blocking): the workspace's .nexus/mcp.json PLUS the
     // no-key servers that ship bundled with Nexus (fetch, memory, sequential-thinking,
@@ -6528,7 +6531,7 @@ function nexusInit() {
   fs.mkdirSync(NEXUS, { recursive: true });
   const mdPath = path.join(NEXUS, "NEXUS.md"), cfgPath = path.join(NEXUS, "config.json");
   const detected = [];
-  try { if (fs.existsSync("package.json")) { const p = JSON.parse(fs.readFileSync("package.json", "utf8")); detected.push("Node project" + (p.name ? " (" + p.name + ")" : "")); if (p.scripts) detected.push("npm scripts: " + Object.keys(p.scripts).slice(0, 8).join(", ")); } } catch (_) {}
+  try { if (fs.existsSync("package.json")) { const p = JSON.parse(stripBom(fs.readFileSync("package.json", "utf8"))); detected.push("Node project" + (p.name ? " (" + p.name + ")" : "")); if (p.scripts) detected.push("npm scripts: " + Object.keys(p.scripts).slice(0, 8).join(", ")); } } catch (_) {}
   try { if (fs.existsSync("requirements.txt") || fs.existsSync("pyproject.toml") || fs.existsSync("setup.py")) detected.push("Python project"); } catch (_) {}
   try { if (fs.existsSync("Cargo.toml")) detected.push("Rust project"); } catch (_) {}
   try { if (fs.existsSync("go.mod")) detected.push("Go project"); } catch (_) {}
