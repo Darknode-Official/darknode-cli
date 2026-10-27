@@ -1996,13 +1996,27 @@ function nexusRestore(cwd, tree, paths) {
 // (~/.darknode/trusted-repos.json) so a malicious repo can't mark itself trusted.
 let _untrustedRepoConfig = false;
 function trustFile() { return require("path").join(darknodeHome(), "trusted-repos.json"); }
+// Trust is bound to the CONTENT of the files that run commands or loosen the guard: a git pull or an
+// agent edit that changes them after /trust leaves the repo untrusted again until the operator re-trusts it.
+const TRUST_FILES = [".nexus/mcp.json", ".mcp.json", ".nexus/hooks.json", ".nexus/permissions.json", ".nexus/policy.json"];
+let _trustChanged = false;
+function trustDigest(cwd) { const fs = require("fs"), path = require("path"); const h = require("crypto").createHash("sha256"); for (const f of TRUST_FILES) { let c = "\u0000missing"; try { c = fs.readFileSync(path.join(cwd, f), "utf8"); } catch (_) {} h.update(f + "\u0000" + c + "\u0000"); } return h.digest("hex"); }
+function readTrustList() { try { const l = JSON.parse(require("fs").readFileSync(trustFile(), "utf8")); return Array.isArray(l) ? l : []; } catch (_) { return []; } }
+function trustState(cwd) { // "ok" | "changed" | "no"
+  const rp = require("path").resolve(cwd), list = readTrustList();
+  const e = list.find((x) => x === rp || (x && x.path === rp)); if (!e) return "no";
+  if (typeof e === "string") { trustRepo(cwd); return "ok"; } // trusted before trust was content-bound: pin it to what is there now
+  return e.digest === trustDigest(cwd) ? "ok" : "changed";
+}
 function isRepoTrusted(cwd) {
   if (process.env.DARKNODE_TRUST_REPO === "1") return true;
-  try { const list = JSON.parse(require("fs").readFileSync(trustFile(), "utf8")); return Array.isArray(list) && list.includes(require("path").resolve(cwd)); } catch (_) { return false; }
+  try { const st = trustState(cwd); if (st === "changed") _trustChanged = true; return st === "ok"; } catch (_) { return false; }
 }
 function trustRepo(cwd) {
-  try { const fs = require("fs"); let list = []; try { list = JSON.parse(fs.readFileSync(trustFile(), "utf8")); } catch (_) {} if (!Array.isArray(list)) list = []; const rp = require("path").resolve(cwd); if (!list.includes(rp)) list.push(rp); fs.writeFileSync(trustFile(), JSON.stringify(list, null, 2)); return true; } catch (_) { return false; }
+  try { const rp = require("path").resolve(cwd); const list = readTrustList().filter((x) => x !== rp && !(x && x.path === rp)); list.push({ path: rp, digest: trustDigest(cwd) }); require("fs").writeFileSync(trustFile(), JSON.stringify(list, null, 2)); return true; } catch (_) { return false; }
 }
+// Nexus's own edits (/allow, /deny, /mcp add|remove) keep a trusted repo trusted.
+function keepTrust(cwd, write) { let was = false; try { was = trustState(cwd) === "ok"; } catch (_) {} const r = write(); if (was) trustRepo(cwd); return r; }
 // ---------- MCP (Model Context Protocol): minimal dependency-free JSON-RPC-2.0 stdio client ----------
 function loadMcpConfig(cwd) {
   const fs = require("fs"), path = require("path");
@@ -2064,6 +2078,7 @@ function loadPolicy(cwd) {
   p.deniedCommands = uniq([].concat(local.deniedCommands || [], org.deniedCommands || []));
   p.requireApprovalPaths = uniq([].concat(local.requireApprovalPaths || [], org.requireApprovalPaths || []));
   const relax = isRepoTrusted(cwd); // an untrusted (cloned) repo's policy may tighten blockSecrets/audit, never switch them off
+  if (!relax && (local.blockSecrets === false || local.audit === false)) _untrustedRepoConfig = true;
   const floorBool = (key) => org[key] === true ? true : (local[key] !== undefined && (relax || local[key] === true) ? local[key] : POLICY_DEFAULTS[key]);
   p.blockSecrets = floorBool("blockSecrets"); p.audit = floorBool("audit");
   p.allowNetwork = org.allowNetwork === false ? false : (local.allowNetwork !== undefined ? local.allowNetwork : POLICY_DEFAULTS.allowNetwork);
@@ -3612,7 +3627,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     };
     let perms = { allow: [], deny: [] }, heldAllow = []; try { const p = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "permissions.json"), "utf8")); const strs = (v) => (Array.isArray(v) ? v : []).filter((r) => typeof r === "string" && r.trim()); perms = { allow: strs(p && p.allow), deny: strs(p && p.deny) }; } catch (_) {} // permission allowlist
     if (perms.allow.length && !isRepoTrusted(cwd)) { heldAllow = perms.allow; perms.allow = []; _untrustedRepoConfig = true; } // a cloned repo's allow rules would skip the guard - held until /trust (deny rules only restrict, so they load)
-    const savePerms = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "permissions.json"), JSON.stringify({ allow: heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))), deny: perms.deny }, null, 2)); } catch (_) {} };
+    const savePerms = () => keepTrust(cwd, () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "permissions.json"), JSON.stringify({ allow: heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))), deny: perms.deny }, null, 2)); } catch (_) {} });
     let curBranch = "main"; // conversation branch (session branching)
     const imgPaths = new Map(); // [Image#N] -> the image file it stands for (dropped path or Ctrl+V capture), resolved at submit
     let nextQueue = []; // /next queue — prompts to run after the current turn (declared here so the status bar can show the count)
@@ -4994,7 +5009,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       else if (cmd === "/mcp") {
         const ps = (argstr || "").trim().split(/\s+/).filter(Boolean); const sub = (ps[0] || "").toLowerCase();
-        const writeMcp = (cfg) => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "mcp.json"), JSON.stringify(cfg, null, 2)); return true; } catch (_) { return false; } };
+        const writeMcp = (cfg) => keepTrust(cwd, () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "mcp.json"), JSON.stringify(cfg, null, 2)); return true; } catch (_) { return false; } });
         if (sub === "catalog" || sub === "list") transcript.push({ role: "system", text: "MCP catalog — one-command connect with /mcp add <name>  " + green("(★ = bundled, on by default)") + ":\n" + Object.keys(MCP_CATALOG).map((k) => "  " + (isBundled(k) ? green("★") : " ") + " " + cyan(k.padEnd(20)) + gray(MCP_CATALOG[k].desc) + (MCP_CATALOG[k].needsEnv ? yellow("  [needs " + MCP_CATALOG[k].needsEnv.join(", ") + "]") : "")).join("\n") + "\n  any model then uses them as mcp__<server>__<tool>.  Bundled ones auto-connect (DARKNODE_NO_DEFAULT_MCP=1 to disable)." });
         else if (sub === "add") {
           const name = (ps[1] || "").toLowerCase(); const e = catalogGet(name);
@@ -6079,7 +6094,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       } catch (_) {}
     })();
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
-    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow("warning: this workspace defines MCP servers, hooks and/or permission allow rules that would run commands — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
+    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow(_trustChanged ? "warning: this workspace's MCP servers, hooks, permission rules or policy changed since you trusted it — not loaded until you review them and re-trust. " : "warning: this workspace defines MCP servers, hooks, permission allow rules and/or policy relaxations — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
     try { Composer.cleanupDroppedTails(); } catch (_) {} // sweep paste-remainder temp files older than 24h
     let imgCounter = 0; // fallback running number when an image's folder position can't be read

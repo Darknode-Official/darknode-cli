@@ -481,6 +481,10 @@ Org-level policies (`~/.darknode/policy.json`) set a floor that local config
 can only make stricter. A repo you have not `/trust`ed can tighten
 `blockSecrets` and `audit` but not turn them off. The agent can never write
 `.nexus/policy.json`, `permissions.json` or `hooks.json`, by file tool or shell.
+Trust is tied to the contents of `.nexus/mcp.json`, `.mcp.json`, `hooks.json`,
+`permissions.json` and `policy.json`: if any of them changes after `/trust` (a
+pull, or an agent adding an MCP server), the repo is untrusted again until you
+review the change and run `/trust` once more.
 
 ### /audit — Tool Call Log
 
