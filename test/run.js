@@ -2597,6 +2597,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("read index out of range errors", /out of range/.test(NB.applyNotebookOp(mk(), { op: "read", index: 9 }).error));
     const edited = NB.applyNotebookOp(mk(), { op: "edit", index: 0, source: "x=2" });
     ok("edit replaces source + clears code outputs", edited.nb.cells[0].source[0] === "x=2" && edited.nb.cells[0].outputs.length === 0 && edited.nb.cells[0].execution_count === null);
+    ok("fractional index errors instead of throwing", /whole number/.test(NB.applyNotebookOp(mk(), { op: "edit", index: 1.5, source: "y" }).error || ""));
+    { const nb45 = Object.assign(mk(), { nbformat_minor: 5 }); const c = NB.applyNotebookOp(nb45, { op: "insert", source: "z" }).nb.cells[2];
+      ok("nbformat 4.5 insert gives the cell an id", /^[a-f0-9]{8}$/.test(c.id)); ok("nbformat 4.4 insert has no id", NB.applyNotebookOp(mk(), { op: "insert", source: "z" }).nb.cells[2].id === undefined); }
+    ok("raw cell type kept", NB.newCell("raw", "x").cell_type === "raw" && NB.newCell("raw", "x").outputs === undefined);
+    { const fsx = { readFileSync: () => "\uFEFF" + JSON.stringify(mk()), writeFileSync() {} };
+      ok("BOM notebook parses", NB.notebookEditTool({ path: "a.ipynb", op: "read" }, "/", (p) => p, { fs: fsx }).cellCount === 2); }
     const inserted = NB.applyNotebookOp(mk(), { op: "insert", index: 1, cell_type: "markdown", source: "new" });
     ok("insert adds a cell at index", inserted.nb.cells.length === 3 && inserted.nb.cells[1].cell_type === "markdown");
     const appended = NB.applyNotebookOp(mk(), { op: "append", source: "tail" });
