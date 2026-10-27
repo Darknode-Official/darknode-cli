@@ -2608,6 +2608,28 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const NS = require("../lib/cli/nexus-settings");
     ok("syntaxGate defaults to warn and NEXUS_SYNTAX_GATE accepts only off|warn", NS.DEFAULTS.syntaxGate === "warn" && NS.ENV_NAME.syntaxGate === "NEXUS_SYNTAX_GATE");
   }
+  group("project instruction files (AGENTS.md / CLAUDE.md / .cursorrules / NEXUS.md)");
+  {
+    const IN = require("../lib/nexus/instructions");
+    const os = require("os"), outer = fs.mkdtempSync(path.join(os.tmpdir(), "nxin-")), root = path.join(outer, "repo");
+    fs.mkdirSync(root); fs.writeFileSync(path.join(outer, "AGENTS.md"), "OUTSIDE-THE-REPO"); // above the repo root: never read
+    fs.mkdirSync(path.join(root, ".git")); fs.mkdirSync(path.join(root, "pkg", "sub", ".nexus"), { recursive: true });
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "root rule: use tabs");
+    fs.writeFileSync(path.join(root, "CLAUDE.md"), "root rule: use tabs"); // a copy of AGENTS.md
+    fs.writeFileSync(path.join(root, "pkg", "AGENTS.md"), "pkg rule: use spaces");
+    fs.writeFileSync(path.join(root, "pkg", "sub", ".nexus", "NEXUS.md"), "x".repeat(1500) + "TAIL-MARKER");
+    const r = IN.loadInstructions(path.join(root, "pkg", "sub"));
+    ok("finds AGENTS.md at the root and in a nested package", /root rule/.test(r.text) && /pkg rule/.test(r.text));
+    ok("root first, nearest later (later wins)", r.text.indexOf("root rule") < r.text.indexOf("pkg rule") && r.text.indexOf("pkg rule") < r.text.indexOf("TAIL-MARKER"));
+    ok("an AGENTS.md above the repo root is not read", !/OUTSIDE-THE-REPO/.test(r.text));
+    ok("an identical CLAUDE.md copy is included once", r.text.split("root rule").length === 2);
+    ok("NEXUS.md over 1000 chars is no longer cut at 1000", /TAIL-MARKER/.test(r.text));
+    ok("files list says what was loaded", r.files.map((f) => f.rel).join(",") === "../../AGENTS.md,../AGENTS.md,.nexus/NEXUS.md");
+    const small = IN.loadInstructions(path.join(root, "pkg", "sub"), { perFile: 300, total: 100000 });
+    ok("a cut is announced in the text, never silent", /more chars not shown - read \.nexus\/NEXUS\.md/.test(small.text));
+    ok("nothing found -> empty text", IN.loadInstructions(fs.mkdtempSync(path.join(os.tmpdir(), "nxin0-"))).text === "");
+    fs.rmSync(outer, { recursive: true, force: true });
+  }
   group("notebook_edit (.ipynb cell ops)");
   {
     const NB = require("../lib/nexus/notebook-edit");
