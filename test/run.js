@@ -1409,6 +1409,7 @@ group("help reference (single source of truth)");
     ok("undo: restore checks files out of the snapshot tree (no commit, so no git identity needed); the agents base commit falls back to a nexus identity", /const commit = tree;/.test(src) && !/commit-tree " \+ tree \+ " -m nexus-restore/.test(src) && /env: gitIdEnv\(cwd\) \}\)/.test(src));
     ok("side panel: a known /command typed in the follow-up box runs (or queues mid-turn) instead of being sent to the model as a question; a /path question still asks", /if \(\/\^\\\/\[a-z\]\/i\.test\(q\) && allCmds\(\)\.some\(\(c\) => c\[0\] === sideName\(q\)\)\) \{ btw = null; if \(busy && !isInstant\(q\)\) nextQueue\.push\(q\); else handleSlash\(q\);/.test(src));
     ok("/notify rejects an unknown value instead of silently toggling; /export <file> writes to that path", /if \(a && a !== "on" && a !== "off"\) \{ transcript\.push\(\{ role: "system", text: "usage: \/notify \[on\|off\]/.test(src) && /const fp = arg && arg\.trim\(\) \? path\.resolve\(cwd, /.test(src));
+    ok("nexus \"task\" runs the task then exits, as --help promises (no line-mode chat afterwards)", /if \(printMode \|\| oneShot\) return;/.test(src));
     ok("runEngineTask: a prompt starting with - is space-guarded from the engine CLI's option parser", /m\.args\(\/\^-\/\.test\(prompt\) \? " " \+ prompt : prompt/.test(src));
   }
   ok("nearestCommands: deterministic", JSON.stringify(nearestCommands("scna")) === JSON.stringify(nearestCommands("scna")));

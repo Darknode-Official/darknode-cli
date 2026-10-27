@@ -1672,7 +1672,7 @@ async function aiCoder(argv) {
   let task = parts.join(" ").trim();
   while (true) {
     if (!task) {
-      if (printMode) return;
+      if (printMode || oneShot) return; // `nexus "task"` runs that task, then exits (as --help says); plain `nexus` is the session
       const t = (await chatInput()).trim();
       if (!t) { task = ""; continue; }
       if (/^\/?(exit|quit|q)$/i.test(t)) { console.log("\n  " + gray("stay sharp.") + "\n"); return; }
