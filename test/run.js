@@ -3402,6 +3402,11 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     setTimeout(() => B.append(id, "compiling\nListening on http://localhost:5173\n"), 200);
     r = await WF.waitForTool({ job: id, pattern: "listening on", timeout_s: 3 }, dir, rp, { jobs: B });
     ok("job pattern → ready with the matching line", r.ready === true && /5173/.test(r.line));
+    const id2 = B.start("vite", null, 0); B.append(id2, "  \x1b[1mLocal\x1b[22m:   \x1b[36mhttp://localhost:\x1b[1m5174\x1b[22m/\x1b[39m\n");
+    r = await WF.waitForTool({ job: id2, pattern: "localhost:5174", timeout_s: 1 }, dir, rp, { jobs: B });
+    ok("job pattern matches through colour codes inside the line", r.ready === true && r.line.includes("http://localhost:5174/"));
+    { const s6 = net.createServer(() => {}); let v6 = true; await new Promise((res) => { s6.once("error", () => { v6 = false; res(); }); s6.listen(0, "::1", res); });
+      if (v6) { r = await WF.waitForTool({ port: s6.address().port, timeout_s: 2 }, dir, rp, {}); ok("a server listening on ::1 only counts as ready", r.ready === true); s6.close(); } }
     ok("remote URLs refused (local only)", /only checks local/.test((await WF.waitForTool({ url: "https://example.com" }, dir, rp, {})).error));
     ok("needs a target", /needs one of/.test((await WF.waitForTool({}, dir, rp, {})).error));
     fs.rmSync(dir, { recursive: true, force: true });
