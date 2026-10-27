@@ -2026,6 +2026,8 @@ function mcpConnect(name, spec, cwd) {
   });
 }
 // ---------- Hooks: run project-defined shell commands around events (Claude-Code style) ----------
+// does the repo itself define anything that runs commands (MCP servers or hooks)? read raw, regardless of trust
+function repoDefinesCommands(cwd) { const fs = require("fs"), path = require("path"); const has = (f, k) => { try { const j = JSON.parse(fs.readFileSync(path.join(cwd, f), "utf8")); const o = k ? j && j[k] : j; return !!(o && typeof o === "object" && Object.keys(o).length); } catch (_) { return false; } }; return has(".nexus/mcp.json", "mcpServers") || has(".mcp.json", "mcpServers") || has(".nexus/hooks.json"); }
 function loadHooks(cwd) { const fs = require("fs"), path = require("path"); try { const h = JSON.parse(fs.readFileSync(path.join(cwd, ".nexus", "hooks.json"), "utf8")); if (h && Object.keys(h).length && !isRepoTrusted(cwd)) { _untrustedRepoConfig = true; return null; } return h; } catch (_) { return null; } }
 
 // ================= enterprise guardrails: policy + audit =================
@@ -4983,6 +4985,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         else if (sub === "add") {
           const name = (ps[1] || "").toLowerCase(); const e = catalogGet(name);
           if (!e) transcript.push({ role: "system", text: name ? ("unknown catalog server '" + name + "' — /mcp catalog to browse") : "usage: /mcp add <name>   (see /mcp catalog)" });
+          else if (!isRepoTrusted(cwd) && repoDefinesCommands(cwd)) transcript.push({ role: "system", text: yellow("this workspace isn't trusted and already defines MCP servers or hooks") + " (.nexus/mcp.json, .mcp.json, .nexus/hooks.json) — adding a server would trust them too. Review those files, run " + cyan("/trust") + ", then " + cyan("/mcp add " + name) + "." });
           else { const cfg = addServerToConfig({ mcpServers: loadMcpConfig(cwd) || {} }, name); if (writeMcp(cfg)) { trustRepo(cwd); _untrustedRepoConfig = false; mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "added " + cyan(name) + " → .nexus/mcp.json" + (e.needsEnv ? "\n  " + yellow("set env first: " + e.needsEnv.join(", ")) : "") + (e.note ? "\n  " + gray("note: " + e.note) : "") + "\n  connecting…  " + gray("(first run may npx/uvx-install the server)") }); } else transcript.push({ role: "system", text: "could not write .nexus/mcp.json" }); }
         }
         else if (sub === "remove" || sub === "rm") { const name = (ps[1] || "").toLowerCase(); const cur = loadMcpConfig(cwd) || {}; if (!cur[name]) transcript.push({ role: "system", text: "no server '" + name + "' in .nexus/mcp.json" }); else { writeMcp(removeServerFromConfig({ mcpServers: cur }, name)); mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "removed " + name + " — reconnecting the rest…" }); } }
