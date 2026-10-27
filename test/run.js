@@ -3473,6 +3473,16 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     fs.writeFileSync(P("a.txt"), "A"); fs.writeFileSync(P("b.txt"), "B"); fs.writeFileSync(P("src/lib/x.js"), "X");
     ok("move onto an existing file is refused (was silent data loss)", /already exists/.test(FT.moveTool({ from: "a.txt", to: "b.txt" }, dir, rp).error) && rd("b.txt") === "B" && rd("a.txt") === "A");
     ok("overwrite:true replaces", FT.moveTool({ from: "a.txt", to: "b.txt", overwrite: true }, dir, rp).ok && rd("b.txt") === "A" && !fs.existsSync(P("a.txt")));
+    if (process.platform !== "win32") {
+      const Jail = require("../lib/nexus/jail"), jd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fsl-"))), jrp = (p) => Jail.assertInJail(p, jd), J = (p) => path.join(jd, p);
+      const isLink = (p) => { try { return fs.lstatSync(J(p)).isSymbolicLink(); } catch (_) { return false; } };
+      fs.mkdirSync(J("real")); fs.writeFileSync(J("real/keep.txt"), "k"); fs.symlinkSync("real", J("linkdir")); fs.symlinkSync("real/keep.txt", J("link.txt")); fs.symlinkSync("../real/keep.txt", J("real/l2"));
+      ok("delete of a file symlink removes the link, not its target", FT.deleteTool({ path: "link.txt" }, jd, jrp).ok && !isLink("link.txt") && fs.existsSync(J("real/keep.txt")));
+      ok("recursive delete of a folder symlink removes the link, not the real folder", FT.deleteTool({ path: "linkdir", recursive: true }, jd, jrp).ok && !isLink("linkdir") && fs.existsSync(J("real/keep.txt")));
+      ok("move of a symlink moves the link", FT.moveTool({ from: "real/l2", to: "real/l3" }, jd, jrp).ok && isLink("real/l3") && fs.existsSync(J("real/keep.txt")));
+      fs.linkSync(J("real/keep.txt"), J("real/hard.txt"));
+      ok("a hard link is still 'already exists' (not mistaken for a case-only rename)", /already exists/.test(FT.moveTool({ from: "real/keep.txt", to: "real/hard.txt" }, jd, jrp).error || ""));
+    }
     ok("move into an existing folder keeps the name", FT.moveTool({ from: "b.txt", to: "out" }, dir, rp).ok && rd("out/b.txt") === "A");
     ok("move creates missing parent folders", FT.moveTool({ from: "out/b.txt", to: "new/deep/b.txt" }, dir, rp).ok && rd("new/deep/b.txt") === "A");
     ok("cannot move a folder into itself", /into itself/.test(FT.moveTool({ from: "src", to: "src/lib/inner" }, dir, rp).error));
