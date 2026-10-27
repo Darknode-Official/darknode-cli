@@ -2540,6 +2540,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const st = GT.parseStatus("## main...origin/main [ahead 2, behind 1]\n M a.js\n?? new.txt\n");
     ok("parseStatus branch+ahead+behind", st.branch === "main" && st.upstream === "origin/main" && st.ahead === 2 && st.behind === 1);
     ok("parseStatus files + not clean", st.files.length === 2 && st.files[0].path === "a.js" && st.clean === false);
+    { const q = GT.parseStatus('## main\nR  r.txt -> "r 2.txt"\n?? "a b.txt"\n?? "caf\\303\\251.txt"\n?? "q\\"x.txt"\n').files;
+      eq("parseStatus unquotes C-quoted paths + splits renames", q, [{ status: "R ", path: "r 2.txt", from: "r.txt" }, { status: "??", path: "a b.txt" }, { status: "??", path: "café.txt" }, { status: "??", path: 'q"x.txt' }]); }
     ok("parseStatus clean tree", GT.parseStatus("## main\n").clean === true);
     ok("parseStatus strips 'No commits yet on' prefix to the bare branch", GT.parseStatus("## No commits yet on main\n").branch === "main");
     const lg = GT.parseLog("abc123\x1fAlice\x1f2 days ago\x1fInitial commit\n");
