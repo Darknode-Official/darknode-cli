@@ -3315,6 +3315,11 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       let sn = u.snapshot([bin, sh]); fs.rmSync(bin); fs.rmSync(sh); u.commit(sn);
       ok("undoing a delete restores a binary file byte for byte", u.undo(bin).ok && fs.readFileSync(bin).equals(bytes));
       ok("undoing a delete keeps the executable bit", u.undo(sh).ok && (process.platform === "win32" || (fs.statSync(sh).mode & 0o111) !== 0)); }
+      if (process.platform !== "win32") { const tgt = path.join(dir, "t.txt"), ln = path.join(dir, "ln"); fs.writeFileSync(tgt, "data"); fs.symlinkSync("t.txt", ln);
+        let sl = u.snapshot([ln]); fs.rmSync(ln); u.commit(sl);
+        ok("undoing the delete of a symlink restores the link, not a copy", u.undo(ln).ok && fs.lstatSync(ln).isSymbolicLink() && fs.readlinkSync(ln) === "t.txt");
+        sl = u.snapshot([ln]); fs.writeFileSync(ln, "edited"); u.commit(sl);
+        ok("an edit made through a symlink is still undoable", u.undo(ln).ok && fs.lstatSync(ln).isSymbolicLink() && fs.readFileSync(tgt, "utf8") === "data"); }
     ok("nothing left to undo", /no edit of this file/.test(u.undo(f).error));
     s = u.snapshot([f]); fs.writeFileSync(f, "agent"); u.commit(s); fs.writeFileSync(f, "user edit");
     ok("refuses when the file changed since", /changed after that edit/.test(u.undo(f).error) && fs.readFileSync(f, "utf8") === "user edit");
