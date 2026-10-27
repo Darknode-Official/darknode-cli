@@ -3422,6 +3422,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("summary counts matches + files", r.summary, "Found 3 matches in 2 files");
     ok("path written once per file", r.results.split("\n").filter((l) => l === "src/a.js").length === 1 && /\n  3: const token = 1;/.test(r.results));
     ok("lockfile + minified skipped and reported", /2 lockfile\/minified/.test(r.skipped_generated));
+    { const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "srch2-")); fs.writeFileSync(path.join(d2, "w.cs"), "int a = 1;\r\nint b = 2;\r\n");
+      eq("CRLF file: a $-anchored pattern matches", SR.searchTool({ pattern: "= 2;$" }, d2, (p) => path.resolve(d2, p)).summary, "Found 1 match in 1 file"); }
     ok("binary skipped", !/img\.bin/.test(r.results));
     r = q({ pattern: "token", include_generated: true });
     ok("include_generated searches them; long line cut AROUND the match", /app\.min\.js\n  1: …x+token/.test(r.results) && r.results.split("\n").find((l) => /token/.test(l) && /min/.test(r.results) && l.length < 220));
