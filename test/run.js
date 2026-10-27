@@ -1766,6 +1766,8 @@ group("compliance bundle (SOC2 export)");
   ok("exact path is preferred and marked exact", (() => { const r = applyEditsFlexible("hello world", [{ find: "world", replace: "there" }]); return r.ok && r.content === "hello there" && r.applied[0].mode === "exact"; })());
   ok("flexible refuses when the block is ambiguous", (() => { const r = applyEditsFlexible("x=1\nx=1\n", [{ find: " x = 1 ", replace: "x=2" }]); return !r.ok; })());
   eq("locateFlexible finds a unique indentation-variant block", locateFlexible("a\n   foo()\nb", "foo()").count, 1);
+  ok("ambiguous whitespace-flexible match names the lines", /2 places, lines 2, 4\)/.test(applyEditsFlexible("a\n  x = 1\nb\n    x  =  1\n", [{ find: "x = 1 ", replace: "y" }]).error || ""));
+  ok("strict applyEdits ambiguity names the lines too", /matches 2 places \(lines 1, 2\)/.test(applyEdits("q\nq\n", [{ find: "q", replace: "z" }]).error || ""));
   eq("locateFlexible reports missing", locateFlexible("a\nb\n", "zzz").count, 0);
   // unified diff
   const patch = ["--- a/f.js", "+++ b/f.js", "@@ -1,3 +1,3 @@", " line1", "-line2", "+LINE2", " line3"].join("\n");
