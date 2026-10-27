@@ -2968,9 +2968,9 @@ function nexusTui(engine, cwd, nexusMd) {
         const a = (arg || "").trim();
         const staged = a === "--staged" || a === "--cached";
         const file = staged ? "" : a;
-        const pathspec = file ? " -- " + JSON.stringify(file) : "";
-        const primary = staged ? "git -c color.ui=never diff --cached" : "git -c color.ui=never diff HEAD";
-        let d = ""; try { d = _cp.execSync(primary + pathspec, { cwd, encoding: "utf8" }); } catch (_) { try { d = _cp.execSync("git -c color.ui=never diff" + pathspec, { cwd, encoding: "utf8" }); } catch (__) {} }
+        const pathspec = file ? ["--", file] : [];
+        const primary = ["-c", "color.ui=never", "diff"].concat(staged ? ["--cached"] : ["HEAD"]);
+        let d = ""; try { d = _cp.execFileSync("git", primary.concat(pathspec), { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch (_) { try { d = _cp.execFileSync("git", ["-c", "color.ui=never", "diff"].concat(pathspec), { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch (__) {} }
         if (!d.trim()) transcript.push({ role: "system", text: (staged ? "no staged changes" : file ? "no changes in " + file : "no changes vs HEAD (working tree clean)") });
         else { const files = (d.match(/^diff --git/gm) || []).length, adds = (d.match(/^\+(?!\+\+)/gm) || []).length, dels = (d.match(/^-(?!--)/gm) || []).length; transcript.push({ role: "system", text: (staged ? "staged: " : "") + files + " file" + (files === 1 ? "" : "s") + " changed   " + green("+" + adds) + "  " + red("-" + dels) }); transcript.push({ role: "diff", text: d.slice(0, 24000) }); }
       }
@@ -3157,7 +3157,7 @@ function nexusTui(engine, cwd, nexusMd) {
         else if (s === "done") { const n = parseInt(argstr.split(/\s+/)[1], 10); if (plan[n - 1]) { plan[n - 1].done = !plan[n - 1].done; savePlan(); transcript.push({ role: "plan" }); } else transcript.push({ role: "system", text: "no task #" + argstr.split(/\s+/)[1] }); }
         else planGen(argstr); }
       else if (cmd === "/git") { try { const br = _cp.execSync("git branch --show-current", { cwd, encoding: "utf8" }).trim(); const st = _cp.execSync("git -c color.ui=never status --porcelain", { cwd, encoding: "utf8" }).trim(); const log = _cp.execSync("git -c color.ui=never log --oneline -8", { cwd, encoding: "utf8" }).trim(); transcript.push({ role: "system", text: "branch: " + (br || "(detached)") + "\n\nstatus:\n" + (st ? st.split("\n").map((l) => "  " + l).join("\n") : "  working tree clean") + "\n\nrecent commits:\n" + log.split("\n").map((l) => "  " + l).join("\n") }); } catch (_) { transcript.push({ role: "system", text: "not a git repo (or git not installed)" }); } }
-      else if (cmd === "/blame") { if (!arg) transcript.push({ role: "system", text: "usage: /blame <file>  — shows who last changed each of the first lines" }); else { try { const b = _cp.execSync("git blame -L 1,40 --date=short -- " + JSON.stringify(arg), { cwd, encoding: "utf8" }); transcript.push({ role: "system", text: "blame " + arg + " (first 40 lines):\n" + b.replace(/\n+$/, "") }); } catch (e) { transcript.push({ role: "system", text: "blame failed: " + String(e.message).split("\n")[0] }); } } }
+      else if (cmd === "/blame") { if (!arg) transcript.push({ role: "system", text: "usage: /blame <file>  — shows who last changed each of the first lines" }); else { try { const b = _cp.execFileSync("git", ["blame", "-L", "1,40", "--date=short", "--", arg], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); transcript.push({ role: "system", text: "blame " + arg + " (first 40 lines):\n" + b.replace(/\n+$/, "") }); } catch (e) { transcript.push({ role: "system", text: "blame failed: " + String(e.message).split("\n")[0] }); } } }
       else if (cmd === "/index") { const n = buildIndex(); transcript.push({ role: "system", text: "indexed " + n + " file(s) → .nexus/index.json. The local engine will now auto-pull the most relevant files into each prompt." }); }
       else if (cmd === "/snippet" || cmd === "/snip") {
         const sub = arg, name = argstr.split(/\s+/)[1], body = argstr.split(/\s+/).slice(2).join(" ");
