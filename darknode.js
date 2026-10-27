@@ -1736,7 +1736,7 @@ async function aiCoder(argv) {
         else if (name === "list_dir") { const d = path.resolve(cwd, a.path || "."); result = fs.readdirSync(d, { withFileTypes: true }).map((e) => (e.isDirectory() ? e.name + "/" : e.name)).slice(0, lean ? 80 : 200).join("\n"); if (!printMode) console.log("  " + cyan("ls ") + (a.path || ".")); }
         else if (name === "write_file") {
           if (!(await approve("write " + a.path))) { result = "denied"; console.log("  " + red("denied ") + a.path); }
-          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp, "utf8"); } catch (e) { if (e.code === "ENOENT") isNew = true; } fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = "ok"; console.log("  " + green("write ") + a.path + gray(" · " + String(a.content || "").split("\n").length + " lines")); }
+          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp); } catch (e) { if (e.code === "ENOENT") isNew = true; } /* raw bytes: /undo of an overwritten binary file restored it mangled */ fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = "ok"; console.log("  " + green("write ") + a.path + gray(" · " + String(a.content || "").split("\n").length + " lines")); }
         }
         else if (name === "edit_file") {
           const fp = path.resolve(cwd, a.path); let t;

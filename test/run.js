@@ -3310,6 +3310,11 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     s = u.snapshot([f]); eq("a no-op write is not recorded", u.commit(s), 0);
     ok("undo restores the previous version", u.undo(f).ok && fs.readFileSync(f, "utf8") === "v2");
     ok("undo again steps further back", u.undo(f).ok && fs.readFileSync(f, "utf8") === "v1");
+    { const bin = path.join(dir, "img.png"), bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0xc3, 0x28]); fs.writeFileSync(bin, bytes);
+      const sh = path.join(dir, "run.sh"); fs.writeFileSync(sh, "#!/bin/sh\n"); fs.chmodSync(sh, 0o755);
+      let sn = u.snapshot([bin, sh]); fs.rmSync(bin); fs.rmSync(sh); u.commit(sn);
+      ok("undoing a delete restores a binary file byte for byte", u.undo(bin).ok && fs.readFileSync(bin).equals(bytes));
+      ok("undoing a delete keeps the executable bit", u.undo(sh).ok && (process.platform === "win32" || (fs.statSync(sh).mode & 0o111) !== 0)); }
     ok("nothing left to undo", /no edit of this file/.test(u.undo(f).error));
     s = u.snapshot([f]); fs.writeFileSync(f, "agent"); u.commit(s); fs.writeFileSync(f, "user edit");
     ok("refuses when the file changed since", /changed after that edit/.test(u.undo(f).error) && fs.readFileSync(f, "utf8") === "user edit");
