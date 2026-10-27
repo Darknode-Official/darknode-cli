@@ -2630,6 +2630,25 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("nothing found -> empty text", IN.loadInstructions(fs.mkdtempSync(path.join(os.tmpdir(), "nxin0-"))).text === "");
     fs.rmSync(outer, { recursive: true, force: true });
   }
+  group("eval miner: candidates + grading (eval/mine.js)");
+  {
+    const M = require("../eval/mine");
+    const log = "\0aaa\tp1\t2026-10-01\tfoo: x was wrong. Now it is right.\nlib/a.js\ntest/run.js\n\0bbb\tp2\t2026-10-02\tdocs only\nREADME.md\n\0ccc\tp3 p4\t2026-10-03\tmerge\nlib/b.js\ntest/run.js\n\0ddd\tp5\t2026-10-04\tadd /title command\nlib/c.js\ntest/c.test.js\n";
+    const cs = M.candidates(M.parseLog(log));
+    eq("candidates: source+test, single parent (merges excluded)", cs.map((c) => c.hash), ["aaa", "ddd"]);
+    eq("fix vs feature by subject", cs.map((c) => c.kind), ["fix", "feature"]);
+    eq("prompt is the first sentence only (the symptom)", M.promptFrom("foo: x was wrong. Now it is right."), "foo: x was wrong.");
+    eq("suite = each node command of the test script", M.suiteFromScript("node test/run.js && node test/b.test.js && echo hi"), ["node test/run.js", "node test/b.test.js"]);
+    const done = M.parseRun("\x1b[1mgroup\x1b[0m\n  \x1b[31mFAIL\x1b[0m thing breaks\n\x1b[32m10 passed, 1 failed\x1b[0m");
+    ok("parseRun: completed, pass count, FAIL names (ANSI stripped)", done.completed && done.pass === 10 && done.fails[0] === "thing breaks");
+    ok("parseRun: no summary line = did not complete (a crash hides later tests)", M.parseRun("TypeError: boom\n    at x").completed === false);
+    const ref = { "node t": { completed: true, pass: 10, fails: ["known flaky"] } };
+    ok("judge: same as reference passes (pre-existing failure allowed)", M.judge({ "node t": { completed: true, pass: 10, fails: ["known flaky"] } }, ref).pass);
+    ok("judge: a new failing test fails", !M.judge({ "node t": { completed: true, pass: 10, fails: ["known flaky", "new"] } }, ref).pass);
+    ok("judge: fewer passing tests fails (tests deleted or skipped)", !M.judge({ "node t": { completed: true, pass: 7, fails: ["known flaky"] } }, ref).pass);
+    ok("judge: a crashed file fails, never counts as skipped", /did not complete/.test(M.judge({ "node t": { completed: false, pass: 0, fails: [] } }, ref).why[0]));
+    ok("judge: a missing file fails", !M.judge({}, ref).pass);
+  }
   group("notebook_edit (.ipynb cell ops)");
   {
     const NB = require("../lib/nexus/notebook-edit");

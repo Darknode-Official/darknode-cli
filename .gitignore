@@ -3,3 +3,4 @@ node_modules/
 .nexus/
 
 docs/BUILDLOG.md
+eval/mined/

@@ -71,3 +71,27 @@ discipline are implemented and unit-tested (`test/run.js`, NX-008 group). **No
 baseline has been produced yet** — that requires real engine runs and is the next
 step; `--dry` proves the pipeline without a model and deliberately does not
 fabricate pass-rates.
+
+## Mined tasks (real bugs from this repo's history)
+
+`eval/mine.js` turns past commits that changed both source and tests into tasks:
+
+```bash
+node eval/mine.js                      # list candidates -> eval/mined/<repo>-candidates.json
+node eval/mine.js --validate           # validate each fix candidate in a scratch copy
+node eval/mine.js --kind all --repo ../other-repo --validate --limit 20
+```
+
+Validation extracts the parent commit with `git archive`, applies only the commit's
+test changes and runs each test file separately (it must come out worse), then
+applies the source fix (every file must complete). That reference run is what
+`gradeDir()` compares an attempt against: every file must print its summary line
+(a crash or hang fails, it is never "skipped"), no test may fail that the reference
+did not, and no file may pass fewer tests. Valid tasks land in
+`eval/mined/tasks/*.json` (git-ignored; regenerate them any time).
+
+Each task's prompt is the commit subject's first sentence and is marked
+`reviewed: false`. Read it before using the task: it must describe the symptom,
+not the fix. Contamination protection comes from recency, not privacy (this repo
+is public), so when scoring a model count only tasks dated after its training
+cutoff.
