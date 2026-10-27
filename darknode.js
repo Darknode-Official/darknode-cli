@@ -1723,7 +1723,13 @@ async function aiCoder(argv) {
         if (printMode) answer(o.final || "done"); else console.log("\n  " + green("done: ") + bold(o.final || "done") + "\n"); break;
       }
       const { name, a } = normalizeToolCall(o); let result;
-      try {
+      // same gate as the sub-agent runner: .nexus/policy.json and the destructive-command guard apply even when -y / -p auto-approve
+      const _pa = name === "run_command" ? { type: "run", command: a && a.command } : name === "write_file" ? { type: "write", path: a && a.path } : name === "edit_file" ? { type: "edit", path: a && a.path } : null;
+      let _pblk = null;
+      if (_pa) { const pc = policyCheck(loadPolicy(cwd), _pa); if (!pc.allow) _pblk = "policy — " + pc.reason; }
+      if (!_pblk && name === "run_command") { const dg = classifyDanger(a && a.command); if (dg.level === "block") _pblk = dg.why; }
+      if (_pblk) { result = "blocked: " + _pblk; if (!printMode) console.log("  " + red("blocked: ") + _pblk); }
+      else try {
         // Sandbox every file tool to the project root (symlink/dot-dot safe); a throw here is reported as a tool error below.
         if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) Jail.assertInJail(a.path, cwd);
         if (name === "read_file") { const t = fs.readFileSync(path.resolve(cwd, a.path), "utf8"); const _cap = lean ? 8000 : 16000; result = t.length > _cap ? t.slice(0, _cap) + "\n[truncated: showed " + _cap + " of " + t.length + " chars]" : t; if (!printMode) console.log("  " + cyan("read ") + gray(a.path)); }
