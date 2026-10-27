@@ -4138,11 +4138,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         { const cw = sess.ctxWindow || 200000; bits.push(Math.min(100, Math.round((sess.ctxUsed / cw) * 100)) + "% ctx"); }
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); bits.push("undo #" + checkpoints.length); try { bisectPersist(cwd, ckObj); } catch (_) {} } // persist the turn snapshot so `bisect` can search the timeline later
         const clock = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
-        block.summary = (recap.length ? recap.join(". ") + "." + gray(" · ") : "") + bits.join(" · ") + gray(" · " + (res && res.interrupted ? "interrupted " : "done ") + clock);
+        block.summary = (recap.length ? recap.join(". ") + "." + gray(" · ") : "") + bits.join(" · ") + gray(" · " + (res && res.interrupted ? "interrupted " : res && res.ok === false ? "failed " : "done ") + clock);
         // Cache read-only answers (no file/command side-effects) so an exact repeat is free.
         // no tool at all: an answer built from a Read/grep goes stale when the file changes
         if (ckey && !(res && (res.interrupted || res.ok === false)) && stat.files.size === 0 && stat.cmds === 0 && !block.items.some((i) => i.type === "tool")) { try { const ft = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").trim(); if (ft && ft !== "(no output)") cachePut(cwd, ckey, { text: ft, inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), readonly: true, hits: 0, ts: Date.now() }); } catch (_) {} }
-        if (!(res && res.interrupted)) { try { const answerText = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").slice(0, 2000); nexusLearn(text, answerText); } catch (_) {} }
+        if (!(res && (res.interrupted || res.ok === false))) { try { const answerText = block.items.filter((i) => i.type === "text").map((i) => i.full).join("\n").slice(0, 2000); nexusLearn(text, answerText); } catch (_) {} }
         for (const it of block.items) if (it.type === "text") it.shown = it.full.length; // turn's done: show the whole reply at once (typewriter is for live streaming only)
         activeBlock = null;
         cont = true; busy = false; lastLines = null; if (costCap && sess.cost >= costCap) transcript.push({ role: "system", text: "budget cap reached ($" + sess.cost.toFixed(4) + ") — /budget <amount> to raise" });
