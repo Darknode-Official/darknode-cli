@@ -478,7 +478,9 @@ Reads from `.nexus/policy.json`:
 - `audit` — log all tool calls to `.nexus/audit.jsonl` (hash-chained)
 
 Org-level policies (`~/.darknode/policy.json`) set a floor that local config
-can only make stricter.
+can only make stricter. A repo you have not `/trust`ed can tighten
+`blockSecrets` and `audit` but not turn them off. The agent can never write
+`.nexus/policy.json`, `permissions.json` or `hooks.json`, by file tool or shell.
 
 ### /audit — Tool Call Log
 

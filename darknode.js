@@ -2063,7 +2063,8 @@ function loadPolicy(cwd) {
   p.protectedPaths = uniq([].concat(POLICY_DEFAULTS.protectedPaths, local.protectedPaths || [], org.protectedPaths || []));
   p.deniedCommands = uniq([].concat(local.deniedCommands || [], org.deniedCommands || []));
   p.requireApprovalPaths = uniq([].concat(local.requireApprovalPaths || [], org.requireApprovalPaths || []));
-  const floorBool = (key) => org[key] === true ? true : (local[key] !== undefined ? local[key] : POLICY_DEFAULTS[key]);
+  const relax = isRepoTrusted(cwd); // an untrusted (cloned) repo's policy may tighten blockSecrets/audit, never switch them off
+  const floorBool = (key) => org[key] === true ? true : (local[key] !== undefined && (relax || local[key] === true) ? local[key] : POLICY_DEFAULTS[key]);
   p.blockSecrets = floorBool("blockSecrets"); p.audit = floorBool("audit");
   p.allowNetwork = org.allowNetwork === false ? false : (local.allowNetwork !== undefined ? local.allowNetwork : POLICY_DEFAULTS.allowNetwork);
   const lm = local.maxFilesPerTurn || 0, om = org.maxFilesPerTurn || 0; p.maxFilesPerTurn = om > 0 ? (lm > 0 ? Math.min(om, lm) : om) : lm;
@@ -4988,7 +4989,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         });
       }
       else if (cmd === "/trust") {
-        if (trustRepo(cwd)) { _untrustedRepoConfig = false; if (heldAllow.length) { perms.allow = heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))); heldAllow = []; } mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "trusted this workspace (" + gray(cwd) + ") — its .nexus MCP servers and permission allow rules now load; hooks apply on next launch." }); }
+        if (trustRepo(cwd)) { _untrustedRepoConfig = false; if (heldAllow.length) { perms.allow = heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))); heldAllow = []; } mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "trusted this workspace (" + gray(cwd) + ") — its .nexus MCP servers and permission allow rules now load; hooks and any policy.json relaxations apply on next launch." }); }
         else transcript.push({ role: "system", text: red("could not record trust") });
       }
       else if (cmd === "/mcp") {
