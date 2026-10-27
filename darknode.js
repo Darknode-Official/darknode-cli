@@ -2268,7 +2268,9 @@ async function deviceTool(name, a, cwd) {
   if (name === "todo_read" || name === "read_todos" || name === "get_todos") return { todos: AGENT_TODOS, count: AGENT_TODOS.length };
   if (name === "read_file" || name === "read") { // line range first, then a cap at a line boundary that SAYS so (a silent cut invites a rewrite from a partial read)
     try {
-      const ls = fs.readFileSync(rp(a.path || a.file), "utf8").split("\n"); if (ls.length > 1 && ls[ls.length - 1] === "") ls.pop(); const _rg = lineRange(a), off = _rg.off;
+      const _txt = fs.readFileSync(rp(a.path || a.file), "utf8");
+      if (_txt.slice(0, 8000).indexOf("\u0000") >= 0) return { error: (a.path || a.file) + " is a binary file - not read as text (an image: view_image; otherwise run_command file / xxd | head)" };
+      const ls = _txt.split("\n"); if (ls.length > 1 && ls[ls.length - 1] === "") ls.pop(); const _rg = lineRange(a), off = _rg.off;
       const last = Math.min(ls.length, _rg.lim ? off - 1 + _rg.lim : ls.length);
       let body = ls.slice(off - 1, last).join("\n"), shownTo = last, note;
       if (body.length > 16000) { const cut = body.slice(0, 16000), nl = cut.lastIndexOf("\n"); body = nl > 0 ? cut.slice(0, nl) : cut; shownTo = off - 1 + body.split("\n").length; }
@@ -4403,12 +4405,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
                 // Never truncate silently: cap at a line boundary and SAY so, with the
                 // offset to continue from (a silent cut let a later full write_file drop
                 // the file's tail). offset/limit (1-based lines) page through big files.
+                // a binary file is garbage tokens, and one huge line (minified bundle, one-line JSON) slipped past the cap whole
+                if (_c.slice(0, 8000).indexOf("\u0000") >= 0) result = { error: a.path + " is a binary file (" + fs.statSync(fp).size + " bytes) - not read as text. For an image use view_image; otherwise inspect it with run_command (file, xxd | head, strings | head)." };
+                else {
                 const _ls = _c.split("\n"), _rg = lineRange(a), _off = _rg.off, _lim = _rg.lim || _ls.length, CAP = 10000;
                 let _end = Math.min(_ls.length, _off - 1 + _lim), _len = 0, _k = _off - 1;
                 for (; _k < _end; _k++) { if (_len + _ls[_k].length + 1 > CAP && _k > _off - 1) break; _len += _ls[_k].length + 1; }
                 const _body = _ls.slice(_off - 1, _k).join("\n");
-                if (_off === 1 && _k >= _ls.length) { readCache[fp] = mt; result = { content: _body }; }
-                else result = { content: _body, note: "showing lines " + _off + "-" + _k + " of " + _ls.length + (_k < _ls.length ? " — call read_file again with offset " + (_k + 1) + " for the rest; do NOT write_file this file from a partial read. Need one function? outline + read_symbol reads just that definition" : "") }; } }
+                if (_k === _off && _ls[_off - 1].length > CAP) result = { content: _ls[_off - 1].slice(0, CAP), note: "line " + _off + " alone is " + _ls[_off - 1].length + " chars (minified or generated?) - showing its first " + CAP + ". Search inside it with grep instead of reading it" + (_off < _ls.length ? "; the next line is offset " + (_off + 1) : "") };
+                else if (_off === 1 && _k >= _ls.length) { readCache[fp] = mt; result = { content: _body }; }
+                else result = { content: _body, note: "showing lines " + _off + "-" + _k + " of " + _ls.length + (_k < _ls.length ? " — call read_file again with offset " + (_k + 1) + " for the rest; do NOT write_file this file from a partial read. Need one function? outline + read_symbol reads just that definition" : "") }; } } }
               else if (name === "undo_edit") result = editUndo.undo(path.resolve(cwd, a.path || ""), { force: !!a.force });
               else if (name === "list_dir") result = require("./lib/nexus/fs-tools").listDirTool(a, cwd, (p) => Jail.assertInJail(p == null ? "." : p, cwd));
               else if (name === "write_file") { const fp = path.resolve(cwd, a.path); let _disk = null; try { _disk = fs.readFileSync(fp, "utf8"); } catch (_) {} const _st = fileGuard.checkOverwrite(fp, _disk); if (_st.stale && !(a.force || a.overwrite)) { result = { error: _st.reason }; transcript.push({ role: "system", text: "stale-write blocked: " + a.path + " changed on disk since Nexus last read it" }); } else { const sec = scanSecrets(a.content); if (policy.blockSecrets && sec.length) { result = { error: "BLOCKED by policy: file contains " + sec.join(", ") + " — secret writes are disabled (policy.blockSecrets)" }; transcript.push({ role: "system", text: "policy blocked write to " + a.path + " — contains " + sec.join(", ") }); if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.path, status: "blocked", reason: "secret:" + sec.join("/") }); } else { fs.mkdirSync(path.dirname(fp), { recursive: true }); const _w = a.content == null ? "" : a.content; fs.writeFileSync(fp, _w); delete readCache[fp]; fileGuard.recordWrite(fp, _w); invalidateRepoMap(); result = sec.length ? { ok: true, warning: "Nexus flagged possible secret(s) in this file: " + sec.join(", ") + " — review before committing" } : { ok: true }; if (sec.length) transcript.push({ role: "system", text: "security warning: " + a.path + " may contain " + sec.join(", ") + " — Nexus wrote it but flagged it" }); } } }
