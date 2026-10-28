@@ -94,6 +94,16 @@ group("capability index (what a module can DO)");
   const execCap = caps.find((c) => c.tag === "exec");
   ok("hit carries a real line number", execCap && execCap.hits.some((h) => h.line === 3));
   ok("RegExp .exec() is not process execution", !scanCapabilities("const m = /a(b)/.exec(s);\nwhile ((m = re.exec(t))) n++;").some((c) => c.tag === "exec"));
+  {
+    const os = require("os"), fs = require("fs"), path = require("path");
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "radar-"));
+    fs.writeFileSync(path.join(d, "parse.js"), "const m = /x/.exec(s);\nconst r = retrieval(q);\nmodel.eval();\n");
+    fs.writeFileSync(path.join(d, "run.js"), "const cp = require('child_process');\ncp.exec(cmd);\neval(x);\n");
+    const out = require("../lib/nexus/code-radar.js").scanSecurity(d);
+    ok("code-radar: RegExp .exec, retrieval() and model.eval() are not flagged", !/parse\.js/.test(out));
+    ok("code-radar: child_process exec and eval still are", /run\.js:2 — command execution/.test(out) && /run\.js:3 — eval/.test(out));
+    fs.rmSync(d, { recursive: true, force: true });
+  }
   ok("empty/garbage input is safe", scanCapabilities(null).length === 0 && scanCapabilities(123).length === 0);
 
   eq("fileRisk = worst capability (eval=10 -> critical)", fileRisk(caps).level, "critical");
