@@ -1071,6 +1071,8 @@ group("tech-debt scanner (/todo)");
   ok("word-boundary excludes TODOLIST", !items.some((i) => i.text.includes("no marker")));
   eq("summarize", summarizeTodos(items), { total: 4, byTag: { TODO: 1, FIXME: 1, HACK: 1, NOTE: 1 }, files: 1 });
   eq("rank by severity (FIXME>HACK>TODO>NOTE)", rankTodos(items).map((i) => i.tag), ["FIXME", "HACK", "TODO", "NOTE"]);
+  eq("a marker outside a comment is not a marker (SSN mask, data string, regex of tag names)", scanText(['ssn: "XXX-XX-XXXX",', 'desc: "DEPRECATED - use X",', 're: "(?:TODO|FIXME)",', "x = 1 // TODO(sam): later"].join("\n"), "a.js").map((i) => i.tag + ":" + i.text), ["TODO:later"]);
+  eq("Markdown: a line or list item with a colon counts, prose mentioning a bug does not", scanText("- [ ] TODO: write docs\nWe fixed a BUG in the parser.\n**NOTE:** read", "README.md").map((i) => i.tag + ":" + i.text), ["TODO:write docs", "NOTE:read"]);
   ok("TAGS covers common markers", ["TODO", "FIXME", "HACK", "BUG"].every((t) => TAGS.includes(t)));
   // scanTree over a temp project: skips node_modules, reads source
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-todo-"));
