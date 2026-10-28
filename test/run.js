@@ -3467,6 +3467,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("no matches is a note, not an error", /no matches/.test(run({ find: "zzz_nope", replace: "y" }).note));
     ok("bad regex reported", /invalid regex/.test(run({ find: "(", replace: "", regex: true }).error));
     ok("brace globs", RF.globToRe("src/**/*.{js,ts}").test("src/x/y.ts") && !RF.globToRe("src/**/*.{js,ts}").test("src/y.py"));
+    for (const [name, g2re] of [["replace_in_files", RF.globToRe], ["search", require("../lib/nexus/search").globToRe], ["attest", require("../lib/nexus/attest").globToRe], ["invariants", require("../lib/nexus/invariants").globToRe]])
+      ok(name + ": **/ spans whole directories only (src/**/test/*.js is not src/contest/a.js)", !g2re("src/**/test/*.js").test("src/contest/a.js") && !g2re("**/lib/*.js").test("mylib/x.js") && g2re("**/lib/*.js").test("a/lib/x.js") && g2re("src/**/*.js").test("src/a.js") && g2re("**/*.js").test("a.js"));
     fs.writeFileSync(path.join(dir, "m.js"), "import a from 'x'\nimport b from 'x'\nlet foo = xbar + bar;\n");
     r = run({ find: "^import (\\w+)", replace: "use $1", regex: true, glob: "m.js", dry_run: true });
     eq("regex ^ anchors at each line, like grep/sed, and the preview agrees", [r.replacements, r.changed[0].samples.length], [2, 2]);
