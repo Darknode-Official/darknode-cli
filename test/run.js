@@ -3467,6 +3467,14 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("no matches is a note, not an error", /no matches/.test(run({ find: "zzz_nope", replace: "y" }).note));
     ok("bad regex reported", /invalid regex/.test(run({ find: "(", replace: "", regex: true }).error));
     ok("brace globs", RF.globToRe("src/**/*.{js,ts}").test("src/x/y.ts") && !RF.globToRe("src/**/*.{js,ts}").test("src/y.py"));
+    fs.writeFileSync(path.join(dir, "m.js"), "import a from 'x'\nimport b from 'x'\nlet foo = xbar + bar;\n");
+    r = run({ find: "^import (\\w+)", replace: "use $1", regex: true, glob: "m.js", dry_run: true });
+    eq("regex ^ anchors at each line, like grep/sed, and the preview agrees", [r.replacements, r.changed[0].samples.length], [2, 2]);
+    eq("word:true guards every alternative of a regex", run({ find: "foo|bar", replace: "Z", regex: true, word: true, glob: "m.js", dry_run: true }).changed[0].samples[0].split("→")[1].trim(), "let Z = xbar + Z;");
+    run({ find: "bar;", replace: "bar;\r\nx;", glob: "m.js" });
+    ok("a CRLF replacement is not spliced into an LF file", !/\r/.test(fs.readFileSync(path.join(dir, "m.js"), "utf8")));
+    fs.writeFileSync(path.join(dir, "c.txt"), "one\r\ntwo\r\n"); run({ find: "one\ntwo", replace: "1\r\n2", glob: "c.txt" });
+    eq("a CRLF replacement on a CRLF file stays CRLF (no \\r\\r\\n)", fs.readFileSync(path.join(dir, "c.txt"), "utf8"), "1\r\n2\r\n");
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
