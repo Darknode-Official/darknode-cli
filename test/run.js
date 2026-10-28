@@ -3843,6 +3843,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       if (req.url === "/xhost") { seenAuth.a = req.headers.authorization; res.writeHead(302, { location: "http://localhost:" + srv.address().port + "/land" }); return res.end(); }
       if (req.url === "/land") { seenAuth.b = req.headers.authorization; seenAuth.trace = req.headers["x-trace"]; res.writeHead(200, { "content-type": "text/plain" }); return res.end("landed"); }
       if (req.url === "/echo-ct") { res.writeHead(200, { "content-type": "text/plain" }); return res.end(String(req.headers["content-type"])); }
+      if (req.url === "/latin1") { res.writeHead(200, { "content-type": "text/plain; charset=ISO-8859-1" }); return res.end(Buffer.from([0x63, 0x61, 0x66, 0xe9])); }
+      if (req.url === "/meta1252") { res.writeHead(200, { "content-type": "text/html" }); return res.end(Buffer.concat([Buffer.from('<html><head><meta charset="windows-1252"></head><body><p>na'), Buffer.from([0xef, 0x76, 0x65]), Buffer.from("</p></body></html>")])); }
       if (req.url === "/big") { res.writeHead(200, { "content-type": "text/plain" }); return res.end("x".repeat(25000)); }
       // multi-byte character split across two chunks
       if (req.url === "/split") { res.writeHead(200, { "content-type": "text/plain" }); const b = Buffer.from("añb"); res.write(b.subarray(0, 2)); setTimeout(() => res.end(b.subarray(2)), 20); return; }
@@ -3867,6 +3869,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("Authorization is not forwarded to another host on redirect; other headers are", r.body === "landed" && seenAuth.a === "Bearer s3cret" && seenAuth.b === undefined && seenAuth.trace === "1");
     eq("an object body is sent as JSON with a JSON content-type", (await HF.httpFetchTool({ url: base + "/echo-ct", method: "POST", body: { a: 1 } }, deps)).body, "application/json");
     eq("a caller's own content-type is kept", (await HF.httpFetchTool({ url: base + "/echo-ct", method: "POST", body: { a: 1 }, headers: { "Content-Type": "application/merge-patch+json" } }, deps)).body, "application/merge-patch+json");
+    eq("a declared non-UTF-8 charset is decoded, not mangled", (await HF.httpFetchTool({ url: base + "/latin1" }, deps)).body, "café");
+    eq("an HTML meta charset is honoured when the header has none", (await HF.httpFetchTool({ url: base + "/meta1252" }, deps)).body, "naïve");
     eq("UTF-8 split across chunks decodes whole", (await HF.httpFetchTool({ url: base + "/split" }, deps)).body, "añb");
     ok("non-http schemes refused", /only http/.test((await HF.httpFetchTool({ url: "file:///etc/passwd" }, deps)).error));
     const { isLocalTarget } = require("../lib/governance/default-guard");
