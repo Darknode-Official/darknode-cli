@@ -1728,12 +1728,12 @@ async function aiCoder(argv) {
       }
       const { name, a } = normalizeToolCall(o); let result;
       // same gate as the sub-agent runner: .nexus/policy.json and the destructive-command guard apply even when -y / -p auto-approve
-      const _pa = name === "run_command" ? { type: "run", command: a && a.command } : name === "write_file" ? { type: "write", path: a && a.path } : name === "edit_file" ? { type: "edit", path: a && a.path } : null;
+      const _pa = isExecTool(name) ? { type: "run", command: execCommand(name, a) } : name === "write_file" ? { type: "write", path: a && a.path } : name === "edit_file" ? { type: "edit", path: a && a.path } : null;
       let _pblk = null;
       const _pol = _pa ? loadPolicy(cwd) : null;
       if (_pa) { const pc = policyCheck(_pol, _pa); if (!pc.allow) _pblk = "policy — " + pc.reason; }
       if (!_pblk && name === "write_file" && _pol.blockSecrets) { const _sec = scanSecrets(a && a.content == null ? "" : a.content); if (_sec.length) _pblk = "policy — file contains " + _sec.join(", ") + " (policy.blockSecrets)"; } // the other loops checked this; here a key could be written with blockSecrets on
-      if (!_pblk && name === "run_command") { const dg = classifyDanger(a && a.command); if (dg.level === "block") _pblk = dg.why; }
+      if (!_pblk && isExecTool(name)) { const dg = classifyDanger(execCommand(name, a) || ""); if (dg.level === "block") _pblk = dg.why; } // bisect/shrink run their `test` command too
       if (_pblk) { result = "blocked: " + _pblk; if (!printMode) console.log("  " + red("blocked: ") + _pblk); if (_pol && _pol.audit) try { auditLog(cwd, { engine: "ollama", tool: name, path: _pa.path, cmd: _pa.command, status: "blocked", reason: _pblk }); } catch (_) {} }
       else try {
         // Sandbox every file tool to the project root (symlink/dot-dot safe); a throw here is reported as a tool error below.
@@ -2172,7 +2172,7 @@ const { scanSecrets, maskSecrets, classifyDanger, compactOutput } = require("./l
 // Capability gates for the dispatch loop: EVERY shell-running tool (not just
 // run_command) must pass the danger guard, the policy and HARD_DENY, and plan
 // mode must block everything mutating/executing/egressing — by membership.
-const { isExecTool, isPlanBlocked } = require("./lib/nexus/tool-gates");
+const { isExecTool, isPlanBlocked, execCommand } = require("./lib/nexus/tool-gates");
 // SSRF guard for http_fetch — reuse the default-posture local-target classifier.
 const { isLocalTarget: _ssrfLocal } = require("./lib/governance/default-guard");
 // ---- permission rules (allow/deny) — a Claude-Code-style allowlist for the local agent ----
@@ -2473,7 +2473,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     const { name, a } = normalizeToolCall(o); let result;
     // enterprise policy guardrails (.nexus/policy.json) — the same gate the in-process loop applies, so a
     // sub-agent / local engine can't write a protected path, plant a secret, run a denied command or fetch off-net.
-    const _pa = name === "run_command" ? { type: "run", command: a && a.command }
+    const _pa = isExecTool(name) ? { type: "run", command: execCommand(name, a) }
       : ["http_fetch", "web_fetch", "fetch_url", "http"].includes(name) ? { type: "fetch" }
       : name === "write_file" ? { type: "write", path: a && a.path }
       : name === "edit_file" ? { type: "edit", path: a && a.path }
@@ -2482,6 +2482,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
       : null;
     let _pblk = null;
     if (_pa) { let pc = policyCheck(policy, _pa); if (pc.allow && _pa.from) pc = policyCheck(policy, { type: "move", path: _pa.from }); if (!pc.allow) _pblk = pc.reason; }
+    if (!_pblk && isExecTool(name) && name !== "run_command") { const dg = classifyDanger(execCommand(name, a) || ""); if (dg.level === "block") _pblk = dg.why; } // run_command is checked in its branch below; bisect/shrink/verify run a command too
     if (!_pblk && name === "write_file" && policy.blockSecrets) { const _sec = scanSecrets(a && a.content == null ? "" : a.content); if (_sec.length) _pblk = "file contains " + _sec.join(", ") + " (policy.blockSecrets)"; }
     if (_pblk) { result = "blocked: policy — " + _pblk; console.log("    " + red("blocked: ") + _pblk); if (policy.audit) try { auditLog(cwd, { engine: "ollama", tool: name, path: _pa.path, cmd: _pa.command, status: "blocked", reason: _pblk }); } catch (_) {} }
     else try {
@@ -4395,10 +4396,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             if (!blocked && mode === 2 && isPlanBlocked(name) && !(name === "replace_in_files" && (a.dry_run === true || a.preview === true))) { result = { error: "plan mode is on — file/system changes are blocked. Describe the plan instead, then switch mode with shift+tab to execute." }; blocked = true; card.status = "err"; }
             const _perm = permDecision(perms, name, a); // permission allowlist (/permissions)
             if (!blocked && _perm === "deny") { result = { error: "denied by a permission rule (/permissions) — the operator disallowed this. They can /allow it or run it directly." }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "permission rule denied " + name + (a.command ? " (" + oneline(a.command, 40) + ")" : a.path ? " (" + a.path + ")" : "") }); }
-            if (!blocked && _perm !== "allow" && isExecTool(name) && guard !== "off" && mode !== 3) { const _cmd = String(a.command || (name === "write_stdin" ? a.input || a.text || "" : "")); const d = classifyDanger(_cmd); if (d.level === "block" && guard === "enforce") { result = { error: "BLOCKED by Darknode guard: " + d.why + " (/guard off to allow, or run it yourself with !)" }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "Darknode guard blocked a destructive command — " + d.why + ": " + oneline(_cmd, 46) }); } else if (d.level !== "ok") transcript.push({ role: "system", text: "Darknode: " + d.why + " — " + oneline(_cmd, 46) + (d.level === "block" ? " (allowed; guard is " + guard + ")" : "") }); }
+            if (!blocked && _perm !== "allow" && isExecTool(name) && guard !== "off" && mode !== 3) { const _cmd = execCommand(name, a) || ""; const d = classifyDanger(_cmd); if (d.level === "block" && guard === "enforce") { result = { error: "BLOCKED by Darknode guard: " + d.why + " (/guard off to allow, or run it yourself with !)" }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "Darknode guard blocked a destructive command — " + d.why + ": " + oneline(_cmd, 46) }); } else if (d.level !== "ok") transcript.push({ role: "system", text: "Darknode: " + d.why + " — " + oneline(_cmd, 46) + (d.level === "block" ? " (allowed; guard is " + guard + ")" : "") }); }
             // ---- enterprise policy guardrails (.nexus/policy.json) ----
             if (!blocked) {
-              const act = isExecTool(name) ? { type: "run", command: a.command || (name === "write_stdin" ? a.input || a.text || "" : undefined) }
+              const act = isExecTool(name) ? { type: "run", command: execCommand(name, a) }
                 : ["http_fetch", "web_fetch", "fetch_url", "http"].includes(name) ? { type: "fetch" }
                 : name === "write_file" ? { type: "write", path: a.path }
                 : (name === "edit_file" || name === "multi_edit" || name === "multiedit") ? { type: "edit", path: a.path }
