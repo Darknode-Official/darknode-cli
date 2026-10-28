@@ -1781,6 +1781,22 @@ group("compliance bundle (SOC2 export)");
   eq("applyHunks preserves $ sequences in replacement", applyHunks("a\nkeep X\nb\n", [{ before: ["keep X"], after: ["new $& v"] }]).content, "a\nnew $& v\nb\n");
   eq("applyHunks keeps CRLF line endings consistent on a CRLF file", applyHunks("pre\r\nline1\r\nline2\r\npost\r\n", [{ before: ["line1", "line2"], after: ["line1", "LINE2"] }]).content, "pre\r\nline1\r\nLINE2\r\npost\r\n");
   eq("applyPatch on a CRLF file does not leave mixed endings", applyPatch("a\r\nkeep\r\nold\r\nb\r\n", ["--- a/f", "+++ b/f", "@@", " keep", "-old", "+new"].join("\n")).content, "a\r\nkeep\r\nnew\r\nb\r\n");
+  {
+    const env = "*** Begin Patch\n*** Update File: src/a.js\n@@ function two()\n   return 1;\n-  // x\n+  // y\n*** Add File: b.txt\n+hello\n*** Delete File: old.js\n*** Update File: c.js\n*** Move to: d.js\n@@\n-a\n+b\n*** End Patch\n";
+    const ef = parsePatch(env);
+    eq("envelope: files and ops", ef.map((f) => f.file + ":" + (f.op || "update")).join(","), "src/a.js:update,b.txt:add,old.js:delete,c.js:move");
+    eq("envelope: Move to target", ef[3].to, "d.js");
+    eq("envelope: Add File body", ef[1].hunks[0].after, ["hello"]);
+    const twin = "function one() {\n  return 1;\n  // x\n}\nfunction two() {\n  return 1;\n  // x\n}\n";
+    eq("@@ anchor picks the identical block after it", applyHunks(twin, ef[0].hunks).content, twin.replace(/\/\/ x\n}\n$/, "// y\n}\n"));
+    ok("identical blocks without an anchor are still refused", !applyHunks(twin, [{ before: ["  return 1;", "  // x"], after: ["  return 1;", "  // y"] }]).ok);
+    ok("an anchor that is not unique decides nothing", !applyHunks(twin + "// function two()\n", ef[0].hunks).ok);
+    eq("unified @@ section header is an anchor too", parsePatch("--- a/f\n+++ b/f\n@@ -5,2 +5,2 @@ function two() {\n   return 1;\n-  // x\n+  // y\n")[0].hunks[0].anchor, "function two() {");
+    eq("a blank context line with its space stripped stays in the hunk", applyPatch("a\n\nb\n", "--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n\n-b\n+c\n\n").content, "a\n\nc\n");
+    eq("an added line starting with ++ is not a file header", applyPatch("x\ny\n", "--- a/f\n+++ b/f\n@@ -1,2 +1,3 @@\n x\n+++ counter\n y\n").content, "x\n++ counter\ny\n");
+    eq("two files without diff --git lines split correctly", parsePatch("--- a/p\n+++ b/p\n@@ -1 +1 @@\n-1\n+2\n--- a/q\n+++ b/q\n@@ -1 +1 @@\n-3\n+4\n").map((f) => f.file), ["p", "q"]);
+    eq("+++ /dev/null marks a deletion instead of emptying the file", parsePatch("--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n")[0].op, "delete");
+  }
 }
 
 {
