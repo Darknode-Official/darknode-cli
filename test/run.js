@@ -93,6 +93,7 @@ group("capability index (what a module can DO)");
   ok("comment-only mention is ignored", !caps.some((c) => c.hits.some((h) => h.line === 1)));
   const execCap = caps.find((c) => c.tag === "exec");
   ok("hit carries a real line number", execCap && execCap.hits.some((h) => h.line === 3));
+  ok("RegExp .exec() is not process execution", !scanCapabilities("const m = /a(b)/.exec(s);\nwhile ((m = re.exec(t))) n++;").some((c) => c.tag === "exec"));
   ok("empty/garbage input is safe", scanCapabilities(null).length === 0 && scanCapabilities(123).length === 0);
 
   eq("fileRisk = worst capability (eval=10 -> critical)", fileRisk(caps).level, "critical");
