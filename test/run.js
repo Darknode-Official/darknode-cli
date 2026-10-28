@@ -1120,6 +1120,7 @@ group("test generator (/testgen)");
   ok("an existing test file is never overwritten; the generated one gets its own name", fs.readFileSync(path.join(d, "m.test.js"), "utf8") === "// hand-written" && fs.existsSync(path.join(d, "m.generated.test.js")) && /already exists and was left alone/.test(out));
   ok("a function whose name contains $ is found", /Written to: \$get\.test\.js/.test(generateTests("$get", d)));
   ok("the generated test calls $get, not the regex-escaped \\$get", (() => { const t = fs.readFileSync(path.join(d, "$get.test.js"), "utf8"); return /\$get\(/.test(t) && !t.includes("\\$get"); })());
+  ok("a file with several functions imports node:test once, so the generated file parses", (() => { const t = fs.readFileSync(path.join(d, "m.generated.test.js"), "utf8"); return (t.match(/^import \{ describe, it \}/gm) || []).length === 1 && (t.match(/describe\(/g) || []).length === 2; })());
   try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
 }
 
