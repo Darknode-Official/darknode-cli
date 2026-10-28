@@ -1794,6 +1794,7 @@ group("compliance bundle (SOC2 export)");
     eq("envelope: Add File body", ef[1].hunks[0].after, ["hello"]);
     eq("diff -u header: the tab and timestamp are not part of the path", parsePatch("--- a/x.js\t2026-01-01 10:00:00\n+++ b/x.js\t2026-01-01 10:00:01\n@@ -1 +1 @@\n-a\n+b\n")[0].file, "x.js");
     eq("git-quoted path with a space is unquoted", parsePatch("--- \"a/my file.js\"\n+++ \"b/my file.js\"\n@@ -1 +1 @@\n-a\n+b\n")[0].file, "my file.js");
+    eq("git-quoted non-ASCII path (octal bytes) is decoded", parsePatch("--- \"a/caf\\303\\251.js\"\n+++ \"b/caf\\303\\251.js\"\n@@ -1 +1 @@\n-a\n+b\n")[0].file, "caf\u00e9.js");
     const nf = parsePatch("diff --git a/n.js b/n.js\nnew file mode 100644\n--- /dev/null\n+++ b/n.js\n@@ -0,0 +1,2 @@\n+one\n+two\n")[0];
     eq("--- /dev/null is a new file", nf.file + ":" + nf.op + ":" + !!nf.hunks[0].noEol, "n.js:add:false");
     ok("new file marked No newline at end of file", parsePatch("--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+one\n\\ No newline at end of file\n")[0].hunks[0].noEol);
