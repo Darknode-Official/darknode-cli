@@ -106,6 +106,9 @@ group("capability index (what a module can DO)");
     const o2 = require("../lib/nexus/code-radar.js").scanSecurity(d);
     ok("code-radar: verifyOnly = false is not SSL; rejectUnauthorized: false is", !/tls\.js:1 /.test(o2) && /tls\.js:2 — SSL verification disabled/.test(o2));
     ok("code-radar: critical findings list first", /SECURITY RADAR[^\n]*\n[^\n]*\n\s*\[CRIT\]/.test(o2));
+    fs.writeFileSync(path.join(d, "rev.js"), "console.log(1);\nconst password = 'hunter2222';\n");
+    const o3 = require("../lib/nexus/code-review-auto.js").autoReview("rev.js", d);
+    ok("code review: critical findings list before low ones", o3.indexOf("[CRIT]") > -1 && o3.indexOf("[CRIT]") < o3.indexOf("[LOW"));
     fs.rmSync(d, { recursive: true, force: true });
   }
   ok("empty/garbage input is safe", scanCapabilities(null).length === 0 && scanCapabilities(123).length === 0);
