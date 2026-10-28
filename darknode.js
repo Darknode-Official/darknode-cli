@@ -1746,9 +1746,15 @@ async function aiCoder(argv) {
           try { t = fs.readFileSync(fp, "utf8"); } catch (_) { t = null; }
           if (t == null) { result = "error: cannot read " + a.path; }
           else if (typeof a.find !== "string" || !a.find) { result = "error: empty find (give the exact text to replace)"; }
-          else if (!t.includes(a.find)) { result = "error: find text not in file"; }
-          else { const occurrences = t.split(a.find).length - 1; if (occurrences > 1 && !a.replace_all) { result = "error: matches " + occurrences + " locations — add more context"; } else if (!(await approve("edit " + a.path))) { result = "denied"; console.log("  " + red("denied ") + a.path); }
-          else { fs.writeFileSync(fp, a.replace_all ? t.split(a.find).join(a.replace == null ? "" : a.replace) : t.replace(a.find, () => (a.replace == null ? "" : a.replace))); changed.push({ path: fp, before: t, label: "edit " + a.path }); result = "ok"; console.log("  " + green("edit ") + gray(a.path)); } }
+          else { // same edit engine as the other loops (this copy was exact-match only: a CRLF file or an indentation slip just failed)
+            const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]);
+            const _sec = r.ok && loadPolicy(cwd).blockSecrets ? scanSecrets(String(a.replace == null ? "" : a.replace)) : [];
+            if (!r.ok) result = "error: " + r.error;
+            else if (_sec.length) result = "blocked: policy — edit would introduce " + _sec.join(", ");
+            else if (r.content === t) result = "ok (no change — find and replace are identical)";
+            else if (!(await approve("edit " + a.path))) { result = "denied"; console.log("  " + red("denied ") + a.path); }
+            else { fs.writeFileSync(fp, r.content); changed.push({ path: fp, before: t, label: "edit " + a.path }); const cr = changedRegion(t, r.content); result = "ok" + (cr ? " — line " + cr.lines + " now reads:\n" + cr.now : ""); console.log("  " + green("edit ") + gray(a.path)); }
+          }
         }
         else if (name === "run_command") {
           if (!(await approve("run: " + a.command))) { result = "denied"; console.log("  " + red("denied ") + a.command); }
