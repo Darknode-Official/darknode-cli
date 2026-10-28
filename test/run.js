@@ -3637,6 +3637,15 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("onWrite called once per changed file (undo snapshots)", seen.length, 2);
     r = run({ find: "fetchUser", replace: "X", glob: "**/*.ts" });
     eq("glob limits files", r.changed.map((c) => c.file), ["src/b.ts"]);
+    {
+      const lat = path.join(dir, "legacy.py"), bytes = Buffer.from("caf\xe9 = 1\nfoo = 2\n", "latin1");
+      fs.writeFileSync(lat, bytes);
+      const rl = run({ find: "foo", replace: "bar", glob: "*.py" });
+      ok("a Latin-1 file is skipped, not rewritten through UTF-8 (its \\xe9 would become U+FFFD)", fs.readFileSync(lat).equals(bytes) && rl.files === 0 && /not UTF-8/.test((rl.skipped || [])[0].reason));
+      const E = require("../lib/nexus/edit");
+      ok("readEditable refuses non-UTF-8 bytes and reads UTF-8 (including a real U+FFFD) normally", /not UTF-8/.test(E.readEditable(lat, "legacy.py").error) && (fs.writeFileSync(lat, "caf\u00e9 \uFFFD\n"), E.readEditable(lat).text === "caf\u00e9 \uFFFD\n") && /cannot read/.test(E.readEditable(path.join(dir, "nope.txt"), "nope.txt").error));
+      fs.unlinkSync(lat);
+    }
     r = run({ find: "5", replace: "$1.00" });
     eq("literal mode: $ in the replacement is literal", fs.readFileSync(path.join(dir, "price.txt"), "utf8"), "cost: $1.00\n");
     r = run({ find: "cost: (\\S+)", replace: "price=$1", regex: true });
