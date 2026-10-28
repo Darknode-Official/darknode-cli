@@ -300,6 +300,8 @@ group("known-secret value registry (NSAFE-062)");
   ok("known-value placeholder used", /\[REDACTED:known-value:[0-9a-f]{4}\]/.test(r.text));
   const tags = r.text.match(/\[REDACTED:known-value:([0-9a-f]{4})\]/g) || [];
   ok("every encoded form of the same secret shares one tag", tags.length === 3 && new Set(tags).size === 1);
+  const q = redact('password="' + custom + '" and ' + custom, { sink: "transcript", key: K, known: built });
+  ok("a known secret inside password=\"...\" keeps its known-value tag", (q.text.match(/\[REDACTED:known-value:[0-9a-f]{4}\]/g) || []).length === 2 && q.findings === 2);
   const many = {}; for (let i = 0; i < 20; i++) many["K" + i + "_TOKEN"] = "value_" + i + "_" + "x".repeat(8);
   const capped = buildKnownSecrets(many, [], { cap: 5 });
   ok("values capped with truncation reported", capped.truncated === true && capped.count === 5);
