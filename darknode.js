@@ -1727,7 +1727,9 @@ async function aiCoder(argv) {
       // same gate as the sub-agent runner: .nexus/policy.json and the destructive-command guard apply even when -y / -p auto-approve
       const _pa = name === "run_command" ? { type: "run", command: a && a.command } : name === "write_file" ? { type: "write", path: a && a.path } : name === "edit_file" ? { type: "edit", path: a && a.path } : null;
       let _pblk = null;
-      if (_pa) { const pc = policyCheck(loadPolicy(cwd), _pa); if (!pc.allow) _pblk = "policy — " + pc.reason; }
+      const _pol = _pa ? loadPolicy(cwd) : null;
+      if (_pa) { const pc = policyCheck(_pol, _pa); if (!pc.allow) _pblk = "policy — " + pc.reason; }
+      if (!_pblk && name === "write_file" && _pol.blockSecrets) { const _sec = scanSecrets(a && a.content == null ? "" : a.content); if (_sec.length) _pblk = "policy — file contains " + _sec.join(", ") + " (policy.blockSecrets)"; } // the other loops checked this; here a key could be written with blockSecrets on
       if (!_pblk && name === "run_command") { const dg = classifyDanger(a && a.command); if (dg.level === "block") _pblk = dg.why; }
       if (_pblk) { result = "blocked: " + _pblk; if (!printMode) console.log("  " + red("blocked: ") + _pblk); }
       else try {
@@ -1748,7 +1750,7 @@ async function aiCoder(argv) {
           else if (typeof a.find !== "string" || !a.find) { result = "error: empty find (give the exact text to replace)"; }
           else { // same edit engine as the other loops (this copy was exact-match only: a CRLF file or an indentation slip just failed)
             const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]);
-            const _sec = r.ok && loadPolicy(cwd).blockSecrets ? scanSecrets(String(a.replace == null ? "" : a.replace)) : [];
+            const _sec = r.ok && _pol.blockSecrets ? scanSecrets(String(a.replace == null ? "" : a.replace)) : [];
             if (!r.ok) result = "error: " + r.error;
             else if (_sec.length) result = "blocked: policy — edit would introduce " + _sec.join(", ");
             else if (r.content === t) result = "ok (no change — find and replace are identical)";
