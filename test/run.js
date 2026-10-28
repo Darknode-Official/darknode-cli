@@ -1184,6 +1184,7 @@ group("dependency hygiene (/deps)");
   ok("parseImports covers require/import/dynamic/export-from", ["fs", "express", "@scope/pkg", "./local", "chalk", "zod/lib"].every((s) => specs.includes(s)));
   const a = auditDeps({ pkg: { dependencies: { express: "^4", unusedpkg: "^1" }, devDependencies: { jest: "^29" } }, specifiers: specs });
   eq("unused = declared minus imported", a.unused, ["jest", "unusedpkg"]);
+  eq("node:test, node:sqlite and node:fs/promises are built-ins, not missing packages; a bare test still is one", auditDeps({ pkg: {}, specifiers: ["node:test", "node:sqlite", "node:fs/promises", "test"] }).missing, ["test"]);
   eq("missing = imported minus declared (builtins/relative excluded)", a.missing, ["@scope/pkg", "chalk", "zod"]);
   eq("text that merely contains the word import is not an import", parseImports('if (name === "import") run("hello world");\nconst s = "we import data from \'the file\'";'), []);
   eq("multi-line and default+named imports are still found", parseImports('import a, {\n  b,\n} from "pkg-a";\n  import type {T} from "@s/t/sub";'), ["pkg-a", "@s/t/sub"]);
