@@ -785,12 +785,14 @@ function serveDir(port, dir) {
   port = parseInt(port, 10) || 8000; dir = dir || ".";
   const fs = require("fs"), path = require("path");
   const srv = http.createServer((req, res) => {
-    let p = path.join(dir, decodeURIComponent(req.url.split("?")[0]));
+    let rel; try { rel = decodeURIComponent(req.url.split("?")[0]); } catch (_) { res.writeHead(400); return res.end("bad request"); } // a malformed %-escape threw and took the server down
+    let p = path.join(dir, rel);
     const _root = path.resolve(dir), _rp = path.resolve(p);
     if (_rp !== _root && !_rp.startsWith(_root + path.sep)) { res.writeHead(403); return res.end("forbidden"); }
     fs.stat(p, (e, st) => {
       if (e) { res.writeHead(404); return res.end("not found"); }
-      if (st.isDirectory()) { const items = fs.readdirSync(p); res.writeHead(200, { "Content-Type": "text/html" }); return res.end(items.map((i) => `<a href="${req.url.replace(/\/$/, "")}/${i}">${i}</a>`).join("<br>")); }
+      if (st.isDirectory()) { const items = fs.readdirSync(p); res.writeHead(200, { "Content-Type": "text/html" }); const h = (x) => String(x).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";"), base = rel.replace(/\/$/, "").split("/").map(encodeURIComponent).join("/");
+        return res.end(items.map((i) => `<a href="${h(base + "/" + encodeURIComponent(i))}">${h(i)}</a>`).join("<br>")); } // names are text, not markup, and #/?/space in a name stay part of the link
       console.log("  " + green("GET ") + req.url + gray("  " + (req.socket.remoteAddress || "")));
       res.writeHead(200); fs.createReadStream(p).pipe(res);
     });
