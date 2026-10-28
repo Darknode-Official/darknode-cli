@@ -1941,6 +1941,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       if (name === "list_dir") return { items: ["src/", "README.md"] };
       return { error: "unexpected tool " + name };
     };
+    eq("search op keeps literal/glob/case_sensitive (a literal 'a.b(1)' found nothing without them)",
+      BA.argsFor("search", { op: "search", pattern: "a.b(1)", literal: true, glob: "*.py", case_sensitive: true }),
+      { pattern: "a.b(1)", path: undefined, glob: "*.py", literal: true, case_sensitive: true });
     const multi = await BA.runBatch([
       { op: "read", path: "a.js" },
       { op: "search", pattern: "TODO" },
