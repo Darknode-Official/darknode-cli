@@ -3716,6 +3716,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("copy onto an existing file is refused", /already exists/.test(FT.copyTool({ from: "src/lib/x.js", to: "src2/lib/x.js" }, dir, rp).error || ""));
     ok("copy a folder onto an existing folder nests it, like cp", FT.copyTool({ from: "src", to: "src2" }, dir, rp).ok && rd("src2/src/lib/x.js") === "X");
     ok("delete of a missing path says so (was a plain ok)", /already gone/.test(FT.deleteTool({ path: "nope.txt" }, dir, rp).note));
+    { const real = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fsroot-"))), link = real + "-link"; fs.mkdirSync(path.join(real, "proj")); fs.writeFileSync(path.join(real, "proj", "keep.txt"), "x"); fs.symlinkSync(real, link);
+      const pc = path.join(link, "proj"), prp = (p) => require("../lib/nexus/jail").assertInJail(p == null ? "." : p, pc);
+      const r = FT.deleteTool({ path: ".", recursive: true }, pc, prp);
+      ok("delete . recursive is refused when the project is reached through a symlink", /project root/.test(r.error || "") && fs.existsSync(path.join(real, "proj", "keep.txt")));
+      ok("fs tool messages are relative to the real project root", FT.copyTool({ from: "keep.txt", to: "k2.txt" }, pc, prp).copied === "keep.txt → k2.txt");
+      fs.rmSync(link); fs.rmSync(real, { recursive: true, force: true }); }
     ok("non-empty folder needs recursive", /recursive:true/.test(FT.deleteTool({ path: "src2" }, dir, rp).error) && fs.existsSync(P("src2")));
     ok("recursive delete works", FT.deleteTool({ path: "src2", recursive: true }, dir, rp).ok && !fs.existsSync(P("src2")));
     ok("project root is never deleted", /project root/.test(FT.deleteTool({ path: "." }, dir, rp).error));
