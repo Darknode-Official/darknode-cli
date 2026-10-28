@@ -45,6 +45,8 @@ const CASES = [
   { id: "trailing-space-in-file", cat: "whitespace", file: "a = 1  \nb = 2\n", op: edit("a = 1\nb = 2", "a = 1\nb = 3"), want: "a = 1\nb = 3\n" },
   { id: "inner-space-runs", cat: "whitespace", file: "x  =  compute( a,  b )\n", op: edit("x = compute( a, b )", "x = compute(a, b, c)"), want: "x = compute(a, b, c)\n" },
   { id: "crlf-file-lf-find", cat: "whitespace", file: "one\r\ntwo\r\nthree\r\n", op: edit("one\ntwo", "one\n2"), want: "one\r\n2\r\nthree\r\n" },
+  { id: "lf-file-crlf-edit", cat: "whitespace", file: "a\nb\nc\n", op: edit("a\r\nb", "a\r\nB"), want: "a\nB\nc\n" },
+  { id: "dollar-in-replacement", cat: "exact", file: JS, op: edit("return fetch(url);", "return fetch(url.replace(/x/, '$&$1'));"), want: JS.replace("return fetch(url);", () => "return fetch(url.replace(/x/, '$&$1'));") },
   { id: "flexible-find-trailing-newline", cat: "whitespace", file: PY, op: edit("s += it.price\n", "s += it.price * 2\n"), want: PY.replace("it.price\n", "it.price * 2\n") },
   { id: "flexible-adds-blank-line", cat: "whitespace", file: PY, op: edit("s += it.price\n", "s += it.price\n\n"), want: PY.replace("it.price\n", "it.price\n\n") },
   { id: "find-extra-blank-lines", cat: "whitespace", file: PY, op: edit("\n    return s\n\n", "\n    return round(s, 2)\n"), want: PY.replace("    return s\n", "    return round(s, 2)\n") },
