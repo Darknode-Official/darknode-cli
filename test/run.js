@@ -3616,6 +3616,13 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  group("governance CSV exports keep formula-looking cells inert");
+  {
+    const csv = require("../lib/governance/reporting").findingsToCSV([{ id: "1", title: "=HYPERLINK(\"http://x\")", severity: "high", description: "@SUM(A1)", affectedPort: "-1", evidence: "+cmd" }]);
+    const row = csv.split("\n")[1];
+    ok("report findings CSV prefixes = @ + cells with an apostrophe and keeps -1 a number", row.includes("\"'=HYPERLINK") && row.includes(",'@SUM(A1),") && row.includes(",'+cmd,") && row.includes(",-1,"));
+  }
+
   group("replace_in_files — one find/replace across many files");
   {
     const RF = require("../lib/nexus/replace-files");
