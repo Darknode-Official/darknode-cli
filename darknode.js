@@ -2378,8 +2378,9 @@ async function deviceTool(name, a, cwd) {
     if (!(a.path || a.file)) return { error: "outline needs path (one file) — for the whole project use repo_map" };
     const fp = rp(a.path || a.file); let txt;
     try { if (fs.statSync(fp).isDirectory()) return { error: a.path + " is a folder — outline takes one file (use repo_map or list_dir for folders)" }; txt = fs.readFileSync(fp, "utf8"); } catch (e) { return { error: e.message }; }
-    const syms = require("./lib/nexus/repo-map").extractSymbols(path.basename(fp), txt, { max: 400 });
+    const syms = require("./lib/nexus/repo-map").extractSymbols(path.basename(fp), txt, { max: 400, all: true });
     const res = { file: path.relative(cwd, fp), count: syms.length, lines: txt.split("\n").length, symbols: syms.map((s) => ({ kind: s.kind, name: s.name, line: s.line })) };
+    if (syms.length >= 400) res.note = "first 400 symbols only (up to line " + syms[399].line + ") — use search or read_symbol for the rest";
     if (!syms.length) res.note = /\.jsonc?$/i.test(fp) ? "JSON has no symbols — use json_query {path, query, keys_only:true} to see its structure" : "no functions/classes recognized in this file type — use read_file or search";
     return res;
   }
