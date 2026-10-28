@@ -1141,6 +1141,9 @@ group("dependency hygiene (/deps)");
   const a = auditDeps({ pkg: { dependencies: { express: "^4", unusedpkg: "^1" }, devDependencies: { jest: "^29" } }, specifiers: specs });
   eq("unused = declared minus imported", a.unused, ["jest", "unusedpkg"]);
   eq("missing = imported minus declared (builtins/relative excluded)", a.missing, ["@scope/pkg", "chalk", "zod"]);
+  eq("text that merely contains the word import is not an import", parseImports('if (name === "import") run("hello world");\nconst s = "we import data from \'the file\'";'), []);
+  eq("multi-line and default+named imports are still found", parseImports('import a, {\n  b,\n} from "pkg-a";\n  import type {T} from "@s/t/sub";'), ["pkg-a", "@s/t/sub"]);
+  eq("subpath imports, URL/scheme specifiers and a self-import are not dependencies", auditDeps({ pkg: { name: "me" }, specifiers: ["#utils", "dart:io", "https://x.test/m.js", "me/sub"] }).missing, []);
   ok("clean project reports no unused/missing", (() => { const c = auditDeps({ pkg: { dependencies: { express: "^4" } }, specifiers: ["express", "fs", "./x"] }); return !c.unused.length && !c.missing.length; })());
   // scanImports over a temp project
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-deps-"));
@@ -1148,6 +1151,8 @@ group("dependency hygiene (/deps)");
   fs.mkdirSync(path.join(d, "node_modules")); fs.writeFileSync(path.join(d, "node_modules", "dep.js"), 'require("should-be-ignored");');
   const found = scanImports(d);
   ok("scanImports collects source specifiers, skips node_modules", found.includes("chalk") && found.includes("path") && !found.includes("should-be-ignored"));
+  fs.mkdirSync(path.join(d, "functions")); fs.writeFileSync(path.join(d, "functions", "package.json"), "{}"); fs.writeFileSync(path.join(d, "functions", "i.js"), 'require("firebase-admin");');
+  ok("scanImports leaves a nested package (own package.json) to its own manifest", !scanImports(d).includes("firebase-admin"));
   try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
 }
 
