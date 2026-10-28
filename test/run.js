@@ -3698,6 +3698,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const { isLocalTarget } = require("../lib/governance/default-guard");
     ok("the real guard blocks cloud metadata", /SSRF/.test((await HF.httpFetchTool({ url: "http://169.254.169.254/" }, { isLocal: isLocalTarget })).error));
     ok("IPv4-mapped / NAT64 / unspecified IPv6 forms of a private address count as local", isLocalTarget(new URL("http://[::ffff:169.254.169.254]/").href) && isLocalTarget("http://[::ffff:7f00:1]/") && isLocalTarget("http://[64:ff9b::a9fe:a9fe]/") && isLocalTarget("http://[::]/") && !isLocalTarget("http://[::ffff:8.8.8.8]/") && !isLocalTarget("http://[2606:4700::1]/"));
+    ok("IPv4-compatible ::7f00:1 and 6to4 2002:a9fe:a9fe:: of a private address count as local; public ones do not", isLocalTarget("http://[::7f00:1]/") && isLocalTarget("http://[2002:a9fe:a9fe::1]/") && !isLocalTarget("http://[2002:808:808::]/") && !isLocalTarget("http://[::8.8.8.8]/"));
     { // a public-looking name that RESOLVES to a private address is refused at connect time (DNS rebinding / nip.io)
       const dns = require("dns"), real = dns.lookup;
       dns.lookup = (h, o, cb) => { if (typeof o === "function") { cb = o; o = {}; } if (/^(pub|rebind)\.example\.org$/.test(h)) return o && o.all ? cb(null, [{ address: "127.0.0.1", family: 4 }]) : cb(null, "127.0.0.1", 4); return real(h, o, cb); };
