@@ -607,6 +607,7 @@ group("output styles (Claude-Code idea)");
 
 group("agent memory / remember — dedup");
 {
+  eq("a multi-line note is kept as one bullet in the Remembered section", mergeMemory("# P\n\n## Remembered\n- a fact\n", "build with:\n## npm run build\nthen test").md, "# P\n\n## Remembered\n- a fact\n- build with: ## npm run build then test\n");
   let r = mergeMemory("# Nexus\n", "Use the shared Table component at src/Table.tsx");
   ok("adds a new fact", r.added === true && /## Remembered/.test(r.md) && /Table component/.test(r.md));
   const r2 = mergeMemory(r.md, "use the shared table component at src/Table.tsx");
