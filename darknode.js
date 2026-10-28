@@ -1733,8 +1733,10 @@ async function aiCoder(argv) {
       else try {
         // Sandbox every file tool to the project root (symlink/dot-dot safe); a throw here is reported as a tool error below.
         if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) Jail.assertInJail(a.path, cwd);
-        if (name === "read_file") { const t = fs.readFileSync(path.resolve(cwd, a.path), "utf8"); const _cap = lean ? 8000 : 16000; result = t.length > _cap ? t.slice(0, _cap) + "\n[truncated: showed " + _cap + " of " + t.length + " chars]" : t; if (!printMode) console.log("  " + cyan("read ") + gray(a.path)); }
-        else if (name === "list_dir") { const d = path.resolve(cwd, a.path || "."); result = fs.readdirSync(d, { withFileTypes: true }).map((e) => (e.isDirectory() ? e.name + "/" : e.name)).slice(0, lean ? 80 : 200).join("\n"); if (!printMode) console.log("  " + cyan("ls ") + (a.path || ".")); }
+        if (name === "read_file" || name === "list_dir") { // shared impl (as in the other loop): line ranges/offset, a line-boundary cap that says where to continue, binary refusal - this copy cut mid-line at a char count and ignored offset/limit
+          const dr = await deviceTool(name, a, cwd); result = dr && typeof dr === "object" ? (dr.error ? "error: " + dr.error : JSON.stringify(dr)) : String(dr);
+          if (!printMode) console.log("  " + cyan(name === "read_file" ? "read " : "ls ") + (name === "read_file" ? gray(a.path) : (a.path || ".")));
+        }
         else if (name === "write_file") {
           if (!(await approve("write " + a.path))) { result = "denied"; console.log("  " + red("denied ") + a.path); }
           else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp); } catch (e) { if (e.code === "ENOENT") isNew = true; } /* raw bytes: /undo of an overwritten binary file restored it mangled */ fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = "ok"; console.log("  " + green("write ") + a.path + gray(" · " + String(a.content || "").split("\n").length + " lines")); }
