@@ -2730,6 +2730,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("files list says what was loaded", r.files.map((f) => f.rel).join(",") === "../../AGENTS.md,../AGENTS.md,.nexus/NEXUS.md");
     const small = IN.loadInstructions(path.join(root, "pkg", "sub"), { perFile: 300, total: 100000 });
     ok("a cut is announced in the text, never silent", /more chars not shown - read \.nexus\/NEXUS\.md/.test(small.text));
+    const tight = IN.loadInstructions(path.join(root, "pkg", "sub"), { perFile: 100000, total: 1520 });
+    ok("over the total budget the most specific file (NEXUS.md) is kept and the root one is dropped", /TAIL-MARKER/.test(tight.text) && !/root rule/.test(tight.text) && /not shown, over the size budget: \.\.\/\.\.\/AGENTS\.md/.test(tight.text));
     ok("nothing found -> empty text", IN.loadInstructions(fs.mkdtempSync(path.join(os.tmpdir(), "nxin0-"))).text === "");
     fs.rmSync(outer, { recursive: true, force: true });
   }
