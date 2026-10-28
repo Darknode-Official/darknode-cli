@@ -3501,6 +3501,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("extractSymbols all:true keeps a repeated method name (outline lists both)", require("../lib/nexus/repo-map").extractSymbols("c.py", fs.readFileSync(path.join(dir, "c.py"), "utf8"), { all: true }).filter((s) => s.name === "save").length, 2);
     ok("outline asks for every definition", /extractSymbols\(path\.basename\(fp\), txt, \{ max: 400, all: true \}\)/.test(fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8")));
     ok("a repeated name lists the other definition (index:N)", /index 1: line 11/.test(RS.readSymbolTool({ path: "c.py", name: "save" }, dir, rp).otherDefinitions || ""));
+    eq("bodiless declaration continued onto the next line stops at its ;, not the next function", RS.braceEnd(["const f = (a) =>", "  a + 1;", "function g() {", "  return 2;", "}"], 0, true), 1);
     ok("needs path and name", /needs \{path, name\}/.test(RS.readSymbolTool({ path: "a.js" }, dir, rp).error));
     fs.rmSync(dir, { recursive: true, force: true });
   }
