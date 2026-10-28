@@ -2430,6 +2430,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("bisectTool restores the working tree to the starting snapshot at the end", restores[restores.length - 1] === "SNAP" && res.restored === true);
     ok("bisectTool reports the test command and a human summary", res.testCommand === "npm test" && /Regression isolated/.test(res.summary));
 
+    let bTouched = 0;
+    const resNoSnap = await BS.bisectTool({}, "/repo", Object.assign({}, fakeDeps, { snapshot: () => null, restore: () => { bTouched++; return true; } }));
+    ok("bisectTool refuses without a snapshot to restore, and changes no file", /could not snapshot/.test(resNoSnap.error || "") && bTouched === 0);
+    let bBack = false;
+    const resBad = await BS.bisectTool({}, "/repo", Object.assign({}, fakeDeps, { restore: (tree) => { if (tree === "SNAP") { bBack = true; return true; } return false; } }));
+    ok("bisectTool stops when a checkpoint restore fails, and puts the tree back", /could not restore/.test(resBad.error || "") && bBack);
     const resNoCp = await BS.bisectTool({}, "/repo", { loadCheckpoints: () => [], detectTest: () => "npm test" });
     ok("bisectTool refuses when there is no checkpoint timeline", resNoCp && /no checkpoint timeline/.test(resNoCp.error));
     const resNoTest = await BS.bisectTool({}, "/repo", { loadCheckpoints: () => cps, detectTest: () => null, restore: () => true, runTest: async () => ({ code: 0 }) });
