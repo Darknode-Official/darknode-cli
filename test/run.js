@@ -267,6 +267,8 @@ group("sink redaction + keyed placeholders (NSAFE-060/061)");
   ok("same secret -> same tag across sinks", !!t1 && t1 === t2);
   const ght = "ghp_" + "a".repeat(36);
   ok("different secrets -> different tags", tagOf(redact(ght, { sink: "audit", key: K }).text) !== t1);
+  ok("current key formats are redacted whole (sk-proj-, sk-ant-api03-, github_pat_)", ["sk-proj-abcDEF123_456-ghiJKL789mnoPQR", "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv_wx-yz", "github_pat_11ABCDEFG0123456789_abcdefghij"].every((s) => /^\[REDACTED:(api-key|github-token):[0-9a-f]{4}\]$/.test(redact(s, { sink: "audit", key: K }).text)));
+  ok("hyphenated words ending in 'sk' are not keys", redact("task-runner-with-a-long-name-here", { sink: "audit", key: K }).text === "task-runner-with-a-long-name-here");
   ok("tag depends on the install key (per-install correlation)", tagOf(redact(aws, { sink: "audit", key: "other-key" }).text) !== t1);
   ok("tag reveals no 4-char slice of the secret", (() => { for (let i = 0; i + 4 <= aws.length; i++) if (t1 === aws.slice(i, i + 4).toLowerCase()) return false; return true; })());
   // credential rule: only the quoted value replaced; key + quotes preserved; fixed low-entropy tag.
