@@ -2585,6 +2585,20 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("parseLog one commit", lg.length === 1 && lg[0].author === "Alice" && lg[0].subject === "Initial commit" && lg[0].short === "abc123");
     const bl = GT.parseBlame("abc1234 (Alice 2024-01-02 10:00:00 +0000  12) const x = 1\n");
     ok("parseBlame row", bl[0].commit === "abc1234" && bl[0].author === "Alice" && bl[0].line === 12 && /const x = 1/.test(bl[0].text));
+    { const bc = GT.buildGitCommand("blame", { path: "a b.js", line: "7" }).cmd;
+      ok("blame: no --no-color (git 2.4x rejects it as ambiguous, so every blame returned git's usage text); a lone line becomes -L 7,7", !/--no-color/.test(bc) && /-L '7,7'/.test(bc) && /--line-porcelain/.test(bc));
+      ok("blame: 10-20 is read as 10,20", /-L '10,20'/.test(GT.buildGitCommand("blame", { path: "a", line: "10-20" }).cmd)); }
+    { const pb = GT.parseBlame("823d7c7f98a679ac503d1aa838c781d08be0d316 1 1 1\nauthor Ann (ops) Lee\nauthor-time 1700000000\nauthor-tz -0700\nfilename my file.txt\n\tconst x = 1\n");
+      eq("parseBlame --line-porcelain: author with parentheses, file name with a space", pb, [{ commit: "823d7c7f9", author: "Ann (ops) Lee", date: "2023-11-14", line: 1, text: "const x = 1" }]); }
+    { const gf = await GT.gitTool({ op: "show", ref: "nope" }, "/repo", { run: async () => ({ code: 128, output: "fatal: ambiguous argument 'nope': unknown revision\n" }) });
+      ok("a failed git command is an error with git's message, not parsed rows", /^git show failed: fatal: ambiguous argument/.test(gf.error || "")); }
+    try { const gd = fs.mkdtempSync(path.join(os.tmpdir(), "gblame-")), cpx = require("child_process");
+      cpx.execSync("git init -q && git -c user.email=test@darknode.ai -c user.name=t commit -q --allow-empty -m e", { cwd: gd });
+      fs.writeFileSync(path.join(gd, "a b.txt"), "x\ny\n"); cpx.execSync("git add . && git -c user.email=test@darknode.ai -c user.name=t commit -qm a", { cwd: gd });
+      const run = (cmd) => new Promise((res) => cpx.exec(cmd, { cwd: gd }, (e, o, se) => res({ code: e ? e.code || 1 : 0, output: (o || "") + (se || "") })));
+      const lb = await GT.gitTool({ op: "blame", path: "a b.txt", line: "2" }, gd, { run });
+      ok("real git: blame one line of a file with a space in its name", lb.lines && lb.lines.length === 1 && lb.lines[0].text === "y" && lb.lines[0].author === "t");
+      fs.rmSync(gd, { recursive: true, force: true }); } catch (e) { ok("real git blame ran (" + e.message + ")", false); }
     const br = GT.parseBranches("* main\n  dev\n  remotes/origin/main\n");
     ok("parseBranches current+local+remote", br.current === "main" && br.local.includes("dev") && br.remote.includes("origin/main"));
     const gst = await GT.gitTool({ op: "status" }, "/repo", { run: async () => ({ code: 0, output: "## main\n M a.js\n" }) });
