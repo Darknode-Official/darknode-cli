@@ -2219,6 +2219,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const net = DG.diagnose("request to https://x failed, reason: ECONNREFUSED", 1);
     ok("network failures are detected and flagged transient", net.category === "network" && net.transient === true);
     ok("failing tests are detected", cat("Tests: 3 failed, 10 passed\nAssertionError: expected 1 to equal 2", 1) === "test-failure");
+    ok("a rejected git push is not diagnosed as failing tests", cat("To github.com:x/y.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to github.com:x/y.git", 1) === "error");
+    ok("runner markers still count: go FAIL, pytest FAILED, cargo FAILED", cat("--- FAIL: TestX (0.00s)\nFAIL\tpkg/x\t0.01s", 1) === "test-failure" && cat("FAILED tests/t.py::test_a - assert 1 == 2", 1) === "test-failure" && cat("test result: FAILED. 1 passed; 2 failed", 101) === "test-failure");
+    ok("a not-found command later in the output is still named", /`rg`/.test(DG.diagnose("+ make build\nstarting\nsh: 1: rg: not found\n", 127).summary));
     ok("a passing suite reporting '0 failed' on exit 0 is NOT a test-failure", DG.diagnose("test result: ok. 10 passed; 0 failed; 0 ignored", 0, "cargo test") === null);
     ok("a successful grep for error text is content, not a failure", DG.diagnose("src/a.js:12:  throw new SyntaxError(\"bad\");\nsrc/b.js:3: } catch (error) {", 0, "grep -rn Error src") === null);
     ok("a runner that exits 0 with failures (piped through tail) is still a test-failure", cat("Tests: 2 failed, 10 passed", 0, "npm test | tail") === "test-failure");
