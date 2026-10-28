@@ -518,7 +518,7 @@ group("NX dispatch gates: every shell-running tool is screened, not just run_com
     policyCheck(POLICY_DEFAULTS, { type: "run", command: undefined }).allow === true);
   // Finding 2: plan mode (read-only) must block everything mutating, executing
   // or egressing — by membership, so a tool merely absent from a list isn't run.
-  for (const t of ["write_file", "edit_file", "run_command", "verify", "bisect", "shrink", "http_fetch", "web_fetch", "web_search", "browser_eval", "spawn_agents", "notebook_edit", "remember", "todo_write", "mcp__srv__do"])
+  for (const t of ["write_file", "edit_file", "run_command", "verify", "bisect", "shrink", "http_fetch", "web_fetch", "web_search", "browser_eval", "spawn_agents", "notebook_edit", "remember", "todo_write", "write_todos", "search_web", "google", "stop_background", "browser_screenshot", "mcp__srv__do"])
     ok("plan mode blocks: " + t, isPlanBlocked(t));
   for (const t of ["read_file", "list_dir", "search", "find", "repo_map", "find_symbol", "discover"])
     ok("plan mode allows the read-only tool: " + t, !isPlanBlocked(t));
@@ -3605,6 +3605,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const TG = require("../lib/nexus/tool-gates");
     ok("write_stdin is an exec tool (guarded + plan-blocked)", TG.isExecTool("write_stdin") && TG.isPlanBlocked("write_stdin"));
     ok("replace_in_files is plan-blocked", TG.isPlanBlocked("replace_in_files"));
+    ok("browser_screenshot's output path goes through the project jail", /if \(name === "browser_screenshot" \|\| name === "browser_shot"\) \{ try \{ for \(const k of \["path", "file"\]\) if \(a\[k\] != null && a\[k\] !== ""\) a\[k\] = rp\(a\[k\]\)/.test(fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8")));
   }
 
   group("wait_for — ready instead of sleep-guessing");

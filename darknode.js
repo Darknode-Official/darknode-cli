@@ -2342,6 +2342,7 @@ async function deviceTool(name, a, cwd) {
   }
   // Agentic browser: attach to the user's already-open (debuggable) browser and see/act on their
   // real tabs, instead of launching a fresh one. Talks CDP over a zero-dep WebSocket (lib/nexus/browser.js).
+  if (name === "browser_screenshot" || name === "browser_shot") { try { for (const k of ["path", "file"]) if (a[k] != null && a[k] !== "") a[k] = rp(a[k]); } catch (e) { return { error: e.message }; } } // the PNG is written to this path
   if (String(name).startsWith("browser_")) { const r = await require("./lib/nexus/browser").browserTool(name, a, cwd); if (r !== null) return r; }
   // view_image: base64-encode a local image into a provider vision block so a multimodal model
   // can SEE it (screenshots/diagrams/mockups). rp() is handed in as the path-escape guard — the
