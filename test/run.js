@@ -3306,7 +3306,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     { const { spawnSync } = require("child_process"); const r = spawnSync(process.execPath, [path.join(__dirname, "..", "lib", "nexus", "ask-mcp.js")], { input: '{"jsonrpc":"2.0","id":7,"method":"ping"}\n', encoding: "utf8", timeout: 5000 });
       ok("ask-mcp answers an MCP ping with an empty result", /"id":7,"result":\{\}/.test(r.stdout || "")); }
     { const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8"), i = src.indexOf("function mcpConnect("), body = src.slice(i, src.indexOf("\n// ---------- Hooks", i));
-      ok("the MCP client answers server requests (ping) instead of routing them to its own pending call with the same id", /if \(m && m\.method\) \{ if \(m\.id != null\)/.test(body) && body.indexOf("if (m && m.method)") < body.indexOf("const cb = pending[m.id]")); }
+      ok("the MCP client answers server requests (ping) instead of routing them to its own pending call with the same id", /if \(m && m\.method\) \{ if \(m\.id != null\)/.test(body) && body.indexOf("if (m && m.method)") < body.indexOf("const cb = pending[m.id]"));
+      ok("an MCP tool call gets minutes, not the 20 s handshake limit, and its timer is cleared on reply", /srv\.call\("tools\/call", \{ name: tool, arguments: a \}, 600000\)/.test(src) && /pending\[id\] = \(m\) => \(clearTimeout\(tm\), m\.error\)/.test(body) && /tm = setTimeout\(/.test(body)); }
     const { createAskServer } = require("../lib/nexus/ask-bridge");
     const cp = require("child_process");
 
