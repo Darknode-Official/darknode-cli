@@ -3610,6 +3610,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const TG = require("../lib/nexus/tool-gates");
     ok("write_stdin is an exec tool (guarded + plan-blocked)", TG.isExecTool("write_stdin") && TG.isPlanBlocked("write_stdin"));
     ok("replace_in_files is plan-blocked", TG.isPlanBlocked("replace_in_files"));
+    ok("a notebook_edit write is a policy edit action (protected paths, file limit, audit, undo); its reads are not", /\["notebook_edit", "notebook", "ipynb"\]\.includes\(name\) && !\/\^\(read\|view\|show\)\$\/i\.test\(String\(a\.op \|\| a\.action \|\| "read"\)\) \? \{ type: "edit", path: a\.path \|\| a\.file \|\| a\.notebook \}/.test(fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8")));
     ok("browser_screenshot's output path goes through the project jail", /if \(name === "browser_screenshot" \|\| name === "browser_shot"\) \{ try \{ for \(const k of \["path", "file"\]\) if \(a\[k\] != null && a\[k\] !== ""\) a\[k\] = rp\(a\[k\]\)/.test(fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8")));
   }
 

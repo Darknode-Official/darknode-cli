@@ -4404,6 +4404,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
                 : (name === "edit_file" || name === "multi_edit" || name === "multiedit") ? { type: "edit", path: a.path }
                 : (name === "apply_patch" || name === "patch") ? { type: "edit" }
                 : name === "undo_edit" ? { type: "edit", path: a.path }
+                : ["notebook_edit", "notebook", "ipynb"].includes(name) && !/^(read|view|show)$/i.test(String(a.op || a.action || "read")) ? { type: "edit", path: a.path || a.file || a.notebook } // it writes the .ipynb: protected paths, file limit, audit and undo apply
                 : name === "replace_in_files" && !(a.dry_run === true || a.preview === true) ? { type: "edit" }
                 : ["delete", "delete_file", "rm"].includes(name) ? { type: "delete", path: a.path }
                 : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a.to || a.dest || a.path, from: a.from }
