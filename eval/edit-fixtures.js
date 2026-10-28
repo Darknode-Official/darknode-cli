@@ -75,6 +75,8 @@ const CASES = [
   { id: "patch-drifted-lines", cat: "patch", file: "a\nb\nc\nd\ne\n", op: patch("--- a/f\n+++ b/f\n@@ -40,3 +40,3 @@\n b\n-c\n+C\n d\n"), want: "a\nb\nC\nd\ne\n" },
   { id: "patch-stripped-blank-context", cat: "patch", file: "a\n\nb\n", op: patch("--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n\n-b\n+B\n"), want: "a\n\nB\n" },
   { id: "patch-wrong-indent", cat: "patch", file: PY, op: patch("--- a/f\n+++ b/f\n@@ -3,2 +3,2 @@\n for it in items:\n-    s += it.price\n+    s += it.price * it.qty\n"), want: PY.replace("it.price\n", "it.price * it.qty\n") },
+  { id: "patch-tabs-into-space-file", cat: "patch", file: "class A:\n    def f(self):\n        return 1\n", op: patch("--- a/f\n+++ b/f\n@@ -2,2 +2,2 @@\n \tdef f(self):\n-\t\treturn 1\n+\t\treturn 2\n"), want: "class A:\n    def f(self):\n        return 2\n" },
+  { id: "patch-spaces-into-tab-file", cat: "patch", file: GO, op: patch("--- a/f\n+++ b/f\n@@ -3,2 +3,3 @@\n     if x > 0 {\n         fmt.Println(x)\n+        fmt.Println(x + 1)\n"), want: GO.replace("\t\tfmt.Println(x)\n", "\t\tfmt.Println(x)\n\t\tfmt.Println(x + 1)\n") },
   { id: "patch-envelope", cat: "patch", file: JS, op: patch("*** Begin Patch\n*** Update File: f.js\n@@\n   const url = cfg.url;\n-  if (!url) {\n+  if (!url || !url.length) {\n*** End Patch\n"), want: JS.replace("if (!url) {", "if (!url || !url.length) {") },
   { id: "patch-anchor-twin", cat: "patch", file: TWIN, op: patch("*** Begin Patch\n*** Update File: f.js\n@@ function b() {\n-  return 1;\n+  return 2;\n*** End Patch\n"), want: "function a() {\n  return 1;\n}\nfunction b() {\n  return 2;\n}\n" },
   { id: "patch-twin-no-anchor", cat: "refuse", file: TWIN, op: patch("--- a/f\n+++ b/f\n@@\n-  return 1;\n+  return 2;\n"), want: null },
