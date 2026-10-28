@@ -1179,6 +1179,9 @@ group("codebase stats (/stats)");
   fs.writeFileSync(path.join(d, "data.bin"), "not source");
   const st = summarizeStats(scanStats(d));
   ok("scanStats reads source, skips node_modules + non-code", st.totalFiles === 2 && st.byLang.JavaScript.files === 1 && st.byLang.Python.files === 1);
+  ok("line counts match wc -l (a trailing newline is not an extra line)", st.byLang.JavaScript.lines === 3 && st.byLang.Python.lines === 2);
+  const nd = path.join(d, "build", "proj"); fs.mkdirSync(nd, { recursive: true }); fs.writeFileSync(path.join(nd, "a.js"), "x\n");
+  ok("a project inside a folder named build/dist/vendor is still scanned (skip list applies below the root only)", scanStats(nd).length === 1);
   try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
 }
 

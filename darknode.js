@@ -1093,7 +1093,7 @@ async function cliRun(args, gate) {
     const SKIP = /(^|\/)(\.git|node_modules|dist|build|out|target|\.nexus|\.cache|\.next|coverage|__pycache__|\.venv|venv|vendor)(\/|$)/;
     const EXT = /\.(js|mjs|cjs|ts|tsx|jsx|py|rb|go|php|sh|bash)$/i;
     const files = [];
-    const walk = (d) => { if (files.length >= 5000) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(fp)) continue; if (e.isDirectory()) walk(fp); else if (EXT.test(e.name)) { let code; try { if (fs.statSync(fp).size > 800000) continue; code = fs.readFileSync(fp, "utf8"); } catch (_) { continue; } files.push({ path: path.relative(root, fp), code }); } } };
+    const walk = (d) => { if (files.length >= 5000) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(e.name)) continue; if (e.isDirectory()) walk(fp); else if (EXT.test(e.name)) { let code; try { if (fs.statSync(fp).size > 800000) continue; code = fs.readFileSync(fp, "utf8"); } catch (_) { continue; } files.push({ path: path.relative(root, fp), code }); } } };
     try { const st = fs.statSync(root); if (st.isFile()) files.push({ path: path.basename(root), code: fs.readFileSync(root, "utf8") }); else walk(root); } catch (e) { console.log(red("  cannot read " + root + ": " + e.message)); return; }
     const index = capIndexFiles(files);
     if (rest.includes("--json")) { console.log(JSON.stringify(index, null, 2)); return; }
@@ -2363,7 +2363,7 @@ async function deviceTool(name, a, cwd) {
     const sym = a.name || a.symbol || a.query || a.q || "";
     const CODE = /\.(js|jsx|ts|tsx|mjs|cjs|py|rb|go|rs|java|kt|kts|c|h|cpp|cc|hpp|hh|cs|php|swift|scala|lua|sh|bash|zsh|vue|svelte|dart|ex|exs|r|pl|pm|m)$/i;
     const files = []; let total = 0;
-    const walk = (d) => { if (files.length >= 6000) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(fp)) continue; if (e.isDirectory()) walk(fp); else if (CODE.test(e.name)) { let st; try { st = fs.statSync(fp); } catch (_) { continue; } if (st.size > 600000) continue; if (total > 48 * 1024 * 1024) return; try { const txt = fs.readFileSync(fp, "utf8"); total += txt.length; files.push({ path: path.relative(cwd, fp), content: txt }); } catch (_) {} } if (files.length >= 6000) return; } };
+    const walk = (d) => { if (files.length >= 6000) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(e.name)) continue; if (e.isDirectory()) walk(fp); else if (CODE.test(e.name)) { let st; try { st = fs.statSync(fp); } catch (_) { continue; } if (st.size > 600000) continue; if (total > 48 * 1024 * 1024) return; try { const txt = fs.readFileSync(fp, "utf8"); total += txt.length; files.push({ path: path.relative(cwd, fp), content: txt }); } catch (_) {} } if (files.length >= 6000) return; } };
     walk(rp(a.path || "."));
     return ci.findReferences(files, sym, { context: Number(a.context) || 0 });
   }
@@ -2375,7 +2375,7 @@ async function deviceTool(name, a, cwd) {
     const ci = require("./lib/nexus/code-intel");
     const CODE = /\.(js|jsx|ts|tsx|mjs|cjs|py|go|vue|svelte)$/i; // languages whose imports we parse
     const files = []; let total = 0;
-    const walk = (d) => { if (files.length >= 8000) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(fp)) continue; if (e.isDirectory()) walk(fp); else if (CODE.test(e.name)) { let st; try { st = fs.statSync(fp); } catch (_) { continue; } if (st.size > 600000) continue; if (total > 48 * 1024 * 1024) return; try { const txt = fs.readFileSync(fp, "utf8"); total += txt.length; files.push({ path: path.relative(cwd, fp), content: txt }); } catch (_) {} } if (files.length >= 8000) return; } };
+    const walk = (d) => { if (files.length >= 8000) return; let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(e.name)) continue; if (e.isDirectory()) walk(fp); else if (CODE.test(e.name)) { let st; try { st = fs.statSync(fp); } catch (_) { continue; } if (st.size > 600000) continue; if (total > 48 * 1024 * 1024) return; try { const txt = fs.readFileSync(fp, "utf8"); total += txt.length; files.push({ path: path.relative(cwd, fp), content: txt }); } catch (_) {} } if (files.length >= 8000) return; } };
     walk(cwd);
     const tgt = a.path || a.file || a.target || "";
     return ci.moduleGraph(files, tgt ? path.relative(cwd, path.resolve(cwd, tgt)) : "", { top: Number(a.top) || 15 });
@@ -2999,7 +2999,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const buildIndex = () => {
       const files = {}; const SKIP = /(^|\/)(\.git|node_modules|\.nexus|dist|build|\.cache|\.next|target|__pycache__)(\/|$)/;
       const CODE = /\.(js|jsx|ts|tsx|py|rb|go|rs|java|c|h|cpp|cc|cs|php|swift|kt|sh|css|scss|html|json|md|yml|yaml|toml)$/i;
-      const walk = (d) => { let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(fp)) continue; if (e.isDirectory()) walk(fp); else if (CODE.test(e.name)) { try { if (fs.statSync(fp).size > 400000) continue; const txt = fs.readFileSync(fp, "utf8"); const kw = {}; for (const w of txt.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g) || []) kw[w] = (kw[w] || 0) + 1; files[path.relative(cwd, fp)] = Object.keys(kw); } catch (_) {} } if (Object.keys(files).length > 4000) return; } };
+      const walk = (d) => { let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(e.name)) continue; if (e.isDirectory()) walk(fp); else if (CODE.test(e.name)) { try { if (fs.statSync(fp).size > 400000) continue; const txt = fs.readFileSync(fp, "utf8"); const kw = {}; for (const w of txt.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g) || []) kw[w] = (kw[w] || 0) + 1; files[path.relative(cwd, fp)] = Object.keys(kw); } catch (_) {} } if (Object.keys(files).length > 4000) return; } };
       walk(cwd); index = { files, ts: Date.now() }; try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "index.json"), JSON.stringify(index)); } catch (_) {} return Object.keys(files).length;
     };
     // score indexed files by keyword overlap with the prompt; return the top matches (excluding pinned/@-mentioned)
@@ -3011,7 +3011,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const buildRepoMapText = (opts) => {
       const SKIP = /(^|\/)(\.git|node_modules|\.nexus|dist|build|out|target|\.cache|\.next|\.nuxt|coverage|__pycache__|\.venv|venv|vendor)(\/|$)/;
       const files = []; let total = 0;
-      const walk = (d) => { let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(fp + (e.isDirectory() ? "/" : ""))) continue; if (e.isDirectory()) { if (files.length < 1200) walk(fp); } else { let st; try { st = fs.statSync(fp); } catch (_) { continue; } if (st.size > 262144) { files.push({ path: path.relative(cwd, fp), size: st.size }); continue; } if (total > 6 * 1024 * 1024) { files.push({ path: path.relative(cwd, fp), size: st.size }); continue; } try { const txt = fs.readFileSync(fp, "utf8"); total += txt.length; files.push({ path: path.relative(cwd, fp), content: txt, size: st.size }); } catch (_) {} } if (files.length >= 1200) return; } };
+      const walk = (d) => { let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; } for (const e of ents) { const fp = path.join(d, e.name); if (SKIP.test(e.name + (e.isDirectory() ? "/" : ""))) continue; if (e.isDirectory()) { if (files.length < 1200) walk(fp); } else { let st; try { st = fs.statSync(fp); } catch (_) { continue; } if (st.size > 262144) { files.push({ path: path.relative(cwd, fp), size: st.size }); continue; } if (total > 6 * 1024 * 1024) { files.push({ path: path.relative(cwd, fp), size: st.size }); continue; } try { const txt = fs.readFileSync(fp, "utf8"); total += txt.length; files.push({ path: path.relative(cwd, fp), content: txt, size: st.size }); } catch (_) {} } if (files.length >= 1200) return; } };
       walk(cwd);
       const map = buildRepoMap(files);
       return { map, text: renderRepoMap(map, { maxFiles: (opts && opts.maxFiles) || 45, maxSymbols: (opts && opts.maxSymbols) || 12 }) };
