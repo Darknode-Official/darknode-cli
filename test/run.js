@@ -1503,6 +1503,19 @@ group("help reference (single source of truth)");
     ok("rewind restores every file changed from that checkpoint on, not just that turn's", /const rwPaths = \[\.\.\.new Set\(checkpoints\.slice\(idx\)\.flatMap\(\(c\) => c\.paths \|\| \[\]\)\)\]; .*nexusRestore\(cwd, ck\.tree, rwPaths\)/.test(src));
     ok("undo keeps the checkpoint when the restore fails, so it can be retried", (src.match(/const ck = checkpoints\[checkpoints\.length - 1\]; const nowTree = nexusCheckpoint\(cwd\); const ok = nexusRestore\(cwd, ck\.tree, ck\.paths\); if \(ok\) checkpoints\.pop\(\);/g) || []).length === 2 && !/const ck = checkpoints\.pop\(\); const nowTree/.test(src));
     ok("redo re-adds the checkpoint at the state before the turn, so /undo after /redo reverts again", /redoStack\.push\(\{ tree: nowTree, before: ck\.tree,/.test(src) && /checkpoints\.push\(\{ tree: r\.before \|\| r\.tree,/.test(src) && /if \(ok\) \{ redoStack\.pop\(\);/.test(src));
+    {
+      // functional: a turn that edits a pre-existing git-ignored file must not delete it on /undo
+      const fns = new Function("_cp", "require", src.match(/function nexusCheckpoint\(cwd\) \{[\s\S]*?\n\}\n/)[0] + src.match(/function nexusRestore\(cwd, tree, paths\) \{[\s\S]*?\n\}\n/)[0] + "return { nexusCheckpoint, nexusRestore };")(require("child_process"), require);
+      const fsx = require("fs"), px = require("path"), d = fsx.mkdtempSync(px.join(require("os").tmpdir(), "nx-undo-"));
+      const g = (...a) => require("child_process").execFileSync("git", a, { cwd: d, stdio: "ignore" });
+      g("init", "-q"); fsx.writeFileSync(px.join(d, ".gitignore"), "local.cfg\n"); fsx.writeFileSync(px.join(d, "a.txt"), "a\n");
+      fsx.writeFileSync(px.join(d, "local.cfg"), "mine\n");
+      const tree = fns.nexusCheckpoint(d);
+      fsx.writeFileSync(px.join(d, "local.cfg"), "agent\n"); fsx.writeFileSync(px.join(d, "a.txt"), "changed\n"); fsx.writeFileSync(px.join(d, "new.txt"), "x\n");
+      const okR = fns.nexusRestore(d, tree, ["local.cfg", "a.txt", "new.txt"]);
+      ok("undo never deletes a git-ignored file the turn edited (it is not in the snapshot); tracked files restore and created files go", okR && fsx.existsSync(px.join(d, "local.cfg")) && fsx.readFileSync(px.join(d, "a.txt"), "utf8") === "a\n" && !fsx.existsSync(px.join(d, "new.txt")) && fns.nexusRestore.kept.join() === "local.cfg");
+      fsx.rmSync(d, { recursive: true, force: true });
+    }
     ok("restore leaves the git index alone (restore --worktree, checkout only as the old-git fallback)", /\["restore", "--source=" \+ commit, "--worktree", "--"\]\.concat\(present\)/.test(src));
     ok("undo/redo/rewind restore files via argv: a model-written file name containing $(...) is never run by a shell", /_cp\.execFileSync\("git", \["cat-file", "-e", commit \+ ":\.\/" \+ p\]/.test(src) && /_cp\.execFileSync\("git", \["checkout", commit, "--"\]\.concat\(present\)/.test(src) && !/execSync\("git checkout " \+ commit/.test(src));
     ok("/diff and /blame pass the file name as argv ($ and backticks in a name are literal); /secrets and /gaps read git ls-files -z so non-ASCII names are scanned", /_cp\.execFileSync\("git", \["blame", "-L", "1,40", "--date=short", "--", arg\]/.test(src) && /const pathspec = file \? \["--", file\] : \[\];/.test(src) && /git ls-files -z --cached --others --exclude-standard/.test(src) && /"git ls-files -z"/.test(src) && !/JSON\.stringify\(file\)/.test(src));
