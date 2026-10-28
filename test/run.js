@@ -102,6 +102,10 @@ group("capability index (what a module can DO)");
     const out = require("../lib/nexus/code-radar.js").scanSecurity(d);
     ok("code-radar: RegExp .exec, retrieval() and model.eval() are not flagged", !/parse\.js/.test(out));
     ok("code-radar: child_process exec and eval still are", /run\.js:2 — command execution/.test(out) && /run\.js:3 — eval/.test(out));
+    fs.writeFileSync(path.join(d, "tls.js"), "const verifyOnly = false;\nhttps.request({ rejectUnauthorized: false });\nconst password = 'hunter22';\n");
+    const o2 = require("../lib/nexus/code-radar.js").scanSecurity(d);
+    ok("code-radar: verifyOnly = false is not SSL; rejectUnauthorized: false is", !/tls\.js:1 /.test(o2) && /tls\.js:2 — SSL verification disabled/.test(o2));
+    ok("code-radar: critical findings list first", /SECURITY RADAR[^\n]*\n[^\n]*\n\s*\[CRIT\]/.test(o2));
     fs.rmSync(d, { recursive: true, force: true });
   }
   ok("empty/garbage input is safe", scanCapabilities(null).length === 0 && scanCapabilities(123).length === 0);
