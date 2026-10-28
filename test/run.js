@@ -1782,6 +1782,11 @@ group("compliance bundle (SOC2 export)");
   eq("applyHunks keeps CRLF line endings consistent on a CRLF file", applyHunks("pre\r\nline1\r\nline2\r\npost\r\n", [{ before: ["line1", "line2"], after: ["line1", "LINE2"] }]).content, "pre\r\nline1\r\nLINE2\r\npost\r\n");
   eq("applyPatch on a CRLF file does not leave mixed endings", applyPatch("a\r\nkeep\r\nold\r\nb\r\n", ["--- a/f", "+++ b/f", "@@", " keep", "-old", "+new"].join("\n")).content, "a\r\nkeep\r\nnew\r\nb\r\n");
   {
+    const fx = require("../eval/edit-fixtures").run();
+    eq("edit fixtures: no case corrupts a file", fx.rows.filter((r) => r.verdict === "corrupted").map((r) => r.id), []);
+    eq("edit fixtures: every case has its right outcome", fx.rows.filter((r) => r.verdict !== "correct").map((r) => r.id), []);
+  }
+  {
     const env = "*** Begin Patch\n*** Update File: src/a.js\n@@ function two()\n   return 1;\n-  // x\n+  // y\n*** Add File: b.txt\n+hello\n*** Delete File: old.js\n*** Update File: c.js\n*** Move to: d.js\n@@\n-a\n+b\n*** End Patch\n";
     const ef = parsePatch(env);
     eq("envelope: files and ops", ef.map((f) => f.file + ":" + (f.op || "update")).join(","), "src/a.js:update,b.txt:add,old.js:delete,c.js:move");
@@ -3662,7 +3667,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("typo → closest line with its number", /closest line 3: return check\(user\.password\);/.test(E.applyEditsFlexible(src, [{ find: "  return check(user.passwrd);", replace: "y" }]).error));
     ok("already applied is detected", /already applied/.test(E.applyEditsFlexible(src, [{ find: "check(user.pw)", replace: "return check(user.password);" }]).error));
     ok("ambiguous lists the lines", /matches 2 places \(lines 5, 6\)/.test(E.applyEditsFlexible(src, [{ find: "x", replace: "y" }]).error));
-    ok("curly quotes called out", /curly quotes/.test(E.applyEditsFlexible("say(\"hi\")\n", [{ find: "say(“hi”)", replace: "z" }]).error));
+    eq("curly quotes in a find are matched as the file's plain ones", E.applyEditsFlexible("say(\"hi\")\n", [{ find: "say(“hi”)", replace: "z" }]).content, "z\n");
+    ok("curly quotes still called out when the plain text is missing too", /curly quotes/.test(E.applyEditsFlexible("say(\"hi\")\n", [{ find: "say(“ho”)", replace: "z" }]).error));
     ok("no hint when nothing is close", /not present \(even ignoring whitespace\)$/.test(E.applyEditsFlexible(src, [{ find: "totally unrelated text here", replace: "z" }]).error));
     ok("patch context miss gets the hint too", /closest line/.test(E.applyHunks(src, [{ before: ["  return check(user.passwrd);"], after: ["  return 1;"] }]).error));
     eq("whereLines", E.whereLines("a\nb\na\na", "a"), [1, 3, 4]);

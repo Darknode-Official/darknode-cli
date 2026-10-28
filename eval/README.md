@@ -95,3 +95,14 @@ Each task's prompt is the commit subject's first sentence and is marked
 not the fix. Contamination protection comes from recency, not privacy (this repo
 is public), so when scoring a model count only tasks dated after its training
 cutoff.
+
+## Edit-engine fixtures
+
+`node eval/edit-fixtures.js [--fail]` runs the edit engine (edit_file / multi_edit /
+apply_patch) over files paired with edits written the way models get them slightly
+wrong: lost indentation, tabs vs spaces, CRLF, copied line numbers, curly quotes,
+drifted patch line numbers, identical blocks. Each case has one right outcome, either
+the exact resulting file or a refusal that leaves the file alone. It reports correct /
+refused / corrupted per category, and exits non-zero on any corruption. The test run
+requires every case to be correct. This scores the engine's tolerance. It is not the
+real-world apply rate of a model, which needs real sessions.
