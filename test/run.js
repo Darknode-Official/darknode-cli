@@ -859,6 +859,8 @@ group("IOC defang / refang tool");
   const original = "https://evil.example.com/path?u=admin@corp.com and 10.0.0.1";
   ok("defang -> refang round-trips", refang(defang(original)) === original);
   ok("refang tolerates plain hxxp://", refang("hxxp://x[.]y") === "http://x.y");
+  ok("defanging twice does not double-bracket", defang(defang("https://evil.com")) === "hxxps[://]evil[.]com" && refang(defang("evil[.]com")) === "evil.com");
+  ok("refang reads [dot], (.), [at], hxxp[:]// and HXXPS", refang("user [at] evil [dot] com") === "user@evil.com" && refang("evil(.)com") === "evil.com" && refang("hxxp[:]//a[.]b") === "http://a.b" && refang("HXXPS://a[.]b") === "https://a.b" && refang("meet (at) noon") === "meet (at) noon");
 }
 
 group("entropy tool (secret / randomness detection)");
