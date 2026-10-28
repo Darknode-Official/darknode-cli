@@ -3405,6 +3405,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     (() => { const dsrc = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
       ok("every config JSON read in darknode.js strips a BOM first (a BOM'd permissions/policy.json was silently dropped)", /function stripBom\(t\)/.test(dsrc) && !/JSON\.parse\(fs\.readFileSync\(/.test(dsrc)); })();
     eq("negative index = from the end", q("p.json", "items[-1].n").value, "3");
+    fs.writeFileSync(path.join(dir, "big.jsonc"), '{\n // 99999999999999999999 "x\n "id": 12345678901234567890, "s": "12345678901234567890", "a": [-98765432109876543210,], "n": null\n}');
+    eq("an integer past 2^53 keeps its exact digits (was rounded to ...567000)", [q("big.jsonc", "id").value, q("big.jsonc", "id").type], ["12345678901234567890", "number"]);
+    eq("big ints in arrays/negatives too; a numeric string stays a string", [q("big.jsonc", "a[0]").value, q("big.jsonc", "s").value], ["-98765432109876543210", '"12345678901234567890"']);
+    eq("null is typed null, not object", q("big.jsonc", "n").type, "null");
     eq("* maps over elements", JSON.parse(q("p.json", "items.*.n").value), [1, 2, 3]);
     eq("keys_only lists keys", q("p.json", "deps", { keys_only: true }).keys, ["@a/b", "c"]);
     ok("missing key lists the keys that exist", /keys there: scripts, deps, items/.test(q("p.json", "nope").error));
