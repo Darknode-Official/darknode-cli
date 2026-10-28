@@ -1061,6 +1061,18 @@ group("encoders (shared CLI + menu)");
   eq("invalid base32 -> guarded message", ENC.base32d("!!!"), "(invalid base32)");
 }
 
+group("test generator (/testgen)");
+{
+  const { generateTests } = require("../lib/nexus/smart-test");
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-tg-"));
+  fs.writeFileSync(path.join(d, "m.js"), "export function $get(a, b) { return a + b }\nfunction add(x, y) { return x + y }\n");
+  fs.writeFileSync(path.join(d, "m.test.js"), "// hand-written");
+  const out = generateTests("m.js", d);
+  ok("an existing test file is never overwritten; the generated one gets its own name", fs.readFileSync(path.join(d, "m.test.js"), "utf8") === "// hand-written" && fs.existsSync(path.join(d, "m.generated.test.js")) && /already exists and was left alone/.test(out));
+  ok("a function whose name contains $ is found", /Written to: \$get\.test\.js/.test(generateTests("$get", d)));
+  try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
+}
+
 group("tech-debt scanner (/todo)");
 {
   const { scanText, summarizeTodos, rankTodos, scanTree, TAGS } = require("../lib/nexus/todos");
