@@ -32,6 +32,7 @@ const CASES = [
   { id: "exact-one-line", cat: "exact", file: JS, op: edit("const url = cfg.url;", "const url = cfg.url || cfg.href;"), want: JS.replace("cfg.url;", "cfg.url || cfg.href;") },
   { id: "exact-block", cat: "exact", file: PY, op: edit("    for it in items:\n        s += it.price\n", "    for it in items:\n        s += it.price * it.qty\n"), want: PY.replace("it.price\n", "it.price * it.qty\n") },
   { id: "replace-all", cat: "exact", file: TWIN, op: edit("return 1;", "return 2;", { replaceAll: true }), want: TWIN.replace(/return 1;/g, "return 2;") },
+  { id: "replace-all-flexible", cat: "whitespace", file: "a  = 1\nb = 2\na  = 1\n", op: edit("a = 1", "a = 9", { replaceAll: true }), want: "a = 9\nb = 2\na = 9\n" },
   { id: "multi-edit", cat: "exact", file: JS, op: multi([{ find: "cfg.url;", replace: "cfg.href;" }, { find: "'no url'", replace: "'no href'" }]), want: JS.replace("cfg.url;", "cfg.href;").replace("'no url'", "'no href'") },
 
   // ---- indentation the model lost or changed
@@ -79,6 +80,9 @@ const CASES = [
   { id: "patch-spaces-into-tab-file", cat: "patch", file: GO, op: patch("--- a/f\n+++ b/f\n@@ -3,2 +3,3 @@\n     if x > 0 {\n         fmt.Println(x)\n+        fmt.Println(x + 1)\n"), want: GO.replace("\t\tfmt.Println(x)\n", "\t\tfmt.Println(x)\n\t\tfmt.Println(x + 1)\n") },
   { id: "patch-envelope", cat: "patch", file: JS, op: patch("*** Begin Patch\n*** Update File: f.js\n@@\n   const url = cfg.url;\n-  if (!url) {\n+  if (!url || !url.length) {\n*** End Patch\n"), want: JS.replace("if (!url) {", "if (!url || !url.length) {") },
   { id: "patch-anchor-twin", cat: "patch", file: TWIN, op: patch("*** Begin Patch\n*** Update File: f.js\n@@ function b() {\n-  return 1;\n+  return 2;\n*** End Patch\n"), want: "function a() {\n  return 1;\n}\nfunction b() {\n  return 2;\n}\n" },
+  { id: "patch-twin-by-line-number", cat: "patch", file: TWIN, op: patch("--- a/f\n+++ b/f\n@@ -5,1 +5,1 @@\n-  return 1;\n+  return 2;\n"), want: "function a() {\n  return 1;\n}\nfunction b() {\n  return 2;\n}\n" },
+  { id: "patch-twins-after-earlier-hunk", cat: "patch", file: "x\ny\nx\ny\n", op: patch("--- a/f\n+++ b/f\n@@ -1,2 +1,3 @@\n x\n+new\n y\n@@ -3,2 +4,2 @@\n x\n-y\n+Y\n"), want: "x\nnew\ny\nx\nY\n" },
+  { id: "patch-twin-wrong-line-number", cat: "refuse", file: TWIN, op: patch("--- a/f\n+++ b/f\n@@ -3,1 +3,1 @@\n-  return 1;\n+  return 2;\n"), want: null },
   { id: "patch-twin-no-anchor", cat: "refuse", file: TWIN, op: patch("--- a/f\n+++ b/f\n@@\n-  return 1;\n+  return 2;\n"), want: null },
   { id: "patch-context-gone", cat: "refuse", file: JS, op: patch("--- a/f\n+++ b/f\n@@\n const port = 1;\n-x\n+y\n"), want: null },
 ];
