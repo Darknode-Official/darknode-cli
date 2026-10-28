@@ -3498,6 +3498,14 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     s = u.snapshot([f]); fs.writeFileSync(f, "v3"); u.commit(s);
     s = u.snapshot([f]); eq("a no-op write is not recorded", u.commit(s), 0);
     ok("undo restores the previous version", u.undo(f).ok && fs.readFileSync(f, "utf8") === "v2");
+    { // undo_edit then write_file: the guard must know the restored content, not the undone one
+      const fg = require("../lib/nexus/filestate").makeFileState(), h = path.join(dir, "guard.txt");
+      fs.writeFileSync(h, "one"); fg.recordRead(h, "one");
+      const sn = u.snapshot([h]); fs.writeFileSync(h, "two"); u.commit(sn); fg.recordWrite(h, "two");
+      u.undo(h); fg.recordWrite(h, fs.readFileSync(h, "utf8"));
+      ok("after undo_edit the next write_file is not refused as stale", !fg.checkOverwrite(h, fs.readFileSync(h, "utf8")).stale);
+      ok("the loop records the restored file in the stale-write guard after undo_edit", /name === "undo_edit"\) \{[^\n]*fileGuard\.recordWrite\(fp/.test(fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8")));
+    }
     ok("undo again steps further back", u.undo(f).ok && fs.readFileSync(f, "utf8") === "v1");
     { const bin = path.join(dir, "img.png"), bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0xc3, 0x28]); fs.writeFileSync(bin, bytes);
       const sh = path.join(dir, "run.sh"); fs.writeFileSync(sh, "#!/bin/sh\n"); fs.chmodSync(sh, 0o755);
