@@ -1817,6 +1817,8 @@ group("compliance bundle (SOC2 export)");
   eq("npm init's placeholder test script is not a test suite", detectProjectCommands(["package.json"], pj({ scripts: { test: "echo \"Error: no test specified\" && exit 1" } })).test, undefined);
   eq("bun runs the project's test script (bun test is Bun's own runner)", detectProjectCommands(["package.json", "bun.lockb"], pj({ scripts: { test: "vitest run" } })).test, "bun run test");
   eq("bun.lock (Bun 1.2 text lockfile) means bun", detectPackageManager(["package.json", "bun.lock"]), "bun");
+  eq("uv project runs pytest through uv", detectProjectCommands(["pyproject.toml", "uv.lock"], {}).test, "uv run pytest -q");
+  eq("poetry project runs pytest through poetry", detectProjectCommands(["pyproject.toml", "poetry.lock"], {}).test, "poetry run pytest -q");
   eq("yarn test invocation", detectProjectCommands(["package.json", "yarn.lock"], pj({ scripts: { test: "jest" } })).test, "yarn test");
   eq("tsconfig implies a typecheck command", detectProjectCommands(["package.json", "tsconfig.json"], pj({ scripts: {} })).typecheck, "npx tsc --noEmit");
   eq("python: pytest from pyproject", detectProjectCommands(["pyproject.toml"], {}).test, "pytest -q");
