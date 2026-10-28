@@ -2567,6 +2567,16 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("shrinkTool restores the working tree to the current snapshot at the end", current.has("B.js") && current.has("D.js") && res.restored === true);
     ok("shrinkTool summarises the minimal set and the test command", /Minimal breaking change set/.test(res.summary) && res.testCommand === "npm test");
 
+    let touched = 0;
+    const resNoSnap = await SH.shrinkTool({}, "/repo", Object.assign({}, fakeDeps, { snapshot: () => null, restore: () => { touched++; return true; } }));
+    ok("shrinkTool refuses without a snapshot to restore, and changes no file", /could not snapshot/.test(resNoSnap.error || "") && touched === 0);
+    current = new Set();
+    const resNarrow = await SH.shrinkTool({ paths: ["B.js", "./D.js", "E.js"] }, "/repo", fakeDeps);
+    ok("shrinkTool paths:[...] narrows the search to those changed files", resNarrow.status === "found" && resNarrow.changedFiles === 3 && resNarrow.minimal.slice().sort().join(",") === "B.js,D.js");
+    let backed = false;
+    const resFail = await SH.shrinkTool({}, "/repo", Object.assign({}, fakeDeps, { restore: (tree) => { if (tree === "SNAP") { backed = true; return true; } return false; } }));
+    ok("shrinkTool stops when a checkpoint restore fails, and puts the tree back", /could not restore/.test(resFail.error || "") && backed);
+
     // passing current state -> nothing to shrink
     const breakingNone = new Set(["ZZ"]); // never reproduces
     let cur2 = new Set();
