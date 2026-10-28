@@ -3788,6 +3788,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const { lineRange } = require("../lib/nexus/line-range");
     eq("offset/limit", lineRange({ offset: 301, limit: 300 }), { off: 301, lim: 300 });
     eq("start/end", lineRange({ start: 301, end: 600 }), { off: 301, lim: 300 });
+    eq("lines as a [start, end] pair", lineRange({ lines: [120, 180] }), { off: 120, lim: 61 });
     eq("start_line/end_line", lineRange({ start_line: "10", end_line: "12" }), { off: 10, lim: 3 });
     eq("lines string", lineRange({ lines: "120-180" }), { off: 120, lim: 61 });
     eq("lines open-ended", lineRange({ lines: "50:" }), { off: 50, lim: null });
