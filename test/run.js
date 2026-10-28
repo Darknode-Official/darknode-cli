@@ -647,6 +647,8 @@ group("background jobs (Claude-Code idea) — state machine");
   bg.append(id, "listening on :3000\n"); bg.append(id, "compiled\n");
   ok("buffers output", bg.tail(id).includes("listening on :3000") && bg.tail(id).includes("compiled"));
   ok("list shape", bg.list()[0].id === id && bg.list()[0].status === "running" && bg.list()[0].bytes > 0);
+  { const g = createBgJobs(), k = g.start("node server.js", null, 0); g.finish(k, null, "SIGKILL");
+    ok("a job ended by a signal (OOM kill, segfault) reports 128+N, not a clean exit 0", g.get(k).code === 137 && g.get(k).signal === "SIGKILL"); }
   bg.finish(id, 0);
   ok("finish -> done, running=0", bg.get(id).status === "done" && bg.get(id).code === 0 && bg.running() === 0);
   ok("finish is idempotent", (bg.finish(id, 7), bg.get(id).code === 0)); // already done, code unchanged
