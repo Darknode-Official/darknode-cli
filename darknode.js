@@ -1731,7 +1731,7 @@ async function aiCoder(argv) {
       if (_pa) { const pc = policyCheck(_pol, _pa); if (!pc.allow) _pblk = "policy — " + pc.reason; }
       if (!_pblk && name === "write_file" && _pol.blockSecrets) { const _sec = scanSecrets(a && a.content == null ? "" : a.content); if (_sec.length) _pblk = "policy — file contains " + _sec.join(", ") + " (policy.blockSecrets)"; } // the other loops checked this; here a key could be written with blockSecrets on
       if (!_pblk && name === "run_command") { const dg = classifyDanger(a && a.command); if (dg.level === "block") _pblk = dg.why; }
-      if (_pblk) { result = "blocked: " + _pblk; if (!printMode) console.log("  " + red("blocked: ") + _pblk); }
+      if (_pblk) { result = "blocked: " + _pblk; if (!printMode) console.log("  " + red("blocked: ") + _pblk); if (_pol && _pol.audit) try { auditLog(cwd, { engine: "ollama", tool: name, path: _pa.path, cmd: _pa.command, status: "blocked", reason: _pblk }); } catch (_) {} }
       else try {
         // Sandbox every file tool to the project root (symlink/dot-dot safe); a throw here is reported as a tool error below.
         if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) Jail.assertInJail(a.path, cwd);
