@@ -4405,7 +4405,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             const _undoSnap = !blocked && a.__act && (a.__act.type === "write" || a.__act.type === "edit" || a.__act.type === "delete" || a.__act.type === "move") && name !== "undo_edit"
               ? editUndo.snapshot(a.__act.path ? (a.__act.type === "move" && a.__act.from ? [path.resolve(cwd, a.__act.from), require("./lib/nexus/fs-tools").destOf(path.resolve(cwd, a.__act.from), path.resolve(cwd, a.__act.path))] : [path.resolve(cwd, a.__act.path)]) : (() => { try { return parsePatch(a.patch || a.diff || a.content || a.input || "").filter((f) => f.file).map((f) => path.resolve(cwd, f.file)); } catch (_) { return []; } })())
               : null;
-            const _syn = !blocked && a.__act && a.__act.path && (a.__act.type === "write" || a.__act.type === "edit") && (settingsStore.value || {}).syntaxGate !== "off" ? SyntaxGate.capture(path.resolve(cwd, a.__act.path)) : null;
+            // syntax check: the one file a write/edit names, or every file a patch touches
+            const _synFiles = !blocked && a.__act && (a.__act.type === "write" || a.__act.type === "edit") && (settingsStore.value || {}).syntaxGate !== "off"
+              ? (a.__act.path ? [a.__act.path] : (name === "apply_patch" || name === "patch") ? (() => { try { return parsePatch(a.patch || a.diff || a.content || a.input || "").filter((f) => f.file && (!f.op || f.op === "add")).map((f) => f.file); } catch (_) { return []; } })() : []) : [];
+            const _syn = _synFiles.map((f) => ({ f, cap: SyntaxGate.capture(path.resolve(cwd, f)) })).filter((x) => x.cap);
             if (!blocked) try {
               if (name === "read_file") { const fp = path.resolve(cwd, a.path); const mt = fs.statSync(fp).mtimeMs; if (readCache[fp] === mt && !(lean || trimOutput)) result = { content: "(unchanged since you last read " + a.path + " — still in context, not re-sending to save tokens)" }; /* in lean/trimOutput the file may have been stubbed by elideToolHistory without clearing readCache, so never claim "still in context" there — always re-read */ else { const _c = fs.readFileSync(fp, "utf8"); fileGuard.recordRead(fp, _c);
                 // Never truncate silently: cap at a line boundary and SAY so, with the
@@ -4497,7 +4500,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
                 result = await require("./lib/nexus/http-fetch").httpFetchTool(a, { isLocal: (href) => _ssrfLocal(href) && !_own(href) }); }
               else { const dr = await deviceTool(name, a, cwd); result = dr !== null ? dr : { error: "unknown tool " + name }; if (dr !== null && ["move", "copy", "copy_file", "move_file", "rename", "make_dir", "mkdir", "delete", "delete_file", "rm"].includes(name) && (a.path || a.to || a.dest)) { const fp = a.to || a.dest || a.path; stat.files.add(base(fp)); const r = relOf(fp); if (r) stat.paths.add(r); invalidateRepoMap(); } }
             } catch (e) { result = { error: e.message }; }
-            if (_syn && result && !result.error) { const _w = SyntaxGate.afterEdit(_syn, a.__act.path); if (_w) { if (typeof result === "object") result.syntax = _w; else result = { result, syntax: _w }; } }
+            if (_syn.length && result && !result.error) { const _w = _syn.map((x) => SyntaxGate.afterEdit(x.cap, x.f)).filter(Boolean).join(" "); if (_w) { if (typeof result === "object") result.syntax = _w; else result = { result, syntax: _w }; } }
             if (_undoSnap) editUndo.commit(_undoSnap);
             // view_image: forward the loaded image to the vision model as a real content block
             // (same shape as an @image attachment), then strip the base64 so it never bloats the
