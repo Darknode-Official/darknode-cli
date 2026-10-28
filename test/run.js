@@ -3303,6 +3303,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
   {
     const { buildEngineMcpServers, writeMcpConfigFile, codexMcpArgs, toOpencodeConfig, writeEngineConfigFile } = require("../lib/nexus/engine-mcp");
     const { fmtAnswer, ASK_TOOL } = require("../lib/nexus/ask-mcp");
+    { const { spawnSync } = require("child_process"); const r = spawnSync(process.execPath, [path.join(__dirname, "..", "lib", "nexus", "ask-mcp.js")], { input: '{"jsonrpc":"2.0","id":7,"method":"ping"}\n', encoding: "utf8", timeout: 5000 });
+      ok("ask-mcp answers an MCP ping with an empty result", /"id":7,"result":\{\}/.test(r.stdout || "")); }
+    { const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8"), i = src.indexOf("function mcpConnect("), body = src.slice(i, src.indexOf("\n// ---------- Hooks", i));
+      ok("the MCP client answers server requests (ping) instead of routing them to its own pending call with the same id", /if \(m && m\.method\) \{ if \(m\.id != null\)/.test(body) && body.indexOf("if (m && m.method)") < body.indexOf("const cb = pending[m.id]")); }
     const { createAskServer } = require("../lib/nexus/ask-bridge");
     const cp = require("child_process");
 
