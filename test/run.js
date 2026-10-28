@@ -2079,6 +2079,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     g3.note(A, true); g3.note(B, true); g3.note(A, true);
     const osc = g3.note(B, true);
     ok("A,B,A,B oscillation is detected and nudged", osc && osc.kind === "oscillation" && osc.action === "nudge");
+    const osc2 = g3.note(A, true);
+    ok("oscillation that continues after the nudge breaks on the next step (not re-nudged as a repeat)", osc2 && osc2.action === "break" && osc2.kind === "oscillation");
 
     // distinct productive actions never trip the guard.
     const g4 = LG.makeLoopGuard();
