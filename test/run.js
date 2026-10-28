@@ -2714,6 +2714,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("delete removes a cell", deleted.nb.cells.length === 1 && deleted.result.removed.index === 0);
     ok("not a notebook errors", /not a valid notebook/.test(NB.applyNotebookOp({}, { op: "read" }).error));
     ok("unknown op errors", /unknown op/.test(NB.applyNotebookOp(mk(), { op: "frob" }).error));
+    ok("edit/delete with index null or \"\" errors instead of hitting cell 0", /valid 'index'/.test(NB.applyNotebookOp(mk(), { op: "edit", index: null, source: "X" }).error) && /valid 'index'/.test(NB.applyNotebookOp(mk(), { op: "delete", index: "" }).error));
+    { const r = NB.applyNotebookOp(mk(), { op: "edit", index: -1, source: "LAST" }); ok("index -1 = last cell, and edit reports cellCount", r.result && r.result.index === r.nb.cells.length - 1 && r.result.cellCount === r.nb.cells.length); }
     const ndir = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-nb-"));
     const nfile = path.join(ndir, "nb.ipynb");
     fs.writeFileSync(nfile, JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: {}, cells: [{ cell_type: "code", metadata: {}, execution_count: null, outputs: [], source: ["a=1"] }] }));
