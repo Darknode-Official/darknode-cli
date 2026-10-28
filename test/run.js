@@ -527,6 +527,7 @@ group("NX dispatch gates: every shell-running tool is screened, not just run_com
     ok("the gate sees the command bisect/shrink/explain_break run (their `test` arg)", execCommand("bisect", { test: "rm -rf ~" }) === "rm -rf ~" && classifyDanger(execCommand("shrink", { test: "rm -rf ~" })).level === "block");
     ok("execCommand: command first, write_stdin input, nothing for a tool with no command", execCommand("verify", { command: "npm test", test: "x" }) === "npm test" && execCommand("write_stdin", { input: "y" }) === "y" && execCommand("verify", {}) === undefined);
     const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+    ok("the sub-agent loop also treats a notebook_edit write as a policy edit", /\["notebook_edit", "notebook", "ipynb"\]\.includes\(name\) && a && !\/\^\(read\|view\|show\)\$\/i\.test/.test(src));
     ok("all three agent loops gate exec tools on execCommand, not a.command alone", (src.match(/isExecTool\(name\) \? \{ type: "run", command: execCommand\(name, a\) \}/g) || []).length === 3 && /const _cmd = execCommand\(name, a\) \|\| "";/.test(src) && (src.match(/classifyDanger\(execCommand\(name, a\) \|\| ""\)/g) || []).length === 2); }
   ok("isPlanBlocked tolerates a non-string name", !isPlanBlocked(undefined) && !isPlanBlocked(null));
 }

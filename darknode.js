@@ -2479,6 +2479,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
       : name === "edit_file" ? { type: "edit", path: a && a.path }
       : ["delete", "delete_file", "rm"].includes(name) ? { type: "delete", path: a && a.path }
       : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a && (a.to || a.dest || a.path), from: a && a.from }
+      : ["notebook_edit", "notebook", "ipynb"].includes(name) && a && !/^(read|view|show)$/i.test(String(a.op || a.action || "read")) ? { type: "edit", path: a.path || a.file || a.notebook }
       : null;
     let _pblk = null;
     if (_pa) { let pc = policyCheck(policy, _pa); if (pc.allow && _pa.from) pc = policyCheck(policy, { type: "move", path: _pa.from }); if (!pc.allow) _pblk = pc.reason; }
