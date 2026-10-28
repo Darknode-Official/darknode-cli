@@ -2619,13 +2619,21 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("detectLangs js+python", LF.detectLangs(["package.json", "pyproject.toml", "README"]).map((l) => l.lang), ["js", "python"]);
     eq("detectLangs none", LF.detectLangs(["README", "LICENSE"]), []);
     const plan = LF.buildPlan(LF.detectLangs(["package.json"]), { fix: true, target: "." });
-    ok("buildPlan fix uses --write (first tool only)", plan.length === 1 && /prettier --write/.test(plan[0].cmd));
+    ok("buildPlan fix uses --write; later tools are fallbacks only", plan.length === 2 && /prettier --write/.test(plan[0].cmd) && !plan[0].fallback && plan[1].fallback === true);
     const planAll = LF.buildPlan(LF.detectLangs(["package.json"]), { fix: false, target: "'src'", all: true });
     ok("buildPlan check+all includes eslint and scopes target", planAll.length === 2 && planAll.some((p) => /eslint 'src'/.test(p.cmd)) && planAll.every((p) => !/--write/.test(p.cmd)));
-    const skipped = await LF.lintFormatTool({}, "/repo", { readdir: () => ["package.json"], run: async () => ({ code: 127, output: "sh: prettier: command not found" }) });
-    ok("lintFormatTool skips an uninstalled formatter", skipped.results[0].skipped === "not installed" && /no formatter was installed/.test(skipped.note || ""));
-    const ran = await LF.lintFormatTool({}, "/repo", { readdir: () => ["package.json"], run: async () => ({ code: 0, output: "All matched files use Prettier code style!" }) });
+    const skipped = await LF.lintFormatTool({}, "/repo", { readdir: () => ["package.json", ".prettierrc"], run: async () => ({ code: 127, output: "sh: prettier: command not found" }) });
+    ok("lintFormatTool skips an uninstalled formatter (and says to npm install one the project declares)", /^not installed - the project declares it; run npm install$/.test(skipped.results[0].skipped) && /no formatter was installed/.test(skipped.note || ""));
+    const ran = await LF.lintFormatTool({}, "/repo", { readdir: () => ["package.json", ".prettierrc"], run: async () => ({ code: 0, output: "All matched files use Prettier code style!" }) });
     ok("lintFormatTool reports a successful fix run", ran.mode === "fix" && ran.results[0].ok === true && /Ran 1 formatter/.test(ran.summary || ""));
+    { const cmds = [];
+      const fb = await LF.lintFormatTool({ check: true }, "/repo", { readdir: () => ["package.json", ".prettierrc.json", "eslint.config.js"], run: async (c) => { cmds.push(c); return /prettier/.test(c) ? { code: 1, output: 'npm error npx canceled due to missing packages and no YES option: ["prettier@3"]' } : { code: 0, output: "" }; } });
+      ok("a missing first formatter (npm's 'npx canceled' message) falls back to the next one", fb.results[0].skipped && fb.results[1].tool === "eslint" && fb.results[1].ok && cmds.length === 2);
+      const lintErr = await LF.lintFormatTool({ check: true }, "/repo", { readdir: () => ["package.json", "eslint.config.js"], run: async () => ({ code: 1, output: "a.js\n  1:1  error  Module not found: x  import/no-unresolved" }) });
+      ok("lint findings that say 'not found' are a failed check, not 'not installed'", !lintErr.results[0].skipped && lintErr.results[0].code === 1);
+      const und = await LF.lintFormatTool({}, "/repo", { readdir: () => ["package.json"], run: async (c) => { cmds.push("UNDECLARED " + c); return { code: 0, output: "" }; } });
+      ok("a JS project that declares no formatter is not restyled by a global one", und.ran === false && /declares no formatter/.test(und.note) && !cmds.some((c) => /^UNDECLARED/.test(c)));
+      eq("jsDeclared reads package.json deps and config files", [...LF.jsDeclared(["eslint.config.mjs"], { devDependencies: { prettier: "3" } })].sort(), ["eslint", "prettier"]); }
     const none = await LF.lintFormatTool({}, "/repo", { readdir: () => ["README"], run: async () => ({ code: 0, output: "" }) });
     ok("lintFormatTool notes no manifest", none.ran === false && /no recognized project manifest/.test(none.note));
     const esc = await LF.lintFormatTool({ path: "../../etc" }, "/repo", { readdir: () => ["package.json"], run: async () => ({ code: 0, output: "" }) });
