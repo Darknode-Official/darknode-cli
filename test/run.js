@@ -3630,6 +3630,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("missing key lists the keys that exist", /keys there: scripts, deps, items/.test(q("p.json", "nope").error));
     eq("JSONC: comments + trailing commas, // inside a string kept", q("ts.json", "compilerOptions.url").value, '"http://a//b"');
     eq("parsePath", JQ.parsePath("a.b[0]['x.y'].*"), ["a", "b", 0, "x.y", "*"]);
+    eq("parsePath keeps zero-padded keys as strings", JQ.parsePath("months.01.07"), ["months", "01", "07"]);
+    eq("json_query months.01 reads key 01, not key 1", JQ.walk({ months: { "01": "jan", "1": "x" } }, JQ.parsePath("months.01")).value, "jan");
     ok("bad query is reported", /could not parse/.test(q("p.json", "a..b").error || ""));
     fs.rmSync(dir, { recursive: true, force: true });
   }
