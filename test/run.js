@@ -1856,6 +1856,7 @@ group("compliance bundle (SOC2 export)");
   eq("edit preserves $& in replacement", applyEdits("x = Y", [{ find: "Y", replace: "a$&b" }]).content, "x = a$&b");
   eq("edit preserves $$ in replacement", applyEdits("v = Z", [{ find: "Z", replace: "$$HOME" }]).content, "v = $$HOME");
   eq("flexible edit preserves $& in replacement", applyEditsFlexible("x = Y", [{ find: "Y", replace: "a$&b" }]).content, "x = a$&b");
+  eq("edit on a CRLF file whose find starts with a newline leaves no lone \\r", applyEditsFlexible("a\r\n\r\n  z();\r\nb\r\n", [{ find: "\n  z();", replace: "" }]).content, "a\r\n\r\nb\r\n");
   eq("exact edit on a CRLF file keeps CRLF in a multi-line replacement", applyEditsFlexible("a\r\n  return 1;\r\n}\r\n", [{ find: "  return 1;", replace: "  return 1;\n  // x" }]).content, "a\r\n  return 1;\r\n  // x\r\n}\r\n");
   // flexible (whitespace-insensitive) single-match fallback
   const src = "function f() {\n    return   1;\n}\n";
