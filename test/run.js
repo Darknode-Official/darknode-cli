@@ -2906,7 +2906,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
   {
     const NB = require("../lib/nexus/notebook-edit");
     eq("toSourceLines string->array keeps newlines", NB.toSourceLines("a\nb"), ["a\n", "b"]);
-    eq("toSourceLines passes through an array", NB.toSourceLines(["x", "y"]), ["x", "y"]);
+    eq("toSourceLines passes through an nbformat array", NB.toSourceLines(["x\n", "y"]), ["x\n", "y"]);
+    eq("toSourceLines: a plain list of lines gets its newlines (was glued into one line)", NB.toSourceLines(["import os", "import sys"]), ["import os\n", "import sys"]);
     const cell = NB.newCell("code", "print(1)");
     ok("newCell code has outputs + null exec_count", cell.cell_type === "code" && Array.isArray(cell.outputs) && cell.execution_count === null);
     ok("newCell markdown has no outputs", NB.newCell("md", "x").cell_type === "markdown" && NB.newCell("md", "x").outputs === undefined);
