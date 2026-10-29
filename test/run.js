@@ -3570,6 +3570,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("outline asks for every definition", /extractSymbols\(path\.basename\(fp\), txt, \{ max: 400, all: true \}\)/.test(fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8")));
     ok("a repeated name lists the other definition (index:N)", /index 1: line 11/.test(RS.readSymbolTool({ path: "c.py", name: "save" }, dir, rp).otherDefinitions || ""));
     eq("bodiless declaration continued onto the next line stops at its ;, not the next function", RS.braceEnd(["const f = (a) =>", "  a + 1;", "function g() {", "  return 2;", "}"], 0, true), 1);
+    eq("rust lifetimes are not char literals: the body after &'a str { is matched", RS.blockEnd(["pub fn first<'a>(x: &'a str) -> &'a str {", "    let v = vec![1, 2];", "    if v.len() > 1 { return x; }", "    x", "}", "fn g() { let c = '{'; }"], 0, "a.rs"), 4);
+    eq("rust char literals with braces and escapes still skip", RS.blockEnd(["fn g() {", "    let c = '{'; let d = '\\''; let e = '\\u{7B}';", "}"], 0, "a.rs"), 2);
     ok("needs path and name", /needs \{path, name\}/.test(RS.readSymbolTool({ path: "a.js" }, dir, rp).error));
     fs.rmSync(dir, { recursive: true, force: true });
   }
