@@ -312,6 +312,10 @@ group("sink redaction + keyed placeholders (NSAFE-060/061)");
     ok("redact: a quoted value with spaces is hidden and keeps its quotes", rt('DB_PASSWORD="my secret pass"') === 'DB_PASSWORD="[REDACTED:credential:0000]"' && rt('SECRET_KEY = "django-insecure-abc123"') === 'SECRET_KEY = "[REDACTED:credential:0000]"');
     const code = ["token = req.headers.token", "password = getPassword()", "password: ${DB_PASSWORD}", "api_key: true", "token: process.env.TOKEN", "password: $PASS", "max_tokens: 100000", "Basic usage information here", "password_hint: correcthorse"];
     ok("redact: code, references and plain numbers next to secret-ish keys are left alone", code.every((t) => rt(t) === t));
+    // the privacy mask for cloud engines and the secret scan follow the same rules
+    ok("maskSecrets: unquoted/header/Basic/spaced-quoted secrets do not reach a cloud engine", leak.concat(['DB_PASSWORD="my secret pass"']).every((t) => !/hunter2|9f8e7d|Pa55|dXNlcj|abcdef0123|my secret/.test(maskSecrets(t))));
+    ok("maskSecrets/scanSecrets: code next to secret-ish keys is left alone and not flagged", code.every((t) => maskSecrets(t) === t && scanSecrets(t).length === 0));
+    ok("scanSecrets flags an unquoted YAML password and Basic auth", scanSecrets("db:\n  password: hunter2hunter\n").length > 0 && scanSecrets("Authorization: Basic dXNlcjpzM2NyZXRwYXNz").length > 0);
   }
   ok("hyphenated words ending in 'sk' are not keys", redact("task-runner-with-a-long-name-here", { sink: "audit", key: K }).text === "task-runner-with-a-long-name-here");
   ok("tag depends on the install key (per-install correlation)", tagOf(redact(aws, { sink: "audit", key: "other-key" }).text) !== t1);
