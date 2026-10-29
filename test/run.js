@@ -2675,6 +2675,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("shrinkTool reports the innocent (droppable) changed files", res.innocent.slice().sort().join(",") === "A.js,C.js,E.js");
     ok("shrinkTool restores the working tree to the current snapshot at the end", current.has("B.js") && current.has("D.js") && res.restored === true);
     ok("shrinkTool summarises the minimal set and the test command", /Minimal breaking change set/.test(res.summary) && res.testCommand === "npm test");
+    // The final put-back of the whole set can fail: it must not claim restored, and must give the way back.
+    let fullSnap = 0;
+    const failBack = await SH.shrinkTool({}, "/repo", Object.assign({}, fakeDeps, { restore: (tree, paths) => (tree === "SNAP" && paths.length === 5 && ++fullSnap > 1) ? false : fakeDeps.restore(tree, paths) }));
+    ok("shrinkTool reports a failed final restore with the snapshot to recover from", failBack.restored === false && /RESTORE FAILED/.test(failBack.summary) && /--source=SNAP/.test(failBack.summary));
 
     let touched = 0;
     const resNoSnap = await SH.shrinkTool({}, "/repo", Object.assign({}, fakeDeps, { snapshot: () => null, restore: () => { touched++; return true; } }));
