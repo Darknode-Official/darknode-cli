@@ -526,6 +526,7 @@ group("NX-002 default posture: active commands need local target or authorizatio
   ok("passive whois is never guarded here", DG.guardActive("whois", "example.com", {}).allow);
   eq("hostOf strips scheme/userinfo/port/path", DG.hostOf("https://user@Example.com:8443/a/b?x"), "example.com");
   ok("IPv6 loopback is local", DG.isLocalTarget("::1"));
+  ok("all of fe80::/10 link-local and fec0::/10 site-local are local, ff00:: multicast is not", DG.isLocalTarget("http://[fe90::1]/") && DG.isLocalTarget("http://[febf::1]/") && DG.isLocalTarget("http://[fec0::1]/") && DG.isLocalTarget("http://[feff::1]/") && !DG.isLocalTarget("http://[ff02::1]/") && !DG.isLocalTarget("http://[fe0::1]/"));
   ok("public IPv6 is remote", !DG.isLocalTarget("2001:4860:4860::8888"));
   ok("a public DNS resolver is remote, not local", !DG.isLocalTarget("8.8.8.8"));
   // subrecon is an ACTIVE verb (engagement-gate classifies it cls:"scan"): it
