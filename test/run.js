@@ -1226,6 +1226,43 @@ group("ultrareview (multi-lens review prompt)");
   eq("countBySeverity tallies tags case-insensitively", countBySeverity("[CRITICAL] a\n[high] b\n[High] c\n[nit] d"), { critical: 1, high: 2, medium: 0, low: 0, nit: 1 });
 }
 
+group("codereview (multi-agent pipeline)");
+{
+  const CR = require("../lib/nexus/code-review");
+  const a = CR.parseArgs("high 42 --fix --max-findings 3", {});
+  eq("level first, PR target, flags", [a.level, a.levelGiven, a.target, a.fix, a.maxFindings, a.error], ["high", true, "42", true, 3, ""]);
+  eq("no level reuses the last one typed; max-findings sticky too", [CR.parseArgs("src/a.js", { level: "xhigh", maxFindings: Infinity }).level, CR.parseArgs("", { maxFindings: Infinity }).maxFindings], ["xhigh", Infinity]);
+  eq("a level word after the target is part of the target", CR.parseArgs("feature/max", {}).target, "feature/max");
+  eq("--max-findings all|default", [CR.parseArgs("--max-findings all").maxFindings, CR.parseArgs("--max-findings default", { maxFindings: 4 }).maxFindings], [Infinity, null]);
+  ok("--comment needs a PR number", /pull request/.test(CR.parseArgs("main --comment").error) && !CR.parseArgs("#7 --comment").error);
+  ok("unknown flags are refused, not taken as a target", /unknown option/.test(CR.parseArgs("--fixx").error));
+  ok("levels go from few reviewers to many; only xhigh+ keep uncertain findings", CR.LEVEL_NAMES.every((l, i, ls) => !i || CR.LEVELS[l].angles.length >= CR.LEVELS[ls[i - 1]].angles.length) && !CR.LEVELS.high.plausible && CR.LEVELS.max.plausible);
+  const diff = "diff --git a/src/x.js b/src/x.js\n--- a/src/x.js\n+++ b/src/x.js\n@@ -10,3 +10,4 @@ f\n ctx\n-old\n+new1\n+new2\n ctx2\ndiff --git a/y.md b/y.md\n--- a/y.md\n+++ b/y.md\n@@ -1 +1 @@\n-a\n+b\n";
+  eq("changedFiles", CR.changedFiles(diff), ["src/x.js", "y.md"]);
+  eq("rightLines covers added + context lines on the new side only", [...CR.rightLines(diff)["src/x.js"]], [10, 11, 12, 13]);
+  ok("fileSections splits per file", CR.fileSections(diff)["y.md"].includes("+b") && !CR.fileSections(diff)["y.md"].includes("new1"));
+  ok("an untracked file becomes a reviewable new-file diff", /@@ -0,0 \+1,2 @@\n\+a\n\+b/.test(CR.newFileDiff("n.js", "a\nb\n")));
+  const rp = CR.buildReviewerPrompt({ angle: "contracts", scope: "the change", diff, cap: 4 });
+  ok("reviewer prompt: one angle, the diff, JSON-only, read-only", rp.includes(CR.ANGLES.contracts.ask) && !rp.includes(CR.ANGLES.security.ask) && rp.includes("+new1") && /ONLY a JSON array/.test(rp) && /at most 4/.test(rp) && /Do not modify/.test(rp));
+  const txt = "Here you go:\n```json\n[{\"file\":\"./src/x.js:12\",\"severity\":\"HIGH\",\"summary\":\"drops the last item [a] {b}\",\"failure_scenario\":\"n=1 -> []\"}, {\"nope\":1}]\n```";
+  eq("parseFindings: fenced JSON, brackets inside strings, file:line split, severity normalized", CR.parseFindings(txt, "edges").map((f) => [f.file, f.line, f.severity, f.angles[0]]), [["src/x.js", 12, "high", "edges"]]);
+  eq("parseFindings: [] is a clean answer, prose-only is a failed reviewer", [CR.parseFindings("No issues. []"), CR.parseFindings("looks fine to me")], [[], null]);
+  ok("parseFindings accepts {findings:[...]}", CR.parseFindings('{"findings":[{"file":"a","line":1,"summary":"s"}]}').length === 1);
+  eq("parseVerdict: JSON, then a bare word, then nothing", [CR.parseVerdict('{"verdict":"rejected","reason":"guarded at L3"}').verdict, CR.parseVerdict("I think this is CONFIRMED.").verdict, CR.parseVerdict("unsure")], ["REJECTED", "CONFIRMED", null]);
+  const F = (file, line, sev, summary, angle) => ({ file, line, severity: sev, summary, short_summary: summary, failure_scenario: "x", angles: [angle || "correctness"] });
+  const d = CR.dedupe([F("a.js", 10, "medium", "null user crashes the profile render", "edges"), F("a.js", 11, "high", "profile render crashes when user is null", "correctness"), F("a.js", 40, "low", "unrelated leak of a timer")]);
+  eq("dedupe merges the same defect from two reviewers, keeps the more severe copy", d.map((f) => [f.line, f.severity, f.angles.length]), [[11, "high", 2], [40, "low", 1]]);
+  const vs = [Object.assign(F("b", 1, "low", "l"), { verdict: "CONFIRMED" }), Object.assign(F("c", 1, "critical", "c"), { verdict: "PLAUSIBLE" }), Object.assign(F("d", 1, "high", "h"), { verdict: "CONFIRMED" }), Object.assign(F("e", 1, "high", "r"), { verdict: "REJECTED" })];
+  eq("rank: rejected dropped, plausible only when allowed, most severe first", [CR.rank(vs, { plausible: false, verify: true, max: 9 }).shown.map((f) => f.file), CR.rank(vs, { plausible: true, verify: true, max: 2 })], [["d", "b"], { shown: [vs[1], vs[2]], hidden: 1 }]);
+  ok("rank keeps unverified findings only when the level does not verify", CR.rank([F("u", 1, "high", "u")], { verify: false, max: 3 }).shown.length === 1 && CR.rank([F("u", 1, "high", "u")], { verify: true, max: 3 }).shown.length === 0);
+  const rep = CR.formatReport({ level: "high", label: "uncommitted changes", reviewers: 4, candidates: 3, verified: 3, rejected: 1, shown: [Object.assign(F("d.js", 7, "high", "off by one"), { verdict: "CONFIRMED", reason: "loop uses <=" })], hidden: 2 });
+  ok("report: header counts, file:line, failure, verification, hidden note", /4 reviewers · 3 candidates · 3 verified · 1 rejected/.test(rep) && rep.includes("d.js:7") && rep.includes("failure: x") && rep.includes("verified: loop uses <=") && /2 more findings/.test(rep));
+  ok("report says so plainly when nothing survived", /No issues found/.test(CR.formatReport({ level: "low", label: "x", reviewers: 1, candidates: 2, shown: [], hidden: 0 })));
+  const pr = CR.buildPrReview([F("src/x.js", 12, "high", "on diff"), F("src/x.js", 99, "low", "off diff")], diff, "abc");
+  eq("PR review: lines in the diff become inline comments, the rest go in the body", [pr.comments.map((c) => [c.path, c.line, c.side]), /src\/x\.js:99/.test(pr.body), pr.commit_id, pr.event], [[["src/x.js", 12, "RIGHT"]], true, "abc", "COMMENT"]);
+  ok("fix prompt lists every finding and asks for an outcome each", /1\. src\/x\.js:12 \[high\] on diff/.test(CR.buildFixPrompt([F("src/x.js", 12, "high", "on diff")], "s")) && /no_change_needed/.test(CR.buildFixPrompt([], "s")));
+}
+
 group("changelog (release notes)");
 {
   const { classify, parseCommits, groupCommits, renderChangelog } = require("../lib/nexus/changelog");
@@ -4392,6 +4429,29 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     for (const [k, v] of [["OLLAMA_HOST", saved.h], ["DARKNODE_API_BASE", saved.b], ["OPENAI_BASE_URL", saved.o], ["OPENAI_API_BASE", saved.a]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 
+
+  { // codereview: target resolution against a real throwaway git repo
+    const CR = require("../lib/nexus/code-review"); const cpx = require("child_process");
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "nx-cr-")); const g = (...a) => cpx.execFileSync("git", a, { cwd: d, stdio: "pipe" }).toString();
+    const io = { run: (cmd, args) => new Promise((res) => cpx.execFile(cmd, args, { cwd: d }, (err, so) => res({ code: err ? 1 : 0, stdout: String(so || "") }))), exists: (p) => fs.existsSync(path.join(d, p)), read: (p) => { try { const f = path.join(d, p); return fs.statSync(f).isFile() ? fs.readFileSync(f, "utf8") : null; } catch (_) { return null; } } };
+    g("init", "-q", "-b", "main"); g("config", "user.email", "test@darknode.ai"); g("config", "user.name", "t");
+    fs.writeFileSync(path.join(d, "a.js"), "one\n"); g("add", "."); g("commit", "-qm", "init");
+    let r = await CR.resolveTarget("", io);
+    ok("codereview: clean repo on main falls back to the last commit", r.kind === "commit" && r.diff.includes("+one"));
+    fs.writeFileSync(path.join(d, "a.js"), "two\n"); fs.writeFileSync(path.join(d, "new.js"), "fresh\n");
+    r = await CR.resolveTarget("", io);
+    ok("codereview: uncommitted tracked + untracked files are both reviewed", r.kind === "uncommitted" && r.diff.includes("+two") && r.diff.includes("+fresh") && CR.changedFiles(r.diff).includes("new.js"));
+    g("checkout", "-qb", "feat"); g("add", "."); g("commit", "-qm", "work");
+    r = await CR.resolveTarget("", io);
+    ok("codereview: clean feature branch reviews its commits against main", r.kind === "branch" && /feat vs main/.test(r.label) && r.diff.includes("+fresh"));
+    eq("codereview: naming the branch reviews it against main", (await CR.resolveTarget("feat", io)).kind, "branch");
+    r = await CR.resolveTarget("a.js", io);
+    ok("codereview: a file with no changes is reviewed whole", r.kind === "file" && r.diff.includes("+two"));
+    ok("codereview: a bad target says what it is not", /not a file, branch, commit or PR number/.test((await CR.resolveTarget("nope-xyz", io)).error));
+    const order = []; const res = await CR.pool([30, 5, 10, 1], 2, (ms, i) => new Promise((ok2) => setTimeout(() => { order.push(i); ok2(i * 10); }, ms)));
+    ok("codereview: pool keeps input order and runs at most n at once", JSON.stringify(res) === "[0,10,20,30]" && order[0] === 1);
+    try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
+  }
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
