@@ -3686,6 +3686,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("a repeated name lists the other definition (index:N)", /index 1: line 11/.test(RS.readSymbolTool({ path: "c.py", name: "save" }, dir, rp).otherDefinitions || ""));
     eq("bodiless declaration continued onto the next line stops at its ;, not the next function", RS.braceEnd(["const f = (a) =>", "  a + 1;", "function g() {", "  return 2;", "}"], 0, true), 1);
     eq("rust lifetimes are not char literals: the body after &'a str { is matched", RS.blockEnd(["pub fn first<'a>(x: &'a str) -> &'a str {", "    let v = vec![1, 2];", "    if v.len() > 1 { return x; }", "    x", "}", "fn g() { let c = '{'; }"], 0, "a.rs"), 4);
+    eq("a } inside a multi-line Go raw string or Kotlin text block does not end the function", [RS.blockEnd(["func f() {", "  s := `", "}", "`", "}", "func g() {}"], 0, "a.go"), RS.blockEnd(["fun f() {", "  val s = \"\"\"", "  }", "  \"\"\"", "}", "fun g() {}"], 0, "a.kt")], [4, 4]);
+    eq("JS template expressions holding strings, and Rust raw strings, are skipped", [RS.blockEnd(["function f() {", "  const s = `a ${x ? `}` : '{'} b`;", "}", "x"], 0, "a.js"), RS.blockEnd(["fn f() {", "  let s = r#\"a \"}\" b\"#;", "}", "fn g() {}"], 0, "a.rs")], [2, 2]);
     eq("rust char literals with braces and escapes still skip", RS.blockEnd(["fn g() {", "    let c = '{'; let d = '\\''; let e = '\\u{7B}';", "}"], 0, "a.rs"), 2);
     ok("needs path and name", /needs \{path, name\}/.test(RS.readSymbolTool({ path: "a.js" }, dir, rp).error));
     fs.rmSync(dir, { recursive: true, force: true });
