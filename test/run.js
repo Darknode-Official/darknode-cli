@@ -2801,6 +2801,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("valid JS passes", SG.check("a.js", "const a = 1;\n").ok === true);
     ok("broken JS fails with a line", /^line 1: SyntaxError/.test(SG.check("a.js", "const a = ;\n").error || ""));
     ok("ESM syntax in a .js file is not a false positive", SG.check("a.js", "import x from \"y\";\nexport const z = 1;\n").ok === true);
+    {
+      const d = fs.mkdtempSync(path.join(os.tmpdir(), "nxsg-")); fs.writeFileSync(path.join(d, "package.json"), "{\"type\":\"module\"}");
+      ok("top-level await in a \"type\":\"module\" package's .js file is valid", SG.check(path.join(d, "run.js"), "const r = await Promise.resolve(1);\n").ok === true);
+      ok("...and a real error there is still reported", SG.check(path.join(d, "run.js"), "const r = ;\n").ok === false);
+      fs.rmSync(d, { recursive: true, force: true });
+    }
     ok("broken JSON fails", SG.check("a.json", "{\"a\":1,}").ok === false);
     ok("tsconfig.json (JSON with comments) is skipped, not failed", SG.check("tsconfig.json", "{ // c\n}").checked === false);
     ok("unknown file types are not checked", SG.check("a.md", "#").checked === false);
