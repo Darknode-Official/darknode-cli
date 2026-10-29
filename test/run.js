@@ -109,6 +109,19 @@ group("capability index (what a module can DO)");
     fs.writeFileSync(path.join(d, "rev.js"), "console.log(1);\nconst password = 'hunter2222';\n");
     const o3 = require("../lib/nexus/code-review-auto.js").autoReview("rev.js", d);
     ok("code review: critical findings list before low ones", o3.indexOf("[CRIT]") > -1 && o3.indexOf("[CRIT]") < o3.indexOf("[LOW"));
+    {
+      // staged files: a non-ASCII name (git C-quotes it) and a run from a subfolder must still be reviewed
+      const g = fs.mkdtempSync(path.join(os.tmpdir(), "nx-cra-")), cp = require("child_process");
+      fs.mkdirSync(path.join(g, "sub"));
+      cp.execFileSync("git", ["init", "-q"], { cwd: g });
+      fs.writeFileSync(path.join(g, "sub", "\u00e9.js"), "eval(x);\n");
+      fs.writeFileSync(path.join(g, "sub", "plain.js"), "eval(y);\n");
+      cp.execFileSync("git", ["add", "-A"], { cwd: g });
+      const AR = require("../lib/nexus/code-review-auto.js").autoReview;
+      ok("code review: a staged non-ASCII file name is reviewed", /2 file\(s\)/.test(AR(undefined, g)) && /\u00e9\.js/.test(AR(undefined, g)));
+      ok("code review: run from a subfolder still finds the staged files", /2 file\(s\)/.test(AR(undefined, path.join(g, "sub"))));
+      fs.rmSync(g, { recursive: true, force: true });
+    }
     fs.rmSync(d, { recursive: true, force: true });
   }
   ok("empty/garbage input is safe", scanCapabilities(null).length === 0 && scanCapabilities(123).length === 0);
@@ -2321,6 +2334,21 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ].join("\n");
     const files = IV.parseDiff(sampleDiff);
     ok("parseDiff splits every changed file", files.length === 3 && files.map((f) => f.path).join(",") === "src/app.js,new.js,gone.js");
+    // git C-quotes non-ASCII / tab / quote paths; a quoted path must still hit forbidPaths.
+    const quoted = [
+      'diff --git "a/secret/r\\303\\251sum\\303\\251.txt" "b/secret/r\\303\\251sum\\303\\251.txt"',
+      "index 78981922..61780798 100644",
+      '--- "a/secret/r\\303\\251sum\\303\\251.txt"',
+      '+++ "b/secret/r\\303\\251sum\\303\\251.txt"',
+      "@@ -1 +1,2 @@", " a", "+b",
+      'diff --git "a/secret/tab\\tname.txt" "b/secret/tab\\tname.txt"',
+      "deleted file mode 100644", "index 0b..00 100644",
+      '--- "a/secret/tab\\tname.txt"', "+++ /dev/null", "@@ -1 +0,0 @@", "-x",
+      "diff --git a/a b.js b/a b.js", "new file mode 100644", "index 00..11", "--- /dev/null", "+++ b/a b.js\t", "@@ -0,0 +1 @@", "+x y",
+    ].join("\n");
+    const qf = IV.parseDiff(quoted);
+    ok("parseDiff unquotes git C-quoted paths (octal UTF-8, \\t) and reads spaced names", qf.map((f) => f.path).join("|") === "secret/résumé.txt|secret/tab\tname.txt|a b.js");
+    ok("a quoted path still trips forbidPaths", IV.checkInvariants(qf, { forbidPaths: ["secret/**"] }).violations.length === 2);
     ok("parseDiff marks a new file A, a deleted file D, a modified file M", files[0].status === "M" && files[1].status === "A" && files[2].status === "D");
     ok("parseDiff collects added lines with correct NEW-file line numbers", files[0].added.length === 2 && files[0].added[0].n === 11 && files[0].added[1].n === 12);
     ok("parseDiff collects removed lines", files[0].removed.length === 1 && files[0].removed[0] === "  oldline();");
