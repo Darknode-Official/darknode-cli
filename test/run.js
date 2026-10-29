@@ -3738,6 +3738,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("policy check skips + reports the file", r.files === 0 && /protected/.test(r.skipped[0].reason) && fs.readFileSync(path.join(dir, "price.txt"), "utf8").startsWith("price"));
     ok("no matches is a note, not an error", /no matches/.test(run({ find: "zzz_nope", replace: "y" }).note));
     ok("bad regex reported", /invalid regex/.test(run({ find: "(", replace: "", regex: true }).error));
+    { const d3 = fs.mkdtempSync(path.join(os.tmpdir(), "rif3-")); fs.mkdirSync(path.join(d3, "src/ui"), { recursive: true }); fs.writeFileSync(path.join(d3, "src/ui/c.ts"), "old\n");
+      eq("a glob written from the root matches when path is a subfolder", RF.replaceInFilesTool({ find: "old", replace: "new", path: "src", glob: "src/ui/*.ts", dry_run: true }, d3, (p) => path.resolve(d3, p)).files, 1);
+      fs.rmSync(d3, { recursive: true, force: true }); }
     ok("brace globs", RF.globToRe("src/**/*.{js,ts}").test("src/x/y.ts") && !RF.globToRe("src/**/*.{js,ts}").test("src/y.py"));
     for (const [name, g2re] of [["replace_in_files", RF.globToRe], ["search", require("../lib/nexus/search").globToRe], ["attest", require("../lib/nexus/attest").globToRe], ["invariants", require("../lib/nexus/invariants").globToRe], ["policy", globToRe]])
       ok(name + ": **/ spans whole directories only (src/**/test/*.js is not src/contest/a.js)", !g2re("src/**/test/*.js").test("src/contest/a.js") && !g2re("**/lib/*.js").test("mylib/x.js") && g2re("**/lib/*.js").test("a/lib/x.js") && g2re("src/**/*.js").test("src/a.js") && g2re("**/*.js").test("a.js"));
