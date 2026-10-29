@@ -308,6 +308,12 @@ group("sink redaction + keyed placeholders (NSAFE-060/061)");
     return Object.values(v).every((t) => !redact("out:\n" + t, { sink: "transcript", key: K }).text.includes(tail(t)) && !maskSecrets("out:\n" + t).includes(tail(t)))
       && ["const API_KEY = process.env.API_KEY;", "DB_PASSWORD=${DB_PASSWORD}", "Bearer token required", "mysql://u:${DB_PW}@h/x"].every((t) => redact(t, { sink: "transcript", key: K }).text === t && maskSecrets(t) === t);
   })());
+  ok("AWS STS JSON, ~/.aws/credentials, temporary ASIA key ids and JSON password keys are redacted in both redactors", (() => {
+    const sec = "wJalrXUtnFEMIK7MDENG" + "bPxRfiCYEXAMPLEKEY12", tok = "FwoGZXIvYXdzEJr" + "abcdefghijklmnop", asia = "ASIA" + "QWERTYUIOPASDFGH";
+    const t = '{"AccessKeyId": "' + asia + '", "SecretAccessKey": "' + sec + '", "SessionToken": "' + tok + '", "password": "hunter2222"}\n[default]\naws_secret_access_key = ' + sec + "\naws_session_token = " + tok;
+    return [redact(t, { sink: "transcript", key: K }).text, maskSecrets(t)].every((o) => ![sec, tok, asia, "hunter2222"].some((x) => o.includes(x)))
+      && redact('{"secretName": "prod-db"}', { sink: "transcript", key: K }).text === '{"secretName": "prod-db"}';
+  })());
   ok("clean text passes through untouched", redact("just normal text", { sink: "audit", key: K }).text === "just normal text");
 }
 
