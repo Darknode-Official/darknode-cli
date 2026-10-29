@@ -1230,6 +1230,7 @@ group("changelog (release notes)");
   eq("classify conventional commit", classify("feat(cli): add /env"), { type: "feat", scope: "cli", breaking: false, subject: "add /env" });
   eq("classify non-conventional -> other", classify("random change").type, "other");
   ok("classify flags breaking (!)", classify("feat!: drop node 16").breaking === true);
+  eq("the word BREAKING inside a subject is not a breaking change; a BREAKING: subject or the ! marker is", ["docs: explain the BREAKING CHANGE footer", "fix: parse BREAKING_NEWS feed", "BREAKING: drop node 16", "refactor(api)!: rename x"].map((s) => classify(s).breaking), [false, false, true, true]);
   const cs = parseCommits("a1b2c3\tfeat: thing\nd4e5f6\tfix(ui): crash\n9z8y7x\tchore: bump\nqqq\tno-type here");
   eq("parseCommits parses hash + type", [cs.length, cs[0].hash, cs[0].type, cs[3].type], [4, "a1b2c3", "feat", "other"]);
   const g = groupCommits(cs);
