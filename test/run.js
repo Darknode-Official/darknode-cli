@@ -200,6 +200,9 @@ group("policy (guardrails)");
   ok("policy allow npm test", policyCheck(denied, { type: "run", command: "npm test" }).allow === true);
   ok("policy block fetch when network off", policyCheck(Object.assign({}, POLICY_DEFAULTS, { allowNetwork: false }), { type: "fetch" }).allow === false);
   ok("globToRe ** matches nested", globToRe("**/.env").test("a/b/.env"));
+  ok("globToRe: ** inside braces spans directories ({secrets/**,*.pem})", globToRe("{secrets/**,*.pem}").test("secrets/a/b.txt") && globToRe("{src/**/*.js,test/*.js}").test("src/x.js") && globToRe("{src/**/*.js,test/*.js}").test("src/a/b/x.js"));
+  ok("globToRe: nested braces and unclosed brace", globToRe("{a,{b,c}}.js").test("c.js") && globToRe("{a,b").test("{a,b"));
+  ok("a protected-path rule with ** in braces covers nested files", pathMatchesAny("secrets/prod/db.txt", ["{secrets/**,*.pem}"]));
   ok("a brace glob in protectedPaths protects the files it names", (() => { const pol = Object.assign({}, POLICY_DEFAULTS, { protectedPaths: ["config/*.{pem,crt}"] }); return policyCheck(pol, { type: "write", path: "config/server.crt" }).allow === false && policyCheck(pol, { type: "write", path: "config/app.json" }).allow === true; })());
 }
 
