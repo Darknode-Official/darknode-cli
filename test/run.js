@@ -1593,6 +1593,7 @@ group("cost savers — squeeze + response cache");
   ok("squeeze collapses blank runs + trailing spaces", squeezeContext("a  \n\n\n\nb").text === "a\n\nb");
   { const C = require("../lib/nexus/costsave");
     ok("strips ANSI colour codes", C.stripTermNoise("\x1b[32mok\x1b[0m") === "ok");
+    ok("strips tput sgr0 (ESC ( B), cursor save/restore, keypad and DCS escapes", C.stripTermNoise("\x1b[1mbold\x1b(B\x1b[m \x1b7a\x1b8 \x1b=k\x1b> \x1bP1$r0m\x1b\\z") === "bold a k z");
     ok("keeps only the last progress-bar repaint", C.stripTermNoise(" 10%\r 50%\r100%\nnext") === "100%\nnext");
     ok("CRLF line endings are not treated as redraws", C.stripTermNoise("a\r\nb\r\n") === "a\nb\n");
     ok("source with an escaped x1b literal is untouched", C.stripTermNoise('const e = "\\x1b[0m";') === 'const e = "\\x1b[0m";');
