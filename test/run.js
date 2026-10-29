@@ -300,6 +300,7 @@ group("sink redaction + keyed placeholders (NSAFE-060/061)");
   ok("emit returns redacted text", !emit("transcript", "k=" + aws, { key: K }).includes(aws));
   const pk = redact("-----BEGIN PRIVATE KEY-----\nabcd\n-----END PRIVATE KEY-----", { sink: "audit", key: K });
   ok("private key block removed wholesale", /\[REDACTED:private-key:[0-9a-f]{4}\]/.test(pk.text) && !pk.text.includes("BEGIN PRIVATE KEY"));
+  ok("private keys of every label are redacted, incl. ENCRYPTED, PGP ... BLOCK and a key with no END line", (() => { const body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"; return ["-----BEGIN ENCRYPTED PRIVATE KEY-----\n" + body + "\n-----END ENCRYPTED PRIVATE KEY-----", "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\n" + body + "\n-----END PGP PRIVATE KEY BLOCK-----", "-----BEGIN OPENSSH PRIVATE KEY-----\n" + body + "\n"].every((t) => { const o = redact("before\n" + t, { sink: "transcript", key: K }).text; return !o.includes(body) && o.startsWith("before\n[REDACTED:private-key:"); }) && ["-----BEGIN ENCRYPTED PRIVATE KEY-----\n" + body + "\n-----END ENCRYPTED PRIVATE KEY-----", "-----BEGIN PGP PRIVATE KEY BLOCK-----\n" + body + "\n-----END PGP PRIVATE KEY BLOCK-----"].every((t) => !maskSecrets(t).includes(body)); })());
   ok("clean text passes through untouched", redact("just normal text", { sink: "audit", key: K }).text === "just normal text");
 }
 
