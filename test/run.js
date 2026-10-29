@@ -4217,6 +4217,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("start_line/end_line", lineRange({ start_line: "10", end_line: "12" }), { off: 10, lim: 3 });
     eq("lines string", lineRange({ lines: "120-180" }), { off: 120, lim: 61 });
     eq("lines open-ended", lineRange({ lines: "50:" }), { off: 50, lim: null });
+    eq("lines as a GitHub anchor", lineRange({ lines: "L42-L50" }), { off: 42, lim: 9 });
+    eq("lines with an en dash or comma", [lineRange({ lines: "10\u201320" }), lineRange({ lines: "10, 20" })], [{ off: 10, lim: 11 }, { off: 10, lim: 11 }]);
+    eq("lines as one number starts there, as line does", lineRange({ lines: "42" }), { off: 42, lim: null });
     eq("nothing = whole file", lineRange({}), { off: 1, lim: null });
     eq("end before start → one line", lineRange({ start: 9, end: 3 }), { off: 9, lim: 1 });
   }
