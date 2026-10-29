@@ -1208,6 +1208,7 @@ group("env-var audit (/env)");
   const src = 'const a=process.env.API_KEY; const b=process.env["DB_URL"]; if(process.env.NODE_ENV==="p"){} const p=process.env.PORT;';
   eq("scanEnvRefs finds all forms", scanEnvRefs(src).sort(), ["API_KEY", "DB_URL", "NODE_ENV", "PORT"]);
   eq("other languages and destructuring are reads too (else their .env.example keys show as unused)", scanEnvRefs('os.getenv("PY")\nos.Getenv("GO")\nENV["RB"]; ENV.fetch("RB2")\nconst { DS, AL: x, DF = 1 } = process.env;\nimport.meta.env.VITE_X\nDeno.env.get("DN")').sort(), ["AL", "DF", "DN", "DS", "GO", "PY", "RB", "RB2", "VITE_X"]);
+  eq("shell: the script's own variables and bash specials are not env inputs; ${X:-default} still is", scanEnvRefs('OUT=dist\nfor F in a b; do echo $F; done\nread -r ANS\nlocal TMP=$(mktemp -d)\ncp "$OUT/$TMP" $ANS ${BASH_SOURCE[0]} $RANDOM\nAPI_URL=${API_URL:-http://x}\ncurl $API_URL $REAL_ENV', "a.sh").sort(), ["API_URL", "REAL_ENV"]);
   eq("shell files: $NAME / ${NAME} (upper-case only); not in other files", [scanEnvRefs("echo ${DEPLOY:-x} $1 $low $HOST", "run.sh").sort(), scanEnvRefs('s = "$PRICE"', "a.js")], [["DEPLOY", "HOST"], []]);
   eq("parseEnvFile honors export + skips comments", parseEnvFile("# c\nexport API_KEY=abc\nDB_URL=x\nSTALE=1\n\n"), ["API_KEY", "DB_URL", "STALE"]);
   const a = auditEnv({ used: scanEnvRefs(src), declared: ["API_KEY", "DB_URL", "STALE"] });
