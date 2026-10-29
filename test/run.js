@@ -3695,6 +3695,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const q = (f, query, extra) => JQ.jsonQueryTool(Object.assign({ path: f, query }, extra || {}), dir, rp);
     eq("dotted path", q("p.json", "scripts.test").value, '"node t.js"');
     eq("bracket key with @ and /", q("p.json", 'deps["@a/b"]').value, '"1.0.0"');
+    fs.writeFileSync(path.join(dir, "pr.json"), '{"a":{"__proto__":{"x":1},"b":2}}');
+    eq("* keeps a __proto__ key", JSON.parse(q("pr.json", "a.*").value), JSON.parse('{"__proto__":{"x":1},"b":2}'));
+    fs.writeFileSync(path.join(dir, "cm.json"), '{ "f": 1/**/2, // x\n }');
+    ok("a comment separates tokens: 1/**/2 is an error, not 12", /not valid/.test(q("cm.json", "f").error || ""));
     fs.writeFileSync(path.join(dir, "bom.json"), "\uFEFF" + '{"a":1}');
     eq("a UTF-8 BOM (Windows editors) still parses", q("bom.json", "a").value, "1");
     fs.writeFileSync(path.join(dir, "jc.json"), '{\n // c\n "p": "[a,]", "q": [1, 2 ,\n],\n}');
