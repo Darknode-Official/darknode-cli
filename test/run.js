@@ -757,6 +757,8 @@ group("edge cases");
   // globToRe: leading-dot files and single-char wildcard
   ok("globToRe .env.* matches .env.prod", globToRe(".env.*").test(".env.prod"));
   ok("globToRe ? single char", globToRe("id_rsa?").test("id_rsa1") && !globToRe("id_rsa?").test("id_rsaXY"));
+  ok("globToRe ? inside braces is one char, not a regex quantifier", globToRe("*.{j?,ts}").test("a.js") && !globToRe("*.{j?,ts}").test("a.") && globToRe("{a,?}").test("b"));
+  ok("protected path rule with ? in braces still protects", pathMatchesAny("certs/site.pem", ["*.{p?m,key}"]));
   // priceOf: case-insensitive
   ok("priceOf OPUS (caps)", priceOf("OPUS").out === 20);
   // describe: tolerates a sparse/empty state without throwing
