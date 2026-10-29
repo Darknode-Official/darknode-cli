@@ -4041,6 +4041,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const http = require("http");
     const seenAuth = {};
     eq("decodeEntities: a built-in name is not an entity", HF.decodeEntities("&constructor; &toString; &amp;"), "&constructor; &toString; &");
+    eq("decodeEntities: Latin-1 and common named entities, case kept", HF.decodeEntities("Caf&eacute; &Eacute;t&eacute; &euro;5 &ndash; &times;2 &#0;"), "Caf\u00e9 \u00c9t\u00e9 \u20ac5 \u2013 \u00d72 \ufffd");
+    eq("htmlToText keeps a <pre> block's line breaks and indentation as a code fence", HF.htmlToText("<p>Run:</p><pre><code>def f():\n    if x &lt; 1:\n        return 2\n</code></pre><p>after   text</p>"), "Run:\n\n```\ndef f():\n    if x < 1:\n        return 2\n```\n\nafter text");
     const srv = http.createServer((req, res) => {
       if (req.url === "/r1") { res.writeHead(302, { location: "/page" }); return res.end(); }
       if (req.url === "/evil") { res.writeHead(301, { location: "http://blocked.internal/latest/meta-data" }); return res.end(); }
