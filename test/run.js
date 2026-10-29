@@ -3928,6 +3928,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const q = (args) => SR.searchTool(args, dir, rp);
     let r = q({ pattern: "token" });
     eq("summary counts matches + files", r.summary, "Found 3 matches in 2 files");
+    { const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "srch-bom-")); fs.writeFileSync(path.join(d2, "a.cs"), "\uFEFFusing System;\r\nclass A {}\r\n");
+      eq("a UTF-8 BOM does not hide line 1 from ^", SR.searchTool({ pattern: "^using System" }, d2, (p) => path.resolve(d2, p)).summary, "Found 1 match in 1 file");
+      ok("a pattern with a line break says why it cannot match", /line by line/.test(SR.searchTool({ pattern: "System;\\nclass" }, d2, (p) => path.resolve(d2, p)).summary)); }
     ok("path written once per file", r.results.split("\n").filter((l) => l === "src/a.js").length === 1 && /\n  3: const token = 1;/.test(r.results));
     ok("lockfile + minified skipped and reported", /2 lockfile\/minified/.test(r.skipped_generated));
     ok("an invalid regex says it was searched as plain text (not a bare 'No matches')", /^No matches found \(not a valid regex - .*plain text\)$/.test(q({ pattern: "[unclosed" }).summary));
