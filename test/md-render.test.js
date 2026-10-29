@@ -103,5 +103,11 @@ group("width contract");
   ok("stripAnsi of a coloured row equals the plain row", stripAnsi(renderMd("```js\nconst a=1\n```", 40, { mag: (s) => "\x1b[35m" + s + "\x1b[0m" })[1]) === plain("```js\nconst a=1\n```", 40)[1]);
 }
 
+group("fence languages are own keys");
+{
+  let r = null; try { r = ["constructor", "__proto__", "toString"].map((l) => plain("```" + l + "\nx = 1\n```")[1]); } catch (e) { r = e.message; }
+  eq("a ```constructor or ```__proto__ fence renders as an unknown language instead of throwing", r, ["│ x = 1", "│ x = 1", "│ x = 1"]);
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (answer renderer)");
 process.exit(fail ? 1 : 0);

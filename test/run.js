@@ -109,6 +109,19 @@ group("capability index (what a module can DO)");
     fs.writeFileSync(path.join(d, "rev.js"), "console.log(1);\nconst password = 'hunter2222';\n");
     const o3 = require("../lib/nexus/code-review-auto.js").autoReview("rev.js", d);
     ok("code review: critical findings list before low ones", o3.indexOf("[CRIT]") > -1 && o3.indexOf("[CRIT]") < o3.indexOf("[LOW"));
+    {
+      // staged files: a non-ASCII name (git C-quotes it) and a run from a subfolder must still be reviewed
+      const g = fs.mkdtempSync(path.join(os.tmpdir(), "nx-cra-")), cp = require("child_process");
+      fs.mkdirSync(path.join(g, "sub"));
+      cp.execFileSync("git", ["init", "-q"], { cwd: g });
+      fs.writeFileSync(path.join(g, "sub", "\u00e9.js"), "eval(x);\n");
+      fs.writeFileSync(path.join(g, "sub", "plain.js"), "eval(y);\n");
+      cp.execFileSync("git", ["add", "-A"], { cwd: g });
+      const AR = require("../lib/nexus/code-review-auto.js").autoReview;
+      ok("code review: a staged non-ASCII file name is reviewed", /2 file\(s\)/.test(AR(undefined, g)) && /\u00e9\.js/.test(AR(undefined, g)));
+      ok("code review: run from a subfolder still finds the staged files", /2 file\(s\)/.test(AR(undefined, path.join(g, "sub"))));
+      fs.rmSync(g, { recursive: true, force: true });
+    }
     fs.rmSync(d, { recursive: true, force: true });
   }
   ok("empty/garbage input is safe", scanCapabilities(null).length === 0 && scanCapabilities(123).length === 0);
@@ -187,6 +200,9 @@ group("policy (guardrails)");
   ok("policy allow npm test", policyCheck(denied, { type: "run", command: "npm test" }).allow === true);
   ok("policy block fetch when network off", policyCheck(Object.assign({}, POLICY_DEFAULTS, { allowNetwork: false }), { type: "fetch" }).allow === false);
   ok("globToRe ** matches nested", globToRe("**/.env").test("a/b/.env"));
+  ok("globToRe: ** inside braces spans directories ({secrets/**,*.pem})", globToRe("{secrets/**,*.pem}").test("secrets/a/b.txt") && globToRe("{src/**/*.js,test/*.js}").test("src/x.js") && globToRe("{src/**/*.js,test/*.js}").test("src/a/b/x.js"));
+  ok("globToRe: nested braces and unclosed brace", globToRe("{a,{b,c}}.js").test("c.js") && globToRe("{a,b").test("{a,b"));
+  ok("a protected-path rule with ** in braces covers nested files", pathMatchesAny("secrets/prod/db.txt", ["{secrets/**,*.pem}"]));
   ok("a brace glob in protectedPaths protects the files it names", (() => { const pol = Object.assign({}, POLICY_DEFAULTS, { protectedPaths: ["config/*.{pem,crt}"] }); return policyCheck(pol, { type: "write", path: "config/server.crt" }).allow === false && policyCheck(pol, { type: "write", path: "config/app.json" }).allow === true; })());
 }
 
@@ -230,6 +246,8 @@ group("tool-arg schema validation (NSAFE-039)");
   const strict = { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false };
   ok("extra property rejected as unknown-property", (() => { const r = validateArgs(strict, { path: "a", evil: 1 }); return !r.ok && r.errors.some((e) => e.code === "unknown-property" && e.path === "evil"); })());
   ok("prototype-named extra property still rejected under additionalProperties:false", (() => { const r = validateArgs(strict, { path: "a", constructor: 1, toString: 2 }); return !r.ok && r.errors.filter((e) => e.code === "unknown-property").length === 2; })());
+  ok("pattern is a Unicode regex: \\p{L} matches letters (it matched the text p{L}); a pattern valid only without u still runs", (() => { const s = (p) => ({ properties: { n: { type: "string", pattern: p } } }); return validateArgs(s("^\\p{L}+$"), { n: "h\u00e9llo" }).ok && !validateArgs(s("^\\p{L}+$"), { n: "h1" }).ok && validateArgs(s("^[a\\-z]+$"), { n: "a-z" }).ok; })());
+  ok("enum compares a coerced number as its string", validateArgs({ properties: { n: { type: "string", enum: ["1", "2"] } } }, { n: 2 }, { coerceScalars: true }).ok && !validateArgs({ properties: { n: { type: "string", enum: ["1", "2"] } } }, { n: 3 }, { coerceScalars: true }).ok);
   ok("a required key absent as an own property is flagged even if inherited", (() => { const r = validateArgs({ type: "object", properties: { toString: { type: "string" } }, required: ["toString"] }, {}); return !r.ok && r.errors.some((e) => e.code === "required" && e.path === "toString"); })());
   const open = { type: "object", properties: { path: { type: "string" } }, required: ["path"] };
   ok("extra property allowed when additionalProperties is open", validateArgs(open, { path: "a", hint: "x" }).ok === true);
@@ -279,6 +297,11 @@ group("sink redaction + keyed placeholders (NSAFE-060/061)");
   const aws = "AKIAIOSFODNN7EXAMPLE";
   const tagOf = (t) => (String(t).match(/\[REDACTED:[^:]+:([0-9a-f]{4})\]/) || [])[1];
   const r1 = redact("key is " + aws + " ok", { sink: "transcript", key: K });
+  { const V = "Zk9mQ2pR7vT4wYb3nX8cL5aJ";
+    const toks = { "slack-webhook": "https://hooks.slack" + ".com/services/T0ABCDEF1/B0ABCDEF2/" + V, "google-oauth": "ya" + "29.a0AfH6SMBx" + V, "digitalocean-token": "dop" + "_v1_" + "ab12".repeat(16),
+      "grafana-token": "gl" + "sa_" + V + "12345678_abcd1234", "pypi-token": "pypi-" + "AgEIcHlwaS5vcmc" + V + V, "stripe-key": "sk" + "_test_" + V, bearer: "authorization: bearer abcdefghijklmnopqrstuvwxyz123" };
+    eq("webhook URLs, OAuth, DigitalOcean, Grafana, PyPI and Stripe test tokens and a lowercase bearer are redacted",
+      Object.entries(toks).filter(([id, t]) => !new RegExp("\\[REDACTED:" + id + ":").test(redact(t, { sink: "audit", key: K }).text)).map(([id]) => id), []); }
   ok("AWS key replaced with a typed placeholder", /\[REDACTED:aws-access-key:[0-9a-f]{4}\]/.test(r1.text) && !r1.text.includes(aws));
   ok("findings counted", r1.findings === 1);
   // NSAFE-061: stable keyed tags.
@@ -288,6 +311,23 @@ group("sink redaction + keyed placeholders (NSAFE-060/061)");
   const ght = "ghp_" + "a".repeat(36);
   ok("different secrets -> different tags", tagOf(redact(ght, { sink: "audit", key: K }).text) !== t1);
   ok("current key formats are redacted whole (sk-proj-, sk-ant-api03-, github_pat_)", ["sk-proj-abcDEF123_456-ghiJKL789mnoPQR", "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv_wx-yz", "github_pat_11ABCDEFG0123456789_abcdefghij"].every((s) => /^\[REDACTED:(api-key|github-token):[0-9a-f]{4}\]$/.test(redact(s, { sink: "audit", key: K }).text)));
+  {
+    const rt = (t) => redact(t, { sink: "transcript", key: K }).text;
+    const leak = ["password: hunter2hunter", "  api_key: 9f8e7d6c5b4a3f2e1d0c", "X-Api-Key: 9f8e7d6c5b4a3f2e1d0c9b8a", "password = hunter2hunter", "db.password=Pa55word!",
+      "Authorization: Basic dXNlcjpzM2NyZXRwYXNz", "xapp-1-A0123456789-1234567890123-abcdef0123456789abcdef"];
+    ok("redact: unquoted YAML/INI/header secrets, Basic auth and Slack app tokens are hidden", leak.every((t) => !/hunter2|9f8e7d|Pa55|dXNlcj|abcdef0123/.test(rt(t))));
+    ok("redact: a quoted value with spaces is hidden and keeps its quotes", rt('DB_PASSWORD="my secret pass"') === 'DB_PASSWORD="[REDACTED:credential:0000]"' && rt('SECRET_KEY = "django-insecure-abc123"') === 'SECRET_KEY = "[REDACTED:credential:0000]"');
+    const code = ["token = req.headers.token", "password = getPassword()", "password: ${DB_PASSWORD}", "api_key: true", "token: process.env.TOKEN", "password: $PASS", "max_tokens: 100000", "Basic usage information here", "password_hint: correcthorse"];
+    ok("redact: code, references and plain numbers next to secret-ish keys are left alone", code.every((t) => rt(t) === t));
+    // the privacy mask for cloud engines and the secret scan follow the same rules
+    { const V = "Zk9mQ2pR7vT4wYb3nX8cL5aJ", toks = ["hf" + "_" + V + "Ab12Cd34Ef", "sk" + "_test_" + V, "pypi-" + "AgEIcHlwaS5vcmc" + V + V, "dop" + "_v1_" + "ab12".repeat(16), "shp" + "at_" + "a1b2".repeat(8),
+        "GOC" + "SPX-" + V, "ya" + "29.a0" + V, "gl" + "sa_" + V + "12345678_abcd", "https://hooks.slack" + ".com/services/T0ABC/B0ABC/" + V, "Account" + "Key=" + V + V + "==", "authorization: bearer " + V];
+      eq("scanSecrets flags and maskSecrets hides Hugging Face, Stripe test, PyPI, DigitalOcean, Shopify, Google OAuth, Grafana, Slack webhook, Azure and lowercase bearer secrets",
+        toks.filter((t) => (!/bearer/.test(t) && !scanSecrets("x = '" + t + "'").length) || maskSecrets("x " + t + " y").includes(V)), []); }
+    ok("maskSecrets: unquoted/header/Basic/spaced-quoted secrets do not reach a cloud engine", leak.concat(['DB_PASSWORD="my secret pass"']).every((t) => !/hunter2|9f8e7d|Pa55|dXNlcj|abcdef0123|my secret/.test(maskSecrets(t))));
+    ok("maskSecrets/scanSecrets: code next to secret-ish keys is left alone and not flagged", code.every((t) => maskSecrets(t) === t && scanSecrets(t).length === 0));
+    ok("scanSecrets flags an unquoted YAML password and Basic auth", scanSecrets("db:\n  password: hunter2hunter\n").length > 0 && scanSecrets("Authorization: Basic dXNlcjpzM2NyZXRwYXNz").length > 0);
+  }
   ok("hyphenated words ending in 'sk' are not keys", redact("task-runner-with-a-long-name-here", { sink: "audit", key: K }).text === "task-runner-with-a-long-name-here");
   ok("tag depends on the install key (per-install correlation)", tagOf(redact(aws, { sink: "audit", key: "other-key" }).text) !== t1);
   ok("tag reveals no 4-char slice of the secret", (() => { for (let i = 0; i + 4 <= aws.length; i++) if (t1 === aws.slice(i, i + 4).toLowerCase()) return false; return true; })());
@@ -629,6 +669,8 @@ group("NX-005 C3: findings are re-confirmed against evidence (false-positive gat
   const r5 = validateFindings([{ kind: "", path: "config.js" }, { kind: "aws", path: "" }], read);
   ok("a finding missing a kind or a path is dropped, never silently kept", r5.validated.length === 0 && r5.dropped.length === 2 && r5.dropped.every((d) => /missing/.test(d.reason)));
 
+  eq("a kind named constructor or toString stays that string", [normKind("constructor"), normKind("toString")], ["constructor", "tostring"]);
+  { const ST = require("../lib/cli/styles"); eq("an unknown style named constructor has no directive", ST.styleDirective("constructor"), ""); }
   ok("kind normalisation folds scanner labels and agent synonyms onto one canonical kind", normKind("AWS access key id") === "aws-key" && normKind("GitHub token") === "github-token" && normKind("gh-token") === "github-token");
   ok("an unknown kind is passed through lower-cased, not dropped by normalisation", normKind("Custom-Rule-42") === "custom-rule-42");
 
@@ -1190,6 +1232,7 @@ group("changelog (release notes)");
   eq("classify conventional commit", classify("feat(cli): add /env"), { type: "feat", scope: "cli", breaking: false, subject: "add /env" });
   eq("classify non-conventional -> other", classify("random change").type, "other");
   ok("classify flags breaking (!)", classify("feat!: drop node 16").breaking === true);
+  eq("the word BREAKING inside a subject is not a breaking change; a BREAKING: subject or the ! marker is", ["docs: explain the BREAKING CHANGE footer", "fix: parse BREAKING_NEWS feed", "BREAKING: drop node 16", "refactor(api)!: rename x"].map((s) => classify(s).breaking), [false, false, true, true]);
   const cs = parseCommits("a1b2c3\tfeat: thing\nd4e5f6\tfix(ui): crash\n9z8y7x\tchore: bump\nqqq\tno-type here");
   eq("parseCommits parses hash + type", [cs.length, cs[0].hash, cs[0].type, cs[3].type], [4, "a1b2c3", "feat", "other"]);
   const g = groupCommits(cs);
@@ -1208,7 +1251,11 @@ group("env-var audit (/env)");
   const src = 'const a=process.env.API_KEY; const b=process.env["DB_URL"]; if(process.env.NODE_ENV==="p"){} const p=process.env.PORT;';
   eq("scanEnvRefs finds all forms", scanEnvRefs(src).sort(), ["API_KEY", "DB_URL", "NODE_ENV", "PORT"]);
   eq("other languages and destructuring are reads too (else their .env.example keys show as unused)", scanEnvRefs('os.getenv("PY")\nos.Getenv("GO")\nENV["RB"]; ENV.fetch("RB2")\nconst { DS, AL: x, DF = 1 } = process.env;\nimport.meta.env.VITE_X\nDeno.env.get("DN")').sort(), ["AL", "DF", "DN", "DS", "GO", "PY", "RB", "RB2", "VITE_X"]);
+  eq("shell: the script's own variables and bash specials are not env inputs; ${X:-default} still is", scanEnvRefs('OUT=dist\nfor F in a b; do echo $F; done\nread -r ANS\nlocal TMP=$(mktemp -d)\ncp "$OUT/$TMP" $ANS ${BASH_SOURCE[0]} $RANDOM\nAPI_URL=${API_URL:-http://x}\ncurl $API_URL $REAL_ENV', "a.sh").sort(), ["API_URL", "REAL_ENV"]);
   eq("shell files: $NAME / ${NAME} (upper-case only); not in other files", [scanEnvRefs("echo ${DEPLOY:-x} $1 $low $HOST", "run.sh").sort(), scanEnvRefs('s = "$PRICE"', "a.js")], [["DEPLOY", "HOST"], []]);
+  eq("parseEnvFile reads keys as dotenv does: a KEY= line inside a multi-line quoted value is not a key; KEY: value and dotted names are", parseEnvFile('KEY="-----BEGIN\nFAKE=line\n-----END"\nc.d=3\nE: 4\r\nF=5 # G=6\n'), ["KEY", "c.d", "E", "F"]);
+  eq("process.env?.NAME and process.env?.['NAME'] are reads", scanEnvRefs("a = process.env?.API_URL; b = process.env?.['X_KEY']", "a.js").sort(), ["API_URL", "X_KEY"]);
+  eq("shell: '$X', \\$X and # comments do not read X; \"it's $A\" does", scanEnvRefs("echo '$LIT' \\$ESC # uses $CMT\necho \"it's $A\" ${C:-d}", "a.sh").sort(), ["A", "C"]);
   eq("parseEnvFile honors export + skips comments", parseEnvFile("# c\nexport API_KEY=abc\nDB_URL=x\nSTALE=1\n\n"), ["API_KEY", "DB_URL", "STALE"]);
   const a = auditEnv({ used: scanEnvRefs(src), declared: ["API_KEY", "DB_URL", "STALE"] });
   eq("undocumented excludes common runtime vars (NODE_ENV/PORT)", a.undocumented, []);
@@ -1243,6 +1290,9 @@ group("dependency hygiene (/deps)");
   eq("commented-out imports are not imports; a // inside a string is not a comment", parseImports('// const x = require("left-pad");\n/* import y from "foo";\n */ import z from "real";\nconst u = "http://a"; const k = require("keep"); // require("no")'), ["keep", "real"]);
   eq("multi-line and default+named imports are still found", parseImports('import a, {\n  b,\n} from "pkg-a";\n  import type {T} from "@s/t/sub";'), ["pkg-a", "@s/t/sub"]);
   eq("subpath imports, URL/scheme specifiers and a self-import are not dependencies", auditDeps({ pkg: { name: "me" }, specifiers: ["#utils", "dart:io", "https://x.test/m.js", "me/sub"] }).missing, []);
+  eq("a ~/x path alias is not a package named ~", auditDeps({ pkg: {}, specifiers: ["~/utils/x", "~pkg"] }).missing, ["~pkg"]);
+  { const d = fs.mkdtempSync(path.join(os.tmpdir(), "deps-")); fs.writeFileSync(path.join(d, "a.mts"), 'import { z } from "zod";'); fs.writeFileSync(path.join(d, "b.cts"), 'const y = require("yaml");'); fs.writeFileSync(path.join(d, "C.vue"), '<script setup>\nimport { ref } from "vue"\n</script>\n');
+    eq(".mts, .cts and .vue files are scanned", scanImports(d).sort(), ["vue", "yaml", "zod"]); }
   ok("clean project reports no unused/missing", (() => { const c = auditDeps({ pkg: { dependencies: { express: "^4" } }, specifiers: ["express", "fs", "./x"] }); return !c.unused.length && !c.missing.length; })());
   // scanImports over a temp project
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-deps-"));
@@ -1592,6 +1642,7 @@ group("cost savers — squeeze + response cache");
   ok("squeeze collapses blank runs + trailing spaces", squeezeContext("a  \n\n\n\nb").text === "a\n\nb");
   { const C = require("../lib/nexus/costsave");
     ok("strips ANSI colour codes", C.stripTermNoise("\x1b[32mok\x1b[0m") === "ok");
+    ok("strips tput sgr0 (ESC ( B), cursor save/restore, keypad and DCS escapes", C.stripTermNoise("\x1b[1mbold\x1b(B\x1b[m \x1b7a\x1b8 \x1b=k\x1b> \x1bP1$r0m\x1b\\z") === "bold a k z");
     ok("keeps only the last progress-bar repaint", C.stripTermNoise(" 10%\r 50%\r100%\nnext") === "100%\nnext");
     ok("CRLF line endings are not treated as redraws", C.stripTermNoise("a\r\nb\r\n") === "a\nb\n");
     ok("source with an escaped x1b literal is untouched", C.stripTermNoise('const e = "\\x1b[0m";') === 'const e = "\\x1b[0m";');
@@ -1767,6 +1818,8 @@ group("compliance bundle (SOC2 export)");
   eq("js: function + class + arrow const", extractSymbols("a.js", "export function foo(){}\nclass Bar{}\nconst baz = () => 1\n").map((s) => s.kind + ":" + s.name), ["fn:foo", "class:Bar", "fn:baz"]);
   eq("py: def + class with line numbers", extractSymbols("x.py", "import os\n\ndef run(x):\n    pass\nclass Widget:\n    pass\n").map((s) => s.kind + ":" + s.name + "@" + s.line), ["fn:run@3", "class:Widget@5"]);
   eq("go: func + type struct", extractSymbols("m.go", "func main(){}\ntype Server struct{}\nfunc (s *Server) Do(){}\n").map((s) => s.kind + ":" + s.name), ["fn:main", "type:Server", "fn:Do"]);
+  eq("js: export default class is a class", extractSymbols("a.js", "export default class Widget extends Base {\n  render() {\n  }\n}").map((s) => s.kind + ":" + s.name), ["class:Widget", "method:render"]);
+  eq("rb: def self.x is x (not self), a setter keeps its =", extractSymbols("a.rb", "class Svc\n  def self.call(x)\n  end\n  def name=(v)\n  end\nend").map((s) => s.kind + ":" + s.name), ["class:Svc", "fn:call", "fn:name="]);
   eq("js: methods with modifiers, #private, getters, = function; control statements are not methods", extractSymbols("a.js", "class Foo {\n  static async *gen() {}\n  get value() { return 1; }\n  #priv() {}\n  async fetchAll(a) {}\n  get(key) { return 1; }\n}\nexport const util = function () {};\nif (x) {\nwhile (y) {\nconst s = `Salt (hex): ${h}`;\n", { all: true }).map((s) => s.name), ["Foo", "gen", "value", "priv", "fetchAll", "get", "util"]);
   eq("ts: method with access modifier and return type", extractSymbols("a.ts", "class R {\n  protected save(x: T): void {}\n  private async load<K>(k: K): Promise<T | null> {\n}\n", { all: true }).map((s) => s.name), ["R", "save", "load"]);
   eq("py: methods named get/delete (Django views) are kept", extractSymbols("v.py", "class V(View):\n    def get(self, r):\n        pass\n    def delete(self, r):\n        pass\n", { all: true }).map((s) => s.name), ["V", "get", "delete"]);
@@ -1907,6 +1960,8 @@ group("compliance bundle (SOC2 export)");
   eq("parsePatch: file name", pf[0].file, "f.js");
   eq("apply single-file patch anchors on context despite line drift", applyPatch("pre\nline1\nline2\nline3\npost\n", patch).content, "pre\nline1\nLINE2\nline3\npost\n");
   ok("patch context-not-found is an error", !applyPatch("totally different\n", patch).ok);
+  eq("patch: a removed \"-- comment\" line (--- in the diff) before the next hunk is a body line, not a file header", applyPatch("a\n-- c\nb\nc\nd\n", "--- a/q.sql\n+++ b/q.sql\n@@ -2 +1,0 @@\n--- c\n@@ -5 +4 @@\n-d\n+D\n").content, "a\nb\nc\nD\n");
+  eq("patch: an added \"++ x\" line (+++ in the diff) likewise", applyPatch("a\nb\n", "@@ -1 +1,2 @@\n a\n+++ x\n@@ -2 +3 @@\n-b\n+B\n").content, "a\n++ x\nB\n");
   ok("multi-file patch is parsed into two files", parsePatch(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@", "-a", "+b", "diff --git a/y b/y", "--- a/y", "+++ b/y", "@@", "-c", "+d"].join("\n")).length === 2);
   eq("applyHunks flexible-anchors a hunk whose context indentation differs", applyHunks("  keep\n    old\n  tail\n", [{ before: ["keep", "old"], after: ["keep", "new"] }]).content, "  keep\n  new\n  tail\n");
   // one blank line ([""]) is not "no lines" ([]): these were applied wrongly and reported as success
@@ -2269,6 +2324,11 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("runner markers still count: go FAIL, pytest FAILED, cargo FAILED", cat("--- FAIL: TestX (0.00s)\nFAIL\tpkg/x\t0.01s", 1) === "test-failure" && cat("FAILED tests/t.py::test_a - assert 1 == 2", 1) === "test-failure" && cat("test result: FAILED. 1 passed; 2 failed", 101) === "test-failure");
     ok("a not-found command later in the output is still named", /`rg`/.test(DG.diagnose("+ make build\nstarting\nsh: 1: rg: not found\n", 127).summary));
     ok("a passing suite reporting '0 failed' on exit 0 is NOT a test-failure", DG.diagnose("test result: ok. 10 passed; 0 failed; 0 ignored", 0, "cargo test") === null);
+    ok("EADDRINUSE names the bound port, not node:events:497", /\(3000\)/.test(DG.diagnose("node:events:497\n      throw er; // Unhandled 'error' event\n\nError: listen EADDRINUSE: address already in use :::3000\n    at Server.setupListenHandle (node:net:1872:16)", 1).summary));
+    ok("an HTTP 404: Not Found is not a missing command", cat("HTTP 404: Not Found (https://api.github.com/repos/x/y)", 1) !== "missing-command");
+    ok("zsh's 'command not found: rg' names rg, not zsh", /`rg`/.test(DG.diagnose("zsh: command not found: rg", 127).summary));
+    ok("cat's missing path is named", /\/tmp\/nope$/.test(DG.diagnose("cat: /tmp/nope: No such file or directory", 1).summary));
+    ok("a Python syntax error carries its File/line location", /a\.py:4/.test(DG.diagnose("  File \"/x/a.py\", line 4\n    def f(\n         ^\nSyntaxError: '(' was never closed", 1).summary));
     ok("a successful grep for error text is content, not a failure", DG.diagnose("src/a.js:12:  throw new SyntaxError(\"bad\");\nsrc/b.js:3: } catch (error) {", 0, "grep -rn Error src") === null);
     ok("a runner that exits 0 with failures (piped through tail) is still a test-failure", cat("Tests: 2 failed, 10 passed", 0, "npm test | tail") === "test-failure");
     ok("a counted failure still reports the right number", (DG.diagnose("=== 2 failed, 8 passed ===", 1) || {}).summary === "2 test(s) failing");
@@ -2311,7 +2371,26 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       "-was here",
     ].join("\n");
     const files = IV.parseDiff(sampleDiff);
+    { const CDE = require("../lib/nexus/code-diff-explain");
+      const d = "diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -1,3 +1,3 @@\n--- old note\n-- item\n+++i;\n+select 1;\n ctx\n";
+      const f = CDE.parseDiff(d)[0];
+      eq("diff explainer counts +/- lines whose text starts with - or +", [f.file, f.additions, f.deletions], ["q.sql", 2, 2]); }
     ok("parseDiff splits every changed file", files.length === 3 && files.map((f) => f.path).join(",") === "src/app.js,new.js,gone.js");
+    // git C-quotes non-ASCII / tab / quote paths; a quoted path must still hit forbidPaths.
+    const quoted = [
+      'diff --git "a/secret/r\\303\\251sum\\303\\251.txt" "b/secret/r\\303\\251sum\\303\\251.txt"',
+      "index 78981922..61780798 100644",
+      '--- "a/secret/r\\303\\251sum\\303\\251.txt"',
+      '+++ "b/secret/r\\303\\251sum\\303\\251.txt"',
+      "@@ -1 +1,2 @@", " a", "+b",
+      'diff --git "a/secret/tab\\tname.txt" "b/secret/tab\\tname.txt"',
+      "deleted file mode 100644", "index 0b..00 100644",
+      '--- "a/secret/tab\\tname.txt"', "+++ /dev/null", "@@ -1 +0,0 @@", "-x",
+      "diff --git a/a b.js b/a b.js", "new file mode 100644", "index 00..11", "--- /dev/null", "+++ b/a b.js\t", "@@ -0,0 +1 @@", "+x y",
+    ].join("\n");
+    const qf = IV.parseDiff(quoted);
+    ok("parseDiff unquotes git C-quoted paths (octal UTF-8, \\t) and reads spaced names", qf.map((f) => f.path).join("|") === "secret/résumé.txt|secret/tab\tname.txt|a b.js");
+    ok("a quoted path still trips forbidPaths", IV.checkInvariants(qf, { forbidPaths: ["secret/**"] }).violations.length === 2);
     ok("parseDiff marks a new file A, a deleted file D, a modified file M", files[0].status === "M" && files[1].status === "A" && files[2].status === "D");
     ok("parseDiff collects added lines with correct NEW-file line numbers", files[0].added.length === 2 && files[0].added[0].n === 11 && files[0].added[1].n === 12);
     ok("parseDiff collects removed lines", files[0].removed.length === 1 && files[0].removed[0] === "  oldline();");
@@ -2519,6 +2598,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("bisectTool isolates the culprit turn via restore+test", res.status === "found" && res.culprit.found && res.culprit.turn === "add feature X");
     ok("bisectTool restores the working tree to the starting snapshot at the end", restores[restores.length - 1] === "SNAP" && res.restored === true);
     ok("bisectTool reports the test command and a human summary", res.testCommand === "npm test" && /Regression isolated/.test(res.summary));
+    // The final put-back can fail (a locked file, a git error): it must not claim restored, and must give the way back.
+    let snapSeen = 0;
+    const failBack = await BS.bisectTool({}, "/repo", Object.assign({}, fakeDeps, { restore: (tree) => { restores.push(tree); return !(tree === "SNAP" && ++snapSeen > 1); } }));
+    ok("bisectTool reports a failed final restore with the snapshot to recover from", failBack.restored === false && /RESTORE FAILED/.test(failBack.summary) && /--source=SNAP/.test(failBack.summary));
 
     let bTouched = 0;
     const resNoSnap = await BS.bisectTool({}, "/repo", Object.assign({}, fakeDeps, { snapshot: () => null, restore: () => { bTouched++; return true; } }));
@@ -2662,6 +2745,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("shrinkTool reports the innocent (droppable) changed files", res.innocent.slice().sort().join(",") === "A.js,C.js,E.js");
     ok("shrinkTool restores the working tree to the current snapshot at the end", current.has("B.js") && current.has("D.js") && res.restored === true);
     ok("shrinkTool summarises the minimal set and the test command", /Minimal breaking change set/.test(res.summary) && res.testCommand === "npm test");
+    // The final put-back of the whole set can fail: it must not claim restored, and must give the way back.
+    let fullSnap = 0;
+    const failBack = await SH.shrinkTool({}, "/repo", Object.assign({}, fakeDeps, { restore: (tree, paths) => (tree === "SNAP" && paths.length === 5 && ++fullSnap > 1) ? false : fakeDeps.restore(tree, paths) }));
+    ok("shrinkTool reports a failed final restore with the snapshot to recover from", failBack.restored === false && /RESTORE FAILED/.test(failBack.summary) && /--source=SNAP/.test(failBack.summary));
 
     let touched = 0;
     const resNoSnap = await SH.shrinkTool({}, "/repo", Object.assign({}, fakeDeps, { snapshot: () => null, restore: () => { touched++; return true; } }));
@@ -2836,6 +2923,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const os = require("os"), d = fs.mkdtempSync(path.join(os.tmpdir(), "nxsg-"));
     ok("valid JS passes", SG.check("a.js", "const a = 1;\n").ok === true);
     ok("broken JS fails with a line", /^line 1: SyntaxError/.test(SG.check("a.js", "const a = ;\n").error || ""));
+    eq("JSX in a .js file without parentheses is not reported as a syntax error", ["export default function A() {\n  return <div className=\"x\">Don't</div>;\n}\n", "const A = () => <><B/></>;\n", "function A() {\n  return <Foo bar={1} />;\n}\n"].map((t) => SG.check("/tmp/nx-sg/a.js", t).ok === false), [false, false, false]);
+    eq("a comparison, or HTML in a string or template, does not hide a real error", ["const x = (a <b) ? 1 : 2;\nconst y = 2 +;\n", "const h = \"<b>x</b>\"; const z = `= ${`<i>`} <i>a</i>`;\nconst y = 2 +;\n"].map((t) => SG.check("/tmp/nx-sg/a.js", t).ok), [false, false]);
     ok("ESM syntax in a .js file is not a false positive", SG.check("a.js", "import x from \"y\";\nexport const z = 1;\n").ok === true);
     {
       const d = fs.mkdtempSync(path.join(os.tmpdir(), "nxsg-")); fs.writeFileSync(path.join(d, "package.json"), "{\"type\":\"module\"}");
@@ -3601,6 +3690,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("unknown name suggests similar ones", /similar: add/.test(RS.readSymbolTool({ path: "a.js", name: "ad" }, dir, rp).error || ""));
     eq("python: a column-0 comment inside a def does not end it", RS.indentEnd(["def f():", "    a = 1", "#    b = 2", "    return a", "", "def g():", "    pass"], 0), 3);
     eq("python: a flush-left triple-quoted string stays in the def", RS.indentEnd(["def q():", '    sql = """', "SELECT 1", '"""', "    return sql", "x = 1"], 0), 4);
+    eq("python: a triple quote inside an ordinary string or comment opens nothing", RS.indentEnd(["def q():", "    kinds = [\"'''\"]  # or \"\"\"", "    return kinds", "x = 1", "def r():", "    pass"], 0), 2);
+    eq("ruby: a setter def name=(v) is not a one-line endless def", RS.blockEnd(["  def name=(v)", "    @name = v", "  end"], 0, "s.rb"), 2);
     fs.writeFileSync(path.join(dir, "m.py"), "import os\n\n@cache\ndef load(p,\n         q):\n    x = 1\n\n    return x\n\ndef after():\n    pass\n");
     r = RS.readSymbolTool({ path: "m.py", name: "load" }, dir, rp);
     eq("Python: decorator + multi-line signature + body by indentation", r.lines, "3-8");
@@ -3615,7 +3706,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("outline asks for every definition", /extractSymbols\(path\.basename\(fp\), txt, \{ max: 400, all: true \}\)/.test(fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8")));
     ok("a repeated name lists the other definition (index:N)", /index 1: line 11/.test(RS.readSymbolTool({ path: "c.py", name: "save" }, dir, rp).otherDefinitions || ""));
     eq("bodiless declaration continued onto the next line stops at its ;, not the next function", RS.braceEnd(["const f = (a) =>", "  a + 1;", "function g() {", "  return 2;", "}"], 0, true), 1);
+    eq("a default {} or destructured parameter is not the body", RS.braceEnd(["function parse(input, opts = {}) {", "  const { a, b } = opts;", "  return a;", "}", "function next() {}"], 0, true), 3);
+    eq("an arrow callback inside the call still opens the body", RS.braceEnd(["app.get(\"/x\", async (req) => {", "  return req;", "});"], 0, true), 2);
+    eq("a regex literal after => is skipped", RS.braceEnd(["function f(t) {", "  const g = (l) => /\\(?:\\s*\\{)?/.test(l);", "  return g;", "}", "function h() {", "}"], 0, true), 3);
     eq("rust lifetimes are not char literals: the body after &'a str { is matched", RS.blockEnd(["pub fn first<'a>(x: &'a str) -> &'a str {", "    let v = vec![1, 2];", "    if v.len() > 1 { return x; }", "    x", "}", "fn g() { let c = '{'; }"], 0, "a.rs"), 4);
+    eq("a } inside a multi-line Go raw string or Kotlin text block does not end the function", [RS.blockEnd(["func f() {", "  s := `", "}", "`", "}", "func g() {}"], 0, "a.go"), RS.blockEnd(["fun f() {", "  val s = \"\"\"", "  }", "  \"\"\"", "}", "fun g() {}"], 0, "a.kt")], [4, 4]);
+    eq("JS template expressions holding strings, and Rust raw strings, are skipped", [RS.blockEnd(["function f() {", "  const s = `a ${x ? `}` : '{'} b`;", "}", "x"], 0, "a.js"), RS.blockEnd(["fn f() {", "  let s = r#\"a \"}\" b\"#;", "}", "fn g() {}"], 0, "a.rs")], [2, 2]);
     eq("rust char literals with braces and escapes still skip", RS.blockEnd(["fn g() {", "    let c = '{'; let d = '\\''; let e = '\\u{7B}';", "}"], 0, "a.rs"), 2);
     ok("needs path and name", /needs \{path, name\}/.test(RS.readSymbolTool({ path: "a.js" }, dir, rp).error));
     fs.rmSync(dir, { recursive: true, force: true });
@@ -3630,6 +3726,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const q = (f, query, extra) => JQ.jsonQueryTool(Object.assign({ path: f, query }, extra || {}), dir, rp);
     eq("dotted path", q("p.json", "scripts.test").value, '"node t.js"');
     eq("bracket key with @ and /", q("p.json", 'deps["@a/b"]').value, '"1.0.0"');
+    fs.writeFileSync(path.join(dir, "pr.json"), '{"a":{"__proto__":{"x":1},"b":2}}');
+    eq("* keeps a __proto__ key", JSON.parse(q("pr.json", "a.*").value), JSON.parse('{"__proto__":{"x":1},"b":2}'));
+    fs.writeFileSync(path.join(dir, "cm.json"), '{ "f": 1/**/2, // x\n }');
+    ok("a comment separates tokens: 1/**/2 is an error, not 12", /not valid/.test(q("cm.json", "f").error || ""));
     fs.writeFileSync(path.join(dir, "bom.json"), "\uFEFF" + '{"a":1}');
     eq("a UTF-8 BOM (Windows editors) still parses", q("bom.json", "a").value, "1");
     fs.writeFileSync(path.join(dir, "jc.json"), '{\n // c\n "p": "[a,]", "q": [1, 2 ,\n],\n}');
@@ -3769,6 +3869,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("a CRLF replacement is not spliced into an LF file", !/\r/.test(fs.readFileSync(path.join(dir, "m.js"), "utf8")));
     fs.writeFileSync(path.join(dir, "c.txt"), "one\r\ntwo\r\n"); run({ find: "one\ntwo", replace: "1\r\n2", glob: "c.txt" });
     eq("a CRLF replacement on a CRLF file stays CRLF (no \\r\\r\\n)", fs.readFileSync(path.join(dir, "c.txt"), "utf8"), "1\r\n2\r\n");
+    fs.writeFileSync(path.join(dir, "r1.txt"), "a = 1\r\nb = 2\r\nc = 3\r\n"); run({ find: "^b = (\\d)$", replace: "b = $1\nb2 = $1", regex: true, glob: "r1.txt" });
+    eq("regex on a CRLF file: a newline in the replacement becomes CRLF", fs.readFileSync(path.join(dir, "r1.txt"), "utf8"), "a = 1\r\nb = 2\r\nb2 = 2\r\nc = 3\r\n");
+    fs.writeFileSync(path.join(dir, "r2.txt"), "a = 1\r\nb = 2\r\nc = 3\r\n"); run({ find: "a = 1\\nb = 2", replace: "ab", regex: true, glob: "r2.txt" });
+    eq("regex on a CRLF file: \\n in the pattern matches a line break", fs.readFileSync(path.join(dir, "r2.txt"), "utf8"), "ab\r\nc = 3\r\n");
+    fs.writeFileSync(path.join(dir, "r3.txt"), "a = 1\r\nb\r\n"); run({ find: "1\\r\\n", replace: "1;\r\n", regex: true, glob: "r3.txt" });
+    eq("regex naming \\r still sees the CRLF", fs.readFileSync(path.join(dir, "r3.txt"), "utf8"), "a = 1;\r\nb\r\n");
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
@@ -3809,6 +3915,15 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     srv.close();
     r = await WF.waitForTool({ port, timeout_s: 1 }, dir, rp, {});
     ok("closed port → times out", r.ready === false && /timed out/.test(r.note));
+    { // a unit-suffixed timeout used to be NaN, so it never timed out
+      let t = 0, n = 0;
+      const fake = { sleep: async () => { t += 1000; if (++n > 500) throw new Error("never timed out"); }, now: () => t };
+      const r1 = await WF.waitForTool({ file: "never-there", timeout: "30s" }, dir, rp, fake).catch((e) => ({ err: e.message }));
+      ok("timeout \"30s\" times out after 30s", r1.ready === false && r1.waited_s === 30);
+      t = 0; n = 0;
+      const r2 = await WF.waitForTool({ file: "never-there", timeout: "2m" }, dir, rp, fake).catch((e) => ({ err: e.message }));
+      ok("timeout \"2m\" is 120s", r2.waited_s === 120);
+    }
     setTimeout(() => fs.writeFileSync(path.join(dir, "flag"), "x"), 200);
     r = await WF.waitForTool({ file: "flag", timeout_s: 3 }, dir, rp, {});
     ok("file appears → ready", r.ready === true && r.waited_s < 3);
@@ -3839,6 +3954,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const q = (args) => SR.searchTool(args, dir, rp);
     let r = q({ pattern: "token" });
     eq("summary counts matches + files", r.summary, "Found 3 matches in 2 files");
+    { const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "srch-bom-")); fs.writeFileSync(path.join(d2, "a.cs"), "\uFEFFusing System;\r\nclass A {}\r\n");
+      eq("a UTF-8 BOM does not hide line 1 from ^", SR.searchTool({ pattern: "^using System" }, d2, (p) => path.resolve(d2, p)).summary, "Found 1 match in 1 file");
+      ok("a pattern with a line break says why it cannot match", /line by line/.test(SR.searchTool({ pattern: "System;\\nclass" }, d2, (p) => path.resolve(d2, p)).summary)); }
+    eq("POSIX classes match as grep reads them", q({ pattern: "^const[[:space:]]+[[:alpha:]]+[[:space:]]=", case_sensitive: true }).summary, "Found 1 match in 1 file");
+    eq("a leading (?i) is a flag, not an invalid group", q({ pattern: "(?i)TOKEN = 2", case_sensitive: true }).summary, "Found 1 match in 1 file");
+    eq("(?i:...) groups are read too", q({ pattern: "use\\((?i:TOKEN)\\)", case_sensitive: true }).summary, "Found 1 match in 1 file");
     ok("path written once per file", r.results.split("\n").filter((l) => l === "src/a.js").length === 1 && /\n  3: const token = 1;/.test(r.results));
     ok("lockfile + minified skipped and reported", /2 lockfile\/minified/.test(r.skipped_generated));
     ok("an invalid regex says it was searched as plain text (not a bare 'No matches')", /^No matches found \(not a valid regex - .*plain text\)$/.test(q({ pattern: "[unclosed" }).summary));
@@ -3933,6 +4054,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const http = require("http");
     const seenAuth = {};
     eq("decodeEntities: a built-in name is not an entity", HF.decodeEntities("&constructor; &toString; &amp;"), "&constructor; &toString; &");
+    eq("decodeEntities: Latin-1 and common named entities, case kept", HF.decodeEntities("Caf&eacute; &Eacute;t&eacute; &euro;5 &ndash; &times;2 &#0;"), "Caf\u00e9 \u00c9t\u00e9 \u20ac5 \u2013 \u00d72 \ufffd");
+    eq("htmlToText keeps a <pre> block's line breaks and indentation as a code fence", HF.htmlToText("<p>Run:</p><pre><code>def f():\n    if x &lt; 1:\n        return 2\n</code></pre><p>after   text</p>"), "Run:\n\n```\ndef f():\n    if x < 1:\n        return 2\n```\n\nafter text");
     const srv = http.createServer((req, res) => {
       if (req.url === "/r1") { res.writeHead(302, { location: "/page" }); return res.end(); }
       if (req.url === "/evil") { res.writeHead(301, { location: "http://blocked.internal/latest/meta-data" }); return res.end(); }
@@ -4107,6 +4230,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("start_line/end_line", lineRange({ start_line: "10", end_line: "12" }), { off: 10, lim: 3 });
     eq("lines string", lineRange({ lines: "120-180" }), { off: 120, lim: 61 });
     eq("lines open-ended", lineRange({ lines: "50:" }), { off: 50, lim: null });
+    eq("lines as a GitHub anchor", lineRange({ lines: "L42-L50" }), { off: 42, lim: 9 });
+    eq("lines with an en dash or comma", [lineRange({ lines: "10\u201320" }), lineRange({ lines: "10, 20" })], [{ off: 10, lim: 11 }, { off: 10, lim: 11 }]);
+    eq("lines as one number starts there, as line does", lineRange({ lines: "42" }), { off: 42, lim: null });
     eq("nothing = whole file", lineRange({}), { off: 1, lim: null });
     eq("end before start → one line", lineRange({ start: 9, end: 3 }), { off: 9, lim: 1 });
   }
@@ -4240,11 +4366,13 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
   {
     const http = require("http");
     const { ollamaChatNative } = require("../lib/nexus/ollama");
-    let hits = 0;
+    let hits = 0, gwHits = 0;
     const srv = http.createServer((req, res) => {
       let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => {
         const model = JSON.parse(d).model;
         if (model === "missing") { res.writeHead(404, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: "model \"missing\" not found, try pulling it first" })); }
+        if (model === "nokey") { res.writeHead(401, { "content-type": "application/json" }); return res.end(JSON.stringify({ detail: "invalid api key" })); }
+        if (model === "gw" && gwHits++ === 0) { res.writeHead(503, { "content-type": "application/json" }); return res.end(JSON.stringify({ message: "upstream overloaded" })); }
         if (model === "busy" && hits++ === 0) { res.writeHead(503, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: "server busy, please try again" })); }
         res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ message: { role: "assistant", content: "hello" } }));
       });
@@ -4256,6 +4384,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("a model-not-found reply rejects with Ollama's message (not an empty answer)", !!err && /not found/.test(err.message));
     const t0 = Date.now(); const r = await ollamaChatNative("busy", [{ role: "user", content: "hi" }], []).catch((e) => ({ e }));
     ok("a 503 is retried and the next reply is used", r && r.body && r.body.message && r.body.message.content === "hello" && hits === 2);
+    let e401 = null; const r401 = await ollamaChatNative("nokey", [{ role: "user", content: "hi" }], []).catch((e) => { e401 = e; });
+    ok("an HTTP error whose body has no error field ({detail}) rejects with its status, not an empty answer", !r401 && !!e401 && /HTTP 401: invalid api key/.test(e401.message));
+    const rgw = await ollamaChatNative("gw", [{ role: "user", content: "hi" }], []).catch((e) => ({ e }));
+    ok("a 503 with a {message} body is retried", rgw && rgw.body && rgw.body.message && rgw.body.message.content === "hello" && gwHits === 2);
     srv.close();
     for (const [k, v] of [["OLLAMA_HOST", saved.h], ["DARKNODE_API_BASE", saved.b], ["OPENAI_BASE_URL", saved.o], ["OPENAI_API_BASE", saved.a]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
