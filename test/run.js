@@ -4323,11 +4323,13 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
   {
     const http = require("http");
     const { ollamaChatNative } = require("../lib/nexus/ollama");
-    let hits = 0;
+    let hits = 0, gwHits = 0;
     const srv = http.createServer((req, res) => {
       let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => {
         const model = JSON.parse(d).model;
         if (model === "missing") { res.writeHead(404, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: "model \"missing\" not found, try pulling it first" })); }
+        if (model === "nokey") { res.writeHead(401, { "content-type": "application/json" }); return res.end(JSON.stringify({ detail: "invalid api key" })); }
+        if (model === "gw" && gwHits++ === 0) { res.writeHead(503, { "content-type": "application/json" }); return res.end(JSON.stringify({ message: "upstream overloaded" })); }
         if (model === "busy" && hits++ === 0) { res.writeHead(503, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: "server busy, please try again" })); }
         res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ message: { role: "assistant", content: "hello" } }));
       });
@@ -4339,6 +4341,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("a model-not-found reply rejects with Ollama's message (not an empty answer)", !!err && /not found/.test(err.message));
     const t0 = Date.now(); const r = await ollamaChatNative("busy", [{ role: "user", content: "hi" }], []).catch((e) => ({ e }));
     ok("a 503 is retried and the next reply is used", r && r.body && r.body.message && r.body.message.content === "hello" && hits === 2);
+    let e401 = null; const r401 = await ollamaChatNative("nokey", [{ role: "user", content: "hi" }], []).catch((e) => { e401 = e; });
+    ok("an HTTP error whose body has no error field ({detail}) rejects with its status, not an empty answer", !r401 && !!e401 && /HTTP 401: invalid api key/.test(e401.message));
+    const rgw = await ollamaChatNative("gw", [{ role: "user", content: "hi" }], []).catch((e) => ({ e }));
+    ok("a 503 with a {message} body is retried", rgw && rgw.body && rgw.body.message && rgw.body.message.content === "hello" && gwHits === 2);
     srv.close();
     for (const [k, v] of [["OLLAMA_HOST", saved.h], ["DARKNODE_API_BASE", saved.b], ["OPENAI_BASE_URL", saved.o], ["OPENAI_API_BASE", saved.a]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
