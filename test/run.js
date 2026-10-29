@@ -1276,6 +1276,9 @@ group("dependency hygiene (/deps)");
   eq("commented-out imports are not imports; a // inside a string is not a comment", parseImports('// const x = require("left-pad");\n/* import y from "foo";\n */ import z from "real";\nconst u = "http://a"; const k = require("keep"); // require("no")'), ["keep", "real"]);
   eq("multi-line and default+named imports are still found", parseImports('import a, {\n  b,\n} from "pkg-a";\n  import type {T} from "@s/t/sub";'), ["pkg-a", "@s/t/sub"]);
   eq("subpath imports, URL/scheme specifiers and a self-import are not dependencies", auditDeps({ pkg: { name: "me" }, specifiers: ["#utils", "dart:io", "https://x.test/m.js", "me/sub"] }).missing, []);
+  eq("a ~/x path alias is not a package named ~", auditDeps({ pkg: {}, specifiers: ["~/utils/x", "~pkg"] }).missing, ["~pkg"]);
+  { const d = fs.mkdtempSync(path.join(os.tmpdir(), "deps-")); fs.writeFileSync(path.join(d, "a.mts"), 'import { z } from "zod";'); fs.writeFileSync(path.join(d, "b.cts"), 'const y = require("yaml");'); fs.writeFileSync(path.join(d, "C.vue"), '<script setup>\nimport { ref } from "vue"\n</script>\n');
+    eq(".mts, .cts and .vue files are scanned", scanImports(d).sort(), ["vue", "yaml", "zod"]); }
   ok("clean project reports no unused/missing", (() => { const c = auditDeps({ pkg: { dependencies: { express: "^4" } }, specifiers: ["express", "fs", "./x"] }); return !c.unused.length && !c.missing.length; })());
   // scanImports over a temp project
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-deps-"));

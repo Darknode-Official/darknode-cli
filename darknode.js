@@ -1042,7 +1042,7 @@ async function cliRun(args, gate) {
     // Headless dependency hygiene. --strict is a supply-chain gate: exit 1 if any
     // package is imported but not declared in package.json.
     const fsx = require("fs"), pathx = require("path");
-    let pkg = null; try { pkg = JSON.parse(fsx.readFileSync(pathx.join(process.cwd(), "package.json"), "utf8")); } catch (_) {}
+    let pkg = null; try { pkg = JSON.parse(fsx.readFileSync(pathx.join(process.cwd(), "package.json"), "utf8").replace(/^\uFEFF/, "")); } catch (_) {}
     if (!pkg) { console.log("  " + gray("no package.json in this directory")); process.exit(rest.includes("--strict") ? 1 : 0); }
     const a = auditDeps({ pkg, specifiers: scanImports(process.cwd()) });
     if (rest.includes("--json")) console.log(JSON.stringify(a, null, 2));
