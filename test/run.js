@@ -3599,6 +3599,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("content is line-numbered", /^2  \/\/ adds things/.test(r.content) && /8  }$/.test(r.content));
     eq("one-line function", RS.readSymbolTool({ path: "a.js", name: "other" }, dir, rp).lines, "9-9");
     ok("unknown name suggests similar ones", /similar: add/.test(RS.readSymbolTool({ path: "a.js", name: "ad" }, dir, rp).error || ""));
+    eq("python: a column-0 comment inside a def does not end it", RS.indentEnd(["def f():", "    a = 1", "#    b = 2", "    return a", "", "def g():", "    pass"], 0), 3);
+    eq("python: a flush-left triple-quoted string stays in the def", RS.indentEnd(["def q():", '    sql = """', "SELECT 1", '"""', "    return sql", "x = 1"], 0), 4);
     fs.writeFileSync(path.join(dir, "m.py"), "import os\n\n@cache\ndef load(p,\n         q):\n    x = 1\n\n    return x\n\ndef after():\n    pass\n");
     r = RS.readSymbolTool({ path: "m.py", name: "load" }, dir, rp);
     eq("Python: decorator + multi-line signature + body by indentation", r.lines, "3-8");
