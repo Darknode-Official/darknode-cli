@@ -3690,6 +3690,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("unknown name suggests similar ones", /similar: add/.test(RS.readSymbolTool({ path: "a.js", name: "ad" }, dir, rp).error || ""));
     eq("python: a column-0 comment inside a def does not end it", RS.indentEnd(["def f():", "    a = 1", "#    b = 2", "    return a", "", "def g():", "    pass"], 0), 3);
     eq("python: a flush-left triple-quoted string stays in the def", RS.indentEnd(["def q():", '    sql = """', "SELECT 1", '"""', "    return sql", "x = 1"], 0), 4);
+    eq("python: a triple quote inside an ordinary string or comment opens nothing", RS.indentEnd(["def q():", "    kinds = [\"'''\"]  # or \"\"\"", "    return kinds", "x = 1", "def r():", "    pass"], 0), 2);
     eq("ruby: a setter def name=(v) is not a one-line endless def", RS.blockEnd(["  def name=(v)", "    @name = v", "  end"], 0, "s.rb"), 2);
     fs.writeFileSync(path.join(dir, "m.py"), "import os\n\n@cache\ndef load(p,\n         q):\n    x = 1\n\n    return x\n\ndef after():\n    pass\n");
     r = RS.readSymbolTool({ path: "m.py", name: "load" }, dir, rp);
