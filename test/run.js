@@ -1767,6 +1767,8 @@ group("compliance bundle (SOC2 export)");
   eq("js: function + class + arrow const", extractSymbols("a.js", "export function foo(){}\nclass Bar{}\nconst baz = () => 1\n").map((s) => s.kind + ":" + s.name), ["fn:foo", "class:Bar", "fn:baz"]);
   eq("py: def + class with line numbers", extractSymbols("x.py", "import os\n\ndef run(x):\n    pass\nclass Widget:\n    pass\n").map((s) => s.kind + ":" + s.name + "@" + s.line), ["fn:run@3", "class:Widget@5"]);
   eq("go: func + type struct", extractSymbols("m.go", "func main(){}\ntype Server struct{}\nfunc (s *Server) Do(){}\n").map((s) => s.kind + ":" + s.name), ["fn:main", "type:Server", "fn:Do"]);
+  eq("js: export default class is a class", extractSymbols("a.js", "export default class Widget extends Base {\n  render() {\n  }\n}").map((s) => s.kind + ":" + s.name), ["class:Widget", "method:render"]);
+  eq("rb: def self.x is x (not self), a setter keeps its =", extractSymbols("a.rb", "class Svc\n  def self.call(x)\n  end\n  def name=(v)\n  end\nend").map((s) => s.kind + ":" + s.name), ["class:Svc", "fn:call", "fn:name="]);
   eq("js: methods with modifiers, #private, getters, = function; control statements are not methods", extractSymbols("a.js", "class Foo {\n  static async *gen() {}\n  get value() { return 1; }\n  #priv() {}\n  async fetchAll(a) {}\n  get(key) { return 1; }\n}\nexport const util = function () {};\nif (x) {\nwhile (y) {\nconst s = `Salt (hex): ${h}`;\n", { all: true }).map((s) => s.name), ["Foo", "gen", "value", "priv", "fetchAll", "get", "util"]);
   eq("ts: method with access modifier and return type", extractSymbols("a.ts", "class R {\n  protected save(x: T): void {}\n  private async load<K>(k: K): Promise<T | null> {\n}\n", { all: true }).map((s) => s.name), ["R", "save", "load"]);
   eq("py: methods named get/delete (Django views) are kept", extractSymbols("v.py", "class V(View):\n    def get(self, r):\n        pass\n    def delete(self, r):\n        pass\n", { all: true }).map((s) => s.name), ["V", "get", "delete"]);
@@ -3601,6 +3603,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("unknown name suggests similar ones", /similar: add/.test(RS.readSymbolTool({ path: "a.js", name: "ad" }, dir, rp).error || ""));
     eq("python: a column-0 comment inside a def does not end it", RS.indentEnd(["def f():", "    a = 1", "#    b = 2", "    return a", "", "def g():", "    pass"], 0), 3);
     eq("python: a flush-left triple-quoted string stays in the def", RS.indentEnd(["def q():", '    sql = """', "SELECT 1", '"""', "    return sql", "x = 1"], 0), 4);
+    eq("ruby: a setter def name=(v) is not a one-line endless def", RS.blockEnd(["  def name=(v)", "    @name = v", "  end"], 0, "s.rb"), 2);
     fs.writeFileSync(path.join(dir, "m.py"), "import os\n\n@cache\ndef load(p,\n         q):\n    x = 1\n\n    return x\n\ndef after():\n    pass\n");
     r = RS.readSymbolTool({ path: "m.py", name: "load" }, dir, rp);
     eq("Python: decorator + multi-line signature + body by indentation", r.lines, "3-8");
