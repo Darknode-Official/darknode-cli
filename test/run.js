@@ -385,6 +385,7 @@ group("security (secrets + destructive-command preflight)");
     return ["github_pat_" + r(22) + "_" + r(59), "sk-proj-" + r(48), "sk-ant-api03-" + r(90), "hf_" + r(34), "headers: { Authorization: \"Bearer " + r(40) + "\" }"].every(hit)
       && !hit("headers: { Authorization: `Bearer ${token}` }") && !hit("sk-proj-short");
   })());
+  ok("git-security SARIF location is a relative URI (space and # percent-encoded per segment)", (() => { const { toSarif } = require("../lib/nexus/git-security"); const out = JSON.stringify(toSarif([{ patternId: "x", label: "x", severity: "high", file: "sub/my conf#1.env", line: 2 }], ".")); return out.includes("sub/my%20conf%231.env"); })());
   // git-security.maskSecret (display mask): a SHORT value must never print in full.
   {
     const { maskSecret } = require("../lib/nexus/git-security");
