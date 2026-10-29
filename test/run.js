@@ -1907,6 +1907,7 @@ group("compliance bundle (SOC2 export)");
   eq("applyHunks flexible-anchors a hunk whose context indentation differs", applyHunks("  keep\n    old\n  tail\n", [{ before: ["keep", "old"], after: ["keep", "new"] }]).content, "  keep\n  new\n  tail\n");
   // one blank line ([""]) is not "no lines" ([]): these were applied wrongly and reported as success
   eq("patch: a diff -U0 insertion (-N,0) is placed after old line N, even among identical lines", applyPatch("x\nx\nx\nx\n", "@@ -2,0 +3 @@\n+NEW\n@@ -3 +4 @@\n-x\n+X\n").content, "x\nx\nNEW\nX\nx\n");
+  eq("patch: a -U0 top insertion (-0,0) does not stop later hunks using line numbers to pick among identical lines", applyPatch("x\ny\nx\ny\n", "@@ -0,0 +1 @@\n+top\n@@ -3 +4 @@\n-x\n+X\n").content, "top\nx\ny\nX\ny\n");
   eq("patch: a -U0 insertion at the top of the file (-0,0)", applyPatch("a\nb\n", "@@ -0,0 +1 @@\n+top\n@@ -2,0 +4 @@\n+end\n").content, "top\na\nb\nend\n");
   eq("patch: deleting a last line that has no newline keeps the blank line above it", applyPatch("a\n\nx", "@@ -3 +2,0 @@\n-x\n\\ No newline at end of file\n").content, "a\n\n");
   eq("patch: deleting a blank line is applied, not skipped", applyPatch("a\n\nb\n", "@@ -2 +1,0 @@\n-\n").content, "a\nb\n");
