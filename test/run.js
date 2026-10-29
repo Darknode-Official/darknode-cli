@@ -2917,6 +2917,8 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const os = require("os"), d = fs.mkdtempSync(path.join(os.tmpdir(), "nxsg-"));
     ok("valid JS passes", SG.check("a.js", "const a = 1;\n").ok === true);
     ok("broken JS fails with a line", /^line 1: SyntaxError/.test(SG.check("a.js", "const a = ;\n").error || ""));
+    eq("JSX in a .js file without parentheses is not reported as a syntax error", ["export default function A() {\n  return <div className=\"x\">Don't</div>;\n}\n", "const A = () => <><B/></>;\n", "function A() {\n  return <Foo bar={1} />;\n}\n"].map((t) => SG.check("/tmp/nx-sg/a.js", t).ok === false), [false, false, false]);
+    eq("a comparison, or HTML in a string or template, does not hide a real error", ["const x = (a <b) ? 1 : 2;\nconst y = 2 +;\n", "const h = \"<b>x</b>\"; const z = `= ${`<i>`} <i>a</i>`;\nconst y = 2 +;\n"].map((t) => SG.check("/tmp/nx-sg/a.js", t).ok), [false, false]);
     ok("ESM syntax in a .js file is not a false positive", SG.check("a.js", "import x from \"y\";\nexport const z = 1;\n").ok === true);
     {
       const d = fs.mkdtempSync(path.join(os.tmpdir(), "nxsg-")); fs.writeFileSync(path.join(d, "package.json"), "{\"type\":\"module\"}");
