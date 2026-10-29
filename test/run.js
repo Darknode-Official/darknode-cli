@@ -2272,6 +2272,11 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("runner markers still count: go FAIL, pytest FAILED, cargo FAILED", cat("--- FAIL: TestX (0.00s)\nFAIL\tpkg/x\t0.01s", 1) === "test-failure" && cat("FAILED tests/t.py::test_a - assert 1 == 2", 1) === "test-failure" && cat("test result: FAILED. 1 passed; 2 failed", 101) === "test-failure");
     ok("a not-found command later in the output is still named", /`rg`/.test(DG.diagnose("+ make build\nstarting\nsh: 1: rg: not found\n", 127).summary));
     ok("a passing suite reporting '0 failed' on exit 0 is NOT a test-failure", DG.diagnose("test result: ok. 10 passed; 0 failed; 0 ignored", 0, "cargo test") === null);
+    ok("EADDRINUSE names the bound port, not node:events:497", /\(3000\)/.test(DG.diagnose("node:events:497\n      throw er; // Unhandled 'error' event\n\nError: listen EADDRINUSE: address already in use :::3000\n    at Server.setupListenHandle (node:net:1872:16)", 1).summary));
+    ok("an HTTP 404: Not Found is not a missing command", cat("HTTP 404: Not Found (https://api.github.com/repos/x/y)", 1) !== "missing-command");
+    ok("zsh's 'command not found: rg' names rg, not zsh", /`rg`/.test(DG.diagnose("zsh: command not found: rg", 127).summary));
+    ok("cat's missing path is named", /\/tmp\/nope$/.test(DG.diagnose("cat: /tmp/nope: No such file or directory", 1).summary));
+    ok("a Python syntax error carries its File/line location", /a\.py:4/.test(DG.diagnose("  File \"/x/a.py\", line 4\n    def f(\n         ^\nSyntaxError: '(' was never closed", 1).summary));
     ok("a successful grep for error text is content, not a failure", DG.diagnose("src/a.js:12:  throw new SyntaxError(\"bad\");\nsrc/b.js:3: } catch (error) {", 0, "grep -rn Error src") === null);
     ok("a runner that exits 0 with failures (piped through tail) is still a test-failure", cat("Tests: 2 failed, 10 passed", 0, "npm test | tail") === "test-failure");
     ok("a counted failure still reports the right number", (DG.diagnose("=== 2 failed, 8 passed ===", 1) || {}).summary === "2 test(s) failing");
