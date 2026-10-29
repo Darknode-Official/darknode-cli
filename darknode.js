@@ -3173,26 +3173,44 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // and re-render only live ones (the running turn, running tools, text still
     // revealing). WeakMap: dropped messages free their lines.
     const _msgCache = new WeakMap();
+    let _pre = null; // settled-prefix lines reused while a turn runs (see bodyLines)
     const _scrollAnchor = { n: 0, cols: 0 };
+    // Serialized size of a finished tool's input, memoized: re-stringifying every
+    // tool call's input on every frame was most of a busy render on a long session.
+    const _inLen = new WeakMap();
+    const inputLen = (o) => { if (!o || typeof o !== "object") return o ? String(o).length : 0; let n = _inLen.get(o); if (n === undefined) { n = JSON.stringify(o).length; _inLen.set(o, n); } return n; };
     const _msgSig = (m, g) => {
       if (!m || m._live || m.role === "art" || m.role === "plan" || (busy && m === cur())) return null;
       let sg = g + "|" + (m.role || "") + "|" + (m.text == null ? -1 : String(m.text).length) + "|" + (Array.isArray(m.lines) ? m.lines.length + ":" + m.lines.join("").length : "") + "|" + (m.summary ? String(m.summary).length : 0) + "|" + (m.recap ? JSON.stringify(m.recap).length : 0) + "|" + (m.auto ? 1 : 0) + "|" + (m.before || 0);
       if (m.items) for (const it of m.items) {
         if (it.status === "run" || it.status === "wait" || (it.type === "text" && it.full != null && (it.shown | 0) < String(it.full).length)) return null; // still live (only text items typewrite; thinking has no `shown`)
-        sg += "," + (it.type || "") + "." + (it.status || "") + "." + (it.full != null ? String(it.full).length : 0) + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? String(it.detail).length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0) + "." + (it.end || 0) + "." + (it.interrupted ? 1 : 0) + "." + (it.input ? JSON.stringify(it.input).length : 0);
+        sg += "," + (it.type || "") + "." + (it.status || "") + "." + (it.full != null ? String(it.full).length : 0) + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? String(it.detail).length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0) + "." + (it.end || 0) + "." + (it.interrupted ? 1 : 0) + "." + inputLen(it.input);
       }
       return sg;
     };
     const bodyLines = (list) => {
       const _sig = (list || busy || compact.on) ? null : _bodySig();
       if (_sig !== null && _blCache && _sig === _blSig) return _blCache;
-      const L = [];
       const _g = cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + A.cyan + "|" + GRAD.join(",") + "|" + effort + "|" + engine + "|" + guard;
       let _pend = null; // the message rendered last iteration: store its lines once we know where they end (branches `continue`)
       const _flush = () => { if (_pend) { _msgCache.set(_pend.m, { sig: _pend.sig, lines: L.slice(_pend.from) }); _pend = null; } };
-      for (const m of (list || transcript)) {
+      // A running turn re-renders ~20x a second, and re-signing every message of a
+      // long (restored) session each frame starved the key handler: typing and
+      // Backspace lagged. While busy, the settled messages before the last few
+      // reuse their joined lines, re-checked against their signatures once a second.
+      const _src = list || transcript, _now = Date.now(), _hot = _src.length - 4;
+      let _reuse = busy && !list && _pre && _pre.g === _g && _pre.n <= _hot;
+      if (_reuse && _now - _pre.at >= 1000) { for (let i = 0; i < _pre.n && _reuse; i++) if (_src[i] !== _pre.msgs[i] || _msgSig(_src[i], _g) !== _pre.sigs[i]) _reuse = false; if (_reuse) _pre.at = _now; }
+      else if (_reuse && _src[_pre.n - 1] !== _pre.msgs[_pre.n - 1]) _reuse = false;
+      const L = _reuse ? _pre.lines.slice() : [];
+      let _preOk = !_reuse; // a full pass may save the prefix only if every message in it was cacheable (nothing live)
+      const _pms = [], _psg = [];
+      for (let _mi = _reuse ? _pre.n : 0; _mi < _src.length; _mi++) {
+        const m = _src[_mi];
         _flush();
+        if (_preOk && busy && !list && _mi === _hot) _pre = { g: _g, n: _mi, msgs: _pms, sigs: _psg, lines: L.slice(), at: _now };
         const _ms = _msgSig(m, _g);
+        if (_mi < _hot) { if (_ms === null) _preOk = false; else { _pms.push(m); _psg.push(_ms); } }
         if (_ms !== null) { const c = _msgCache.get(m); if (c && c.sig === _ms) { for (const x of c.lines) L.push(x); continue; } _pend = { m, sig: _ms, from: L.length }; }
         if (m.role === "art") {
           // Welcome card: product + tagline + version, a labelled session summary
