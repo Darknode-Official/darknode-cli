@@ -3920,6 +3920,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const HF = require("../lib/nexus/http-fetch");
     const http = require("http");
     const seenAuth = {};
+    eq("decodeEntities: a built-in name is not an entity", HF.decodeEntities("&constructor; &toString; &amp;"), "&constructor; &toString; &");
     const srv = http.createServer((req, res) => {
       if (req.url === "/r1") { res.writeHead(302, { location: "/page" }); return res.end(); }
       if (req.url === "/evil") { res.writeHead(301, { location: "http://blocked.internal/latest/meta-data" }); return res.end(); }
