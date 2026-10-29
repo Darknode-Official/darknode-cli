@@ -379,6 +379,12 @@ group("security (secrets + destructive-command preflight)");
   ok("scanSecrets finds a connection-string password and masks it", scanSecrets("postgres://admin:Xk92fLq@db.local/app").includes("password in a connection string") && !/Xk92fLq/.test(maskSecrets("postgres://admin:Xk92fLq@db.local/app")));
   ok("connection-string placeholders are not flagged", ["postgres://user:password@h/db", "mysql://u:${DB_PASS}@h/db", "redis://u:changeme@h", "amqp://u:<token>@h", "mongodb://u:%s@h"].every((s) => !scanSecrets(s).includes("password in a connection string")));
   ok("maskSecrets redacts a private key with no END line", (() => { const body = "MIIEpQ" + "A".repeat(40); const out = maskSecrets("-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n"); return out.includes("[redacted:private-key]") && !out.includes(body); })());
+  ok("git secret scan finds GitHub fine-grained, OpenAI, Anthropic, Hugging Face and literal Bearer tokens", (() => {
+    const { SECRET_PATTERNS } = require("../lib/nexus/git-security"); const r = (n) => "Ab3Xy9Qw2Er5Ty8Ui1Op4As7Df0Gh6Jk3Lz9Xc2Vb5Nm8Qa1Ws4Ed7Rf0Tg6Yh3Uj9Ik2Ol5Pq8Wr1Tz4Ka7Lb0Mc3Nd6".slice(0, n);
+    const hit = (t) => SECRET_PATTERNS.some((p) => p.regex.test(t));
+    return ["github_pat_" + r(22) + "_" + r(59), "sk-proj-" + r(48), "sk-ant-api03-" + r(90), "hf_" + r(34), "headers: { Authorization: \"Bearer " + r(40) + "\" }"].every(hit)
+      && !hit("headers: { Authorization: `Bearer ${token}` }") && !hit("sk-proj-short");
+  })());
   // git-security.maskSecret (display mask): a SHORT value must never print in full.
   {
     const { maskSecret } = require("../lib/nexus/git-security");
