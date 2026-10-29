@@ -4143,6 +4143,30 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     if (saved.b !== undefined) process.env.DARKNODE_API_BASE = saved.b;
   }
 
+  group("native tool-calling on Ollama: an error reply is an error, and 503 is retried");
+  {
+    const http = require("http");
+    const { ollamaChatNative } = require("../lib/nexus/ollama");
+    let hits = 0;
+    const srv = http.createServer((req, res) => {
+      let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => {
+        const model = JSON.parse(d).model;
+        if (model === "missing") { res.writeHead(404, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: "model \"missing\" not found, try pulling it first" })); }
+        if (model === "busy" && hits++ === 0) { res.writeHead(503, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: "server busy, please try again" })); }
+        res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ message: { role: "assistant", content: "hello" } }));
+      });
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    const saved = { h: process.env.OLLAMA_HOST, b: process.env.DARKNODE_API_BASE, o: process.env.OPENAI_BASE_URL, a: process.env.OPENAI_API_BASE };
+    process.env.OLLAMA_HOST = "127.0.0.1:" + srv.address().port; delete process.env.DARKNODE_API_BASE; delete process.env.OPENAI_BASE_URL; delete process.env.OPENAI_API_BASE;
+    let err = null; await ollamaChatNative("missing", [{ role: "user", content: "hi" }], []).catch((e) => { err = e; });
+    ok("a model-not-found reply rejects with Ollama's message (not an empty answer)", !!err && /not found/.test(err.message));
+    const t0 = Date.now(); const r = await ollamaChatNative("busy", [{ role: "user", content: "hi" }], []).catch((e) => ({ e }));
+    ok("a 503 is retried and the next reply is used", r && r.body && r.body.message && r.body.message.content === "hello" && hits === 2);
+    srv.close();
+    for (const [k, v] of [["OLLAMA_HOST", saved.h], ["DARKNODE_API_BASE", saved.b], ["OPENAI_BASE_URL", saved.o], ["OPENAI_API_BASE", saved.a]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();
