@@ -71,7 +71,28 @@ darknode nexus              # the AI coding agent (interactive TUI)
 darknode nexus "fix auth"   # one-shot task
 darknode nexus --engine ollama   # local, private models
 darknode <tool> ...         # drive the security toolkit
+darknode mcp                # MCP server: the Darknode Deck's tools for any AI
 ```
+
+## Use Darknode from any AI (MCP)
+
+`darknode mcp` is an MCP server (stdio) that gives any MCP client the Darknode
+Deck's analysis tools: Infrastructure as Code, Kubernetes, firewall configs,
+cloud audit logs, sign-ins, scanner imports and the rest. The engines are the
+Deck's own, downloaded from darknode.ai and run on your machine, so the files
+an AI hands them stay local. Which tools are listed follows your Darknode plan
+(sign in with `darknode nexus`, then `/login`).
+
+```bash
+claude mcp add darknode -- node /path/to/darknode-cli/darknode.js mcp      # Claude Code
+codex mcp add darknode -- node /path/to/darknode-cli/darknode.js mcp       # Codex CLI
+gemini mcp add darknode node /path/to/darknode-cli/darknode.js mcp         # Gemini CLI
+```
+
+Claude Desktop, Cursor and other clients take the same command in their
+`mcpServers` config: `{"command": "node", "args": ["/path/to/darknode-cli/darknode.js", "mcp"]}`.
+To send results to your Deck, set `DARKNODE_API_KEY` (a workspace key with the
+`ingest:write` scope, from Deck > API & Ingest) and `DARKNODE_WORKSPACE`.
 
 ## Documentation
 
