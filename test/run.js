@@ -2791,6 +2791,15 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const LF = require("../lib/nexus/lint-format");
     eq("detectLangs js+python", LF.detectLangs(["package.json", "pyproject.toml", "README"]).map((l) => l.lang), ["js", "python"]);
     eq("detectLangs none", LF.detectLangs(["README", "LICENSE"]), []);
+    { const cmds = [];
+      const run = async (c) => { cmds.push(c); return { code: 0, output: "" }; };
+      const bare = await LF.lintFormatTool({}, "/repo", { readdir: () => ["requirements.txt"], readFile: () => "requests==2.31\n", run });
+      ok("a Python project that declares no formatter is not reformatted by a global black/ruff", cmds.length === 0 && bare.ran === false && /declares no formatter/.test(bare.note));
+      await LF.lintFormatTool({}, "/repo", { readdir: () => ["pyproject.toml"], readFile: () => "[tool.black]\nline-length = 100\n", run });
+      ok("[tool.black] in pyproject selects black", cmds.length === 1 && /^black /.test(cmds[0]));
+      cmds.length = 0;
+      await LF.lintFormatTool({}, "/repo", { readdir: () => ["ruff.toml", "setup.py"], readFile: () => "", run });
+      ok("ruff fix still formats when lint issues remain", cmds.length === 1 && /ruff check '?\.'? --fix; s=\$\?; ruff format/.test(cmds[0])); }
     const plan = LF.buildPlan(LF.detectLangs(["package.json"]), { fix: true, target: "." });
     ok("buildPlan fix uses --write; later tools are fallbacks only", plan.length === 2 && /prettier --write/.test(plan[0].cmd) && !plan[0].fallback && plan[1].fallback === true);
     const planAll = LF.buildPlan(LF.detectLangs(["package.json"]), { fix: false, target: "'src'", all: true });
