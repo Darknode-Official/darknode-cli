@@ -1960,6 +1960,8 @@ group("compliance bundle (SOC2 export)");
   eq("parsePatch: file name", pf[0].file, "f.js");
   eq("apply single-file patch anchors on context despite line drift", applyPatch("pre\nline1\nline2\nline3\npost\n", patch).content, "pre\nline1\nLINE2\nline3\npost\n");
   ok("patch context-not-found is an error", !applyPatch("totally different\n", patch).ok);
+  eq("patch: a removed \"-- comment\" line (--- in the diff) before the next hunk is a body line, not a file header", applyPatch("a\n-- c\nb\nc\nd\n", "--- a/q.sql\n+++ b/q.sql\n@@ -2 +1,0 @@\n--- c\n@@ -5 +4 @@\n-d\n+D\n").content, "a\nb\nc\nD\n");
+  eq("patch: an added \"++ x\" line (+++ in the diff) likewise", applyPatch("a\nb\n", "@@ -1 +1,2 @@\n a\n+++ x\n@@ -2 +3 @@\n-b\n+B\n").content, "a\n++ x\nB\n");
   ok("multi-file patch is parsed into two files", parsePatch(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@", "-a", "+b", "diff --git a/y b/y", "--- a/y", "+++ b/y", "@@", "-c", "+d"].join("\n")).length === 2);
   eq("applyHunks flexible-anchors a hunk whose context indentation differs", applyHunks("  keep\n    old\n  tail\n", [{ before: ["keep", "old"], after: ["keep", "new"] }]).content, "  keep\n  new\n  tail\n");
   // one blank line ([""]) is not "no lines" ([]): these were applied wrongly and reported as success
