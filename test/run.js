@@ -2790,6 +2790,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const skipped = await LF.lintFormatTool({}, "/repo", { readdir: () => ["package.json", ".prettierrc"], run: async () => ({ code: 127, output: "sh: prettier: command not found" }) });
     ok("lintFormatTool skips an uninstalled formatter (and says to npm install one the project declares)", /^not installed - the project declares it; run npm install$/.test(skipped.results[0].skipped) && /no formatter was installed/.test(skipped.note || ""));
     const ran = await LF.lintFormatTool({}, "/repo", { readdir: () => ["package.json", ".prettierrc"], run: async () => ({ code: 0, output: "All matched files use Prettier code style!" }) });
+    { const gochk = await LF.lintFormatTool({ check: true }, "/repo", { readdir: () => ["go.mod"], run: async () => ({ code: 0, output: "main.go\nutil/x.go\n" }) });
+      const goclean = await LF.lintFormatTool({ check: true }, "/repo", { readdir: () => ["go.mod"], run: async () => ({ code: 0, output: "" }) });
+      const gofix = await LF.lintFormatTool({}, "/repo", { readdir: () => ["go.mod"], run: async () => ({ code: 0, output: "" }) });
+      ok("gofmt -l listing files fails a check run (it exits 0 either way)", gochk.results[0].ok === false && gochk.results[0].code === 1 && goclean.results[0].ok === true && gofix.results[0].ok === true); }
     ok("lintFormatTool reports a successful fix run", ran.mode === "fix" && ran.results[0].ok === true && /Ran 1 formatter/.test(ran.summary || ""));
     { const cmds = [];
       const fb = await LF.lintFormatTool({ check: true }, "/repo", { readdir: () => ["package.json", ".prettierrc.json", "eslint.config.js"], run: async (c) => { cmds.push(c); return /prettier/.test(c) ? { code: 1, output: 'npm error npx canceled due to missing packages and no YES option: ["prettier@3"]' } : { code: 0, output: "" }; } });
