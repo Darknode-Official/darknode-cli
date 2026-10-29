@@ -320,6 +320,10 @@ group("sink redaction + keyed placeholders (NSAFE-060/061)");
     const code = ["token = req.headers.token", "password = getPassword()", "password: ${DB_PASSWORD}", "api_key: true", "token: process.env.TOKEN", "password: $PASS", "max_tokens: 100000", "Basic usage information here", "password_hint: correcthorse"];
     ok("redact: code, references and plain numbers next to secret-ish keys are left alone", code.every((t) => rt(t) === t));
     // the privacy mask for cloud engines and the secret scan follow the same rules
+    { const V = "Zk9mQ2pR7vT4wYb3nX8cL5aJ", toks = ["hf" + "_" + V + "Ab12Cd34Ef", "sk" + "_test_" + V, "pypi-" + "AgEIcHlwaS5vcmc" + V + V, "dop" + "_v1_" + "ab12".repeat(16), "shp" + "at_" + "a1b2".repeat(8),
+        "GOC" + "SPX-" + V, "ya" + "29.a0" + V, "gl" + "sa_" + V + "12345678_abcd", "https://hooks.slack" + ".com/services/T0ABC/B0ABC/" + V, "Account" + "Key=" + V + V + "==", "authorization: bearer " + V];
+      eq("scanSecrets flags and maskSecrets hides Hugging Face, Stripe test, PyPI, DigitalOcean, Shopify, Google OAuth, Grafana, Slack webhook, Azure and lowercase bearer secrets",
+        toks.filter((t) => (!/bearer/.test(t) && !scanSecrets("x = '" + t + "'").length) || maskSecrets("x " + t + " y").includes(V)), []); }
     ok("maskSecrets: unquoted/header/Basic/spaced-quoted secrets do not reach a cloud engine", leak.concat(['DB_PASSWORD="my secret pass"']).every((t) => !/hunter2|9f8e7d|Pa55|dXNlcj|abcdef0123|my secret/.test(maskSecrets(t))));
     ok("maskSecrets/scanSecrets: code next to secret-ish keys is left alone and not flagged", code.every((t) => maskSecrets(t) === t && scanSecrets(t).length === 0));
     ok("scanSecrets flags an unquoted YAML password and Basic auth", scanSecrets("db:\n  password: hunter2hunter\n").length > 0 && scanSecrets("Authorization: Basic dXNlcjpzM2NyZXRwYXNz").length > 0);
