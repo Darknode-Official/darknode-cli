@@ -2528,6 +2528,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("bisectTool isolates the culprit turn via restore+test", res.status === "found" && res.culprit.found && res.culprit.turn === "add feature X");
     ok("bisectTool restores the working tree to the starting snapshot at the end", restores[restores.length - 1] === "SNAP" && res.restored === true);
     ok("bisectTool reports the test command and a human summary", res.testCommand === "npm test" && /Regression isolated/.test(res.summary));
+    // The final put-back can fail (a locked file, a git error): it must not claim restored, and must give the way back.
+    let snapSeen = 0;
+    const failBack = await BS.bisectTool({}, "/repo", Object.assign({}, fakeDeps, { restore: (tree) => { restores.push(tree); return !(tree === "SNAP" && ++snapSeen > 1); } }));
+    ok("bisectTool reports a failed final restore with the snapshot to recover from", failBack.restored === false && /RESTORE FAILED/.test(failBack.summary) && /--source=SNAP/.test(failBack.summary));
 
     let bTouched = 0;
     const resNoSnap = await BS.bisectTool({}, "/repo", Object.assign({}, fakeDeps, { snapshot: () => null, restore: () => { bTouched++; return true; } }));
