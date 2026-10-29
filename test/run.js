@@ -4037,6 +4037,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("ads dropped, uddg decoded", r.map((x) => x.url), ["https://a.dev/x?y=1&z=2", "https://c.dev/"]);
     ok("missing snippet does not shift the next one", r[0].snippet === undefined && r[1].snippet === "snip 'c'");
     eq("entities decoded", r.map((x) => x.title), ["A & B", "C's"]);
+    eq("a built-in name in a title is not an entity", W.parseDdg(blk("web-result", "https://d.dev/", "x &constructor; y", ""), 8).map((x) => x.title), ["x &constructor; y"]);
     ok("captcha page detected", W.isBlocked(202, "") && W.isBlocked(200, '<div class="anomaly-modal__title">') && !W.isBlocked(200, html));
     ok("captcha → clear error", /rate-limiting/.test((await W.webSearchTool({ query: "x" }, { get: (cb) => cb(null, 202, "") })).error));
     ok("no results note", /no results/.test((await W.webSearchTool({ query: "x" }, { get: (cb) => cb(null, 200, "<div>No  results.</div>") })).note));
