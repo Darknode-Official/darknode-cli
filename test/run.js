@@ -2369,6 +2369,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       "-was here",
     ].join("\n");
     const files = IV.parseDiff(sampleDiff);
+    { const CDE = require("../lib/nexus/code-diff-explain");
+      const d = "diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -1,3 +1,3 @@\n--- old note\n-- item\n+++i;\n+select 1;\n ctx\n";
+      const f = CDE.parseDiff(d)[0];
+      eq("diff explainer counts +/- lines whose text starts with - or +", [f.file, f.additions, f.deletions], ["q.sql", 2, 2]); }
     ok("parseDiff splits every changed file", files.length === 3 && files.map((f) => f.path).join(",") === "src/app.js,new.js,gone.js");
     // git C-quotes non-ASCII / tab / quote paths; a quoted path must still hit forbidPaths.
     const quoted = [
