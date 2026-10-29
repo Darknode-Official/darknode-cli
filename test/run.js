@@ -1197,6 +1197,9 @@ group("changelog (release notes)");
   const md = renderChangelog(cs, { title: "Release 2.30", range: "v2.29..HEAD" });
   ok("renders grouped markdown with scope + hash", md.includes("# Release 2.30") && md.includes("## Features") && md.includes("**ui:** crash") && md.includes("(a1b2c3)"));
   ok("empty range renders a placeholder", renderChangelog([], {}).includes("No commits"));
+  { const rec = parseCommits("a1\tfeat: new api\x1fLong text.\n\nBREAKING CHANGE: config moved\n\x1e\nb2\tfix: x\x1fmentions BREAKING CHANGE: mid-line only\n\x1e\n");
+    eq("a BREAKING CHANGE: footer in the body (git log %b records) marks the commit breaking", rec.map((c) => [c.hash, c.type, c.breaking]), [["a1", "feat", true], ["b2", "fix", false]]);
+    ok("changelog asks git for commit bodies", /--pretty=%h%x09%s%x1f%b%x1e/.test(require("fs").readFileSync(require("path").join(__dirname, "../darknode.js"), "utf8"))); }
 }
 
 group("env-var audit (/env)");
