@@ -3813,6 +3813,15 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     srv.close();
     r = await WF.waitForTool({ port, timeout_s: 1 }, dir, rp, {});
     ok("closed port → times out", r.ready === false && /timed out/.test(r.note));
+    { // a unit-suffixed timeout used to be NaN, so it never timed out
+      let t = 0, n = 0;
+      const fake = { sleep: async () => { t += 1000; if (++n > 500) throw new Error("never timed out"); }, now: () => t };
+      const r1 = await WF.waitForTool({ file: "never-there", timeout: "30s" }, dir, rp, fake).catch((e) => ({ err: e.message }));
+      ok("timeout \"30s\" times out after 30s", r1.ready === false && r1.waited_s === 30);
+      t = 0; n = 0;
+      const r2 = await WF.waitForTool({ file: "never-there", timeout: "2m" }, dir, rp, fake).catch((e) => ({ err: e.message }));
+      ok("timeout \"2m\" is 120s", r2.waited_s === 120);
+    }
     setTimeout(() => fs.writeFileSync(path.join(dir, "flag"), "x"), 200);
     r = await WF.waitForTool({ file: "flag", timeout_s: 3 }, dir, rp, {});
     ok("file appears → ready", r.ready === true && r.waited_s < 3);
