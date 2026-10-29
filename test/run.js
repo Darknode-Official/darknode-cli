@@ -3636,6 +3636,17 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  group("project templates — scaffolds build, test and lint out of the box");
+  {
+    const { TEMPLATES } = require("../lib/nexus/project-bootstrap");
+    const py = TEMPLATES["python-cli"].files, na = JSON.parse(TEMPLATES["node-api"].files["package.json"]), ra = JSON.parse(TEMPLATES["react-app"].files["package.json"]);
+    ok("pyproject uses setuptools' real build backend (setuptools.backends does not exist)", /build-backend = "setuptools\.build_meta"/.test(py["pyproject.toml"]));
+    ok("python CLI imports nothing unused (CI runs ruff check)", !/^import sys$/m.test(py["mycli/cli.py"]));
+    eq("node API test script lets node find tests (sh does not expand **, Node 20 does not glob)", na.scripts.test, "node --test");
+    ok("react test passes with no test files (CI runs it on the bare scaffold)", /--passWithNoTests/.test(ra.scripts.test));
+    ok("react lint has a config with the react plugin and covers .jsx", !!TEMPLATES["react-app"].files[".eslintrc.json"] && /plugin:react/.test(TEMPLATES["react-app"].files[".eslintrc.json"]) && /--ext \.js,\.jsx/.test(ra.scripts.lint) && !!ra.devDependencies["eslint-plugin-react"]);
+  }
+
   group("undo_edit — take back the agent's own last change to a file");
   {
     const { createEditUndo } = require("../lib/nexus/edit-undo");
