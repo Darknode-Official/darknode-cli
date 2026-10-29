@@ -3852,6 +3852,10 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const past = Date.now() / 1000 - 1000; fs.utimesSync(path.join(dir, "src/a.js"), past, past);
     eq("sort recent = newest first", f({ glob: "src/**", sort: "recent" }).files.slice(-1), ["src/a.js"]);
     ok("truncation reported", /showing 1 of 4/.test(f({ glob: "**/*", max_results: 1 }).truncated));
+    eq("[set] character class", f({ glob: "**/*.[jt]s" }).files, ["src/a.js", "src/ui/c.ts"]);
+    eq("[!set] negated class", f({ glob: "**/*.[!j]s" }).files, ["src/ui/c.ts"]);
+    eq("glob written from the root still matches when path is a subfolder", f({ glob: "src/ui/*.ts", path: "src" }).files, ["src/ui/c.ts"]);
+    eq("search: root-relative glob from a subfolder", SR.searchTool({ pattern: "x", path: "src", glob: "src/ui/*.ts" }, dir, rp).summary, "Found 1 match in 1 file");
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
