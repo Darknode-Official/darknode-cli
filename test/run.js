@@ -3843,6 +3843,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("a CRLF replacement is not spliced into an LF file", !/\r/.test(fs.readFileSync(path.join(dir, "m.js"), "utf8")));
     fs.writeFileSync(path.join(dir, "c.txt"), "one\r\ntwo\r\n"); run({ find: "one\ntwo", replace: "1\r\n2", glob: "c.txt" });
     eq("a CRLF replacement on a CRLF file stays CRLF (no \\r\\r\\n)", fs.readFileSync(path.join(dir, "c.txt"), "utf8"), "1\r\n2\r\n");
+    fs.writeFileSync(path.join(dir, "r1.txt"), "a = 1\r\nb = 2\r\nc = 3\r\n"); run({ find: "^b = (\\d)$", replace: "b = $1\nb2 = $1", regex: true, glob: "r1.txt" });
+    eq("regex on a CRLF file: a newline in the replacement becomes CRLF", fs.readFileSync(path.join(dir, "r1.txt"), "utf8"), "a = 1\r\nb = 2\r\nb2 = 2\r\nc = 3\r\n");
+    fs.writeFileSync(path.join(dir, "r2.txt"), "a = 1\r\nb = 2\r\nc = 3\r\n"); run({ find: "a = 1\\nb = 2", replace: "ab", regex: true, glob: "r2.txt" });
+    eq("regex on a CRLF file: \\n in the pattern matches a line break", fs.readFileSync(path.join(dir, "r2.txt"), "utf8"), "ab\r\nc = 3\r\n");
+    fs.writeFileSync(path.join(dir, "r3.txt"), "a = 1\r\nb\r\n"); run({ find: "1\\r\\n", replace: "1;\r\n", regex: true, glob: "r3.txt" });
+    eq("regex naming \\r still sees the CRLF", fs.readFileSync(path.join(dir, "r3.txt"), "utf8"), "a = 1;\r\nb\r\n");
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
