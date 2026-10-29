@@ -669,6 +669,8 @@ group("NX-005 C3: findings are re-confirmed against evidence (false-positive gat
   const r5 = validateFindings([{ kind: "", path: "config.js" }, { kind: "aws", path: "" }], read);
   ok("a finding missing a kind or a path is dropped, never silently kept", r5.validated.length === 0 && r5.dropped.length === 2 && r5.dropped.every((d) => /missing/.test(d.reason)));
 
+  eq("a kind named constructor or toString stays that string", [normKind("constructor"), normKind("toString")], ["constructor", "tostring"]);
+  { const ST = require("../lib/cli/styles"); eq("an unknown style named constructor has no directive", ST.styleDirective("constructor"), ""); }
   ok("kind normalisation folds scanner labels and agent synonyms onto one canonical kind", normKind("AWS access key id") === "aws-key" && normKind("GitHub token") === "github-token" && normKind("gh-token") === "github-token");
   ok("an unknown kind is passed through lower-cased, not dropped by normalisation", normKind("Custom-Rule-42") === "custom-rule-42");
 
