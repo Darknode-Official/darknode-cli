@@ -187,6 +187,7 @@ group("policy (guardrails)");
   ok("policy allow npm test", policyCheck(denied, { type: "run", command: "npm test" }).allow === true);
   ok("policy block fetch when network off", policyCheck(Object.assign({}, POLICY_DEFAULTS, { allowNetwork: false }), { type: "fetch" }).allow === false);
   ok("globToRe ** matches nested", globToRe("**/.env").test("a/b/.env"));
+  ok("a brace glob in protectedPaths protects the files it names", (() => { const pol = Object.assign({}, POLICY_DEFAULTS, { protectedPaths: ["config/*.{pem,crt}"] }); return policyCheck(pol, { type: "write", path: "config/server.crt" }).allow === false && policyCheck(pol, { type: "write", path: "config/app.json" }).allow === true; })());
 }
 
 group("hard-deny floor (NSAFE-016)");
@@ -3682,7 +3683,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("no matches is a note, not an error", /no matches/.test(run({ find: "zzz_nope", replace: "y" }).note));
     ok("bad regex reported", /invalid regex/.test(run({ find: "(", replace: "", regex: true }).error));
     ok("brace globs", RF.globToRe("src/**/*.{js,ts}").test("src/x/y.ts") && !RF.globToRe("src/**/*.{js,ts}").test("src/y.py"));
-    for (const [name, g2re] of [["replace_in_files", RF.globToRe], ["search", require("../lib/nexus/search").globToRe], ["attest", require("../lib/nexus/attest").globToRe], ["invariants", require("../lib/nexus/invariants").globToRe]])
+    for (const [name, g2re] of [["replace_in_files", RF.globToRe], ["search", require("../lib/nexus/search").globToRe], ["attest", require("../lib/nexus/attest").globToRe], ["invariants", require("../lib/nexus/invariants").globToRe], ["policy", globToRe]])
       ok(name + ": **/ spans whole directories only (src/**/test/*.js is not src/contest/a.js)", !g2re("src/**/test/*.js").test("src/contest/a.js") && !g2re("**/lib/*.js").test("mylib/x.js") && g2re("**/lib/*.js").test("a/lib/x.js") && g2re("src/**/*.js").test("src/a.js") && g2re("**/*.js").test("a.js"));
     fs.writeFileSync(path.join(dir, "m.js"), "import a from 'x'\nimport b from 'x'\nlet foo = xbar + bar;\n");
     r = run({ find: "^import (\\w+)", replace: "use $1", regex: true, glob: "m.js", dry_run: true });
