@@ -297,6 +297,11 @@ group("sink redaction + keyed placeholders (NSAFE-060/061)");
   const aws = "AKIAIOSFODNN7EXAMPLE";
   const tagOf = (t) => (String(t).match(/\[REDACTED:[^:]+:([0-9a-f]{4})\]/) || [])[1];
   const r1 = redact("key is " + aws + " ok", { sink: "transcript", key: K });
+  { const V = "Zk9mQ2pR7vT4wYb3nX8cL5aJ";
+    const toks = { "slack-webhook": "https://hooks.slack" + ".com/services/T0ABCDEF1/B0ABCDEF2/" + V, "google-oauth": "ya" + "29.a0AfH6SMBx" + V, "digitalocean-token": "dop" + "_v1_" + "ab12".repeat(16),
+      "grafana-token": "gl" + "sa_" + V + "12345678_abcd1234", "pypi-token": "pypi-" + "AgEIcHlwaS5vcmc" + V + V, "stripe-key": "sk" + "_test_" + V, bearer: "authorization: bearer abcdefghijklmnopqrstuvwxyz123" };
+    eq("webhook URLs, OAuth, DigitalOcean, Grafana, PyPI and Stripe test tokens and a lowercase bearer are redacted",
+      Object.entries(toks).filter(([id, t]) => !new RegExp("\\[REDACTED:" + id + ":").test(redact(t, { sink: "audit", key: K }).text)).map(([id]) => id), []); }
   ok("AWS key replaced with a typed placeholder", /\[REDACTED:aws-access-key:[0-9a-f]{4}\]/.test(r1.text) && !r1.text.includes(aws));
   ok("findings counted", r1.findings === 1);
   // NSAFE-061: stable keyed tags.
