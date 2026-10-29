@@ -1876,6 +1876,12 @@ group("compliance bundle (SOC2 export)");
   ok("patch context-not-found is an error", !applyPatch("totally different\n", patch).ok);
   ok("multi-file patch is parsed into two files", parsePatch(["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@", "-a", "+b", "diff --git a/y b/y", "--- a/y", "+++ b/y", "@@", "-c", "+d"].join("\n")).length === 2);
   eq("applyHunks flexible-anchors a hunk whose context indentation differs", applyHunks("  keep\n    old\n  tail\n", [{ before: ["keep", "old"], after: ["keep", "new"] }]).content, "  keep\n  new\n  tail\n");
+  // one blank line ([""]) is not "no lines" ([]): these were applied wrongly and reported as success
+  eq("patch: deleting a blank line is applied, not skipped", applyPatch("a\n\nb\n", "@@ -2 +1,0 @@\n-\n").content, "a\nb\n");
+  eq("patch: replacing a line with a blank line keeps the blank line", applyPatch("a\nx\nb\n", "@@ -2 +2 @@\n-x\n+\n").content, "a\n\nb\n");
+  eq("patch: removing a line before a kept blank line keeps the blank line", applyPatch("{\n\nb\n", "@@ -1,2 +1 @@\n-{\n \n").content, "\nb\n");
+  eq("patch: removing the last line (no final newline) leaves the line before it ending in a newline", applyPatch("a\nb\n}", "@@ -3 +2,0 @@\n-}\n\\ No newline at end of file\n").content, "a\nb\n");
+  eq("patch: deleting the only line of a file with no final newline leaves it empty", applyPatch("x = 1;", "@@ -1 +0,0 @@\n-x = 1;\n\\ No newline at end of file\n").content, "");
   ok("a hunk line never matches inside a longer line", !applyPatch("let data = 1;\n", "@@ -1 +1 @@\n-a = 1;\n+a = 2;\n").ok);
   eq("a -U0 deletion leaves no blank line", applyPatch("x\ny\nz\n", "@@ -2 +1,0 @@\n-y\n").content, "x\nz\n");
   eq("a -U0 deletion of the last line keeps the file's missing final newline", applyPatch("x\ny\nz", "@@ -3 +2,0 @@\n-z\n").content, "x\ny");
