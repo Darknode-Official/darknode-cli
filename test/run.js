@@ -2751,6 +2751,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       fs.rmSync(gd, { recursive: true, force: true }); } catch (e) { ok("real git blame ran (" + e.message + ")", false); }
     const br = GT.parseBranches("* main\n  dev\n  remotes/origin/main\n");
     ok("parseBranches current+local+remote", br.current === "main" && br.local.includes("dev") && br.remote.includes("origin/main"));
+    { const wt = GT.parseBranches("+ feat-wt\n* main\n"); ok("parseBranches: a branch checked out in another worktree (+) keeps its name", JSON.stringify(wt.local) === "[\"feat-wt\",\"main\"]" && wt.current === "main"); }
     const gst = await GT.gitTool({ op: "status" }, "/repo", { run: async () => ({ code: 0, output: "## main\n M a.js\n" }) });
     ok("gitTool status dispatch parses porcelain", gst.op === "status" && gst.status.branch === "main" && gst.status.files.length === 1);
     const gnr = await GT.gitTool({ op: "status" }, "/repo", { run: async () => ({ code: 128, output: "fatal: not a git repository (or any of the parent directories): .git\n" }) });
