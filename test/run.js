@@ -213,6 +213,8 @@ group("policy (guardrails)");
   ok("globToRe: nested braces and unclosed brace", globToRe("{a,{b,c}}.js").test("c.js") && globToRe("{a,b").test("{a,b"));
   ok("a protected-path rule with ** in braces covers nested files", pathMatchesAny("secrets/prod/db.txt", ["{secrets/**,*.pem}"]));
   ok("a brace glob in protectedPaths protects the files it names", (() => { const pol = Object.assign({}, POLICY_DEFAULTS, { protectedPaths: ["config/*.{pem,crt}"] }); return policyCheck(pol, { type: "write", path: "config/server.crt" }).allow === false && policyCheck(pol, { type: "write", path: "config/app.json" }).allow === true; })());
+  ok("deleting or moving a protected folder itself is blocked (.git, secrets, .ssh/)", ["delete", "move"].every((t) => [".git", "secrets", "a/b/.git", ".ssh/"].every((p) => policyCheck(POLICY_DEFAULTS, { type: t, path: p }).allow === false)) && policyCheck(POLICY_DEFAULTS, { type: "delete", path: "lib" }).allow === true);
+  ok("deleting a folder that holds a protected file is blocked when cwd is given", (() => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "nxpol-")); fs.mkdirSync(path.join(d, "src/conf"), { recursive: true }); fs.writeFileSync(path.join(d, "src/conf/.env"), "x"); fs.mkdirSync(path.join(d, "lib")); fs.writeFileSync(path.join(d, "lib/a.js"), "x"); const r = policyCheck(POLICY_DEFAULTS, { type: "delete", path: "src", cwd: d }); const ok2 = r.allow === false && /src\/conf\/\.env/.test(r.reason) && policyCheck(POLICY_DEFAULTS, { type: "delete", path: "lib", cwd: d }).allow === true; fs.rmSync(d, { recursive: true, force: true }); return ok2; })());
 }
 
 group("hard-deny floor (NSAFE-016)");
