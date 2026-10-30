@@ -877,11 +877,11 @@ async function cli(args) {
   const G = require("./lib/governance/engagement-gate");
   const deny = (e) => { console.error("  " + red(e.message)); process.exitCode = 1; };
   try {
-    if (G.TOOLS[cmd]) {
+    if (Object.prototype.hasOwnProperty.call(G.TOOLS, cmd)) {
       if (G.TOOLS[cmd].bin) { const r = await G.runExternal(eng, cmd, rest); process.exitCode = r.code; return; }   // nmap / nuclei: the gate spawns the binary itself
       return await G.guard(eng, cmd, rest, () => cliRun(args, { filter: (hosts) => G.filterInScope(eng, "scan", hosts) }));
     }
-    if (CMD_MAP[cmd] || G.OFFLINE_COMMANDS.has(cmd)) return cliRun(args);   // offline helpers: no target is touched
+    if (Object.prototype.hasOwnProperty.call(CMD_MAP, cmd) || G.OFFLINE_COMMANDS.has(cmd)) return cliRun(args);   // offline helpers: no target is touched
     const d = G.authorize({ engagement: eng, tool: cmd || "", argv: rest });   // unknown command: audited deny
     throw new G.GateDenied(d.allow ? { code: "GATE_ERROR", reason: "unexpected allow for ungated command" } : d);
   } catch (e) { if (e instanceof G.GateDenied) return deny(e); throw e; }
@@ -900,7 +900,7 @@ async function cliRun(args, gate) {
       if (!_g.allow) { console.error("  " + red("refused: ") + _g.reason); process.exitCode = 2; return; }
     }
   }
-  if (CMD_MAP[cmd]) { console.log(CMD_MAP[cmd].run({ rest, c: { red, green, yellow, cyan, gray, bold } })); }
+  if (Object.prototype.hasOwnProperty.call(CMD_MAP, cmd)) { console.log(CMD_MAP[cmd].run({ rest, c: { red, green, yellow, cyan, gray, bold } })); }
   else if (cmd === "pentest") { await require("./lib/nexus/pentest-engine").startPentest(rest[0] || null, { reportDir: process.cwd() }); process.exit(0); } // HYDRA; the TUI's /pentest runs this in its own process
   else if (cmd === "scan") { const host = rest[0]; if (!host) return usage(); await scan(host, parsePorts(rest[1])); }
   else if (cmd === "dns") { const recs = await dnsLookup(rest[0] || ""); recs.forEach(([k, v]) => console.log(k.padEnd(6) + v)); }
@@ -3283,7 +3283,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         }
         if (m.role === "diff") {
           const W = cols() - 3;
-          const raw = String(m.text).replace(/\r/g, "").split("\n");
+          const raw = sanitizeTerm(String(m.text).replace(/\r/g, ""), true).split("\n"); // repo file text: escapes would also throw off the width math
           let k = 0;
           while (k < raw.length) {
             const ln = raw[k];
