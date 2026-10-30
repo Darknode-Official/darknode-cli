@@ -67,5 +67,30 @@ group("stored index");
   eq("no index -> nothing", search(null, "retry"), []);
 }
 
+group("code_search tool");
+{
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const { codeSearchTool } = require("../lib/nexus/code-search");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nx-cs-"));
+  for (const f of FILES) { fs.mkdirSync(path.join(dir, path.dirname(f.path)), { recursive: true }); fs.writeFileSync(path.join(dir, f.path), f.content); }
+  fs.mkdirSync(path.join(dir, "node_modules", "dep"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "node_modules", "dep", "retry.js"), "function retryUploadAgain() { retry(); upload(); }\n");
+  ok("no query -> an error, not a throw", !!codeSearchTool({}, dir).error);
+  const r = codeSearchTool({ query: "where do we retry failed uploads with backoff" }, dir);
+  eq("first use builds the index and finds the code", [r.results[0] && r.results[0].path, !!r.note], ["src/upload/retry.js", true]);
+  ok("the index is stored for later searches", fs.existsSync(path.join(dir, ".nexus", "index.json")) && !codeSearchTool({ query: "retry" }, dir).note);
+  ok("hits carry a line range and the matching lines, numbered", r.results[0].lines === "1-9" && r.results[0].matches.some((m) => /^2: function retryUpload/.test(m)));
+  ok("vendored code is not indexed", !r.results.some((h) => h.path.startsWith("node_modules")));
+  ok("path limits results to a directory", codeSearchTool({ query: "retry upload backoff", path: "docs" }, dir).results.every((h) => h.path.startsWith("docs/")));
+  // a file edited after indexing: the stale range is rebuilt before it is returned
+  const later = Date.now() + 5000;
+  fs.writeFileSync(path.join(dir, "src/upload/retry.js"), "// moved\n\n\n\n" + FILES[0].content);
+  fs.utimesSync(path.join(dir, "src/upload/retry.js"), later / 1000, later / 1000);
+  const r2 = codeSearchTool({ query: "retry failed uploads backoff" }, dir);
+  ok("an edited hit file triggers a rebuild with fresh line numbers", r2.results[0].matches.some((m) => /^6: function retryUpload/.test(m)));
+  eq("nothing matching -> empty results with a hint", [codeSearchTool({ query: "kubernetes helm chart" }, dir).results.length, !!codeSearchTool({ query: "kubernetes helm chart" }, dir).hint], [0, true]);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (bm25 code search)");
 process.exit(fail ? 1 : 0);
