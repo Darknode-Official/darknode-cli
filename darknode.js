@@ -5049,6 +5049,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       render();
     };
     let _aliasDepth = 0;
+    // Every name handleSlash answers to, including alternate spellings (/new, /config, /allow)
+    // that are not in CMDS, read from its own source so the list cannot drift. An alias may
+    // not take one of these: aliases run first, so it would silently replace the built-in.
+    let _builtinNames = null;
+    const builtinNames = () => _builtinNames || (_builtinNames = new Set([...CMDS.map(([c]) => c), ...SIDE_CMDS, ...[...String(handleSlash).matchAll(/cmd === "(\/[^"\s]+)"/g)].map((x) => x[1])]));
     const handleSlash = (t) => {
       if (!_inSide && SIDE_CMDS.has(sideName(t)) && !aliases[sideName(t)] && !customCmds[sideName(t)]) { runSide(t); return; }
       const sp = t.indexOf(" ");
@@ -5057,7 +5062,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const arg = argstr.split(/\s+/)[0];
       // Any command other than a repeated /clear cancels a pending clear confirmation.
       const clearWasPending = clearPending; if (cmd !== "/clear" && cmd !== "/new") clearPending = false;
-      if (aliases[cmd]) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") { if (_aliasDepth >= 5) { transcript.push({ role: "system", text: "alias " + cmd + " loops back on itself (aliases calling aliases more than 5 deep) — fix it with /alias" }); return; } _aliasDepth++; try { handleSlash(body.trim()); } finally { _aliasDepth--; } } else submit(body.trim()); return; }
+      if (aliases[cmd] && !builtinNames().has(cmd)) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") { if (_aliasDepth >= 5) { transcript.push({ role: "system", text: "alias " + cmd + " loops back on itself (aliases calling aliases more than 5 deep) — fix it with /alias" }); return; } _aliasDepth++; try { handleSlash(body.trim()); } finally { _aliasDepth--; } } else submit(body.trim()); return; }
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
       if (cmd === "/help" && argstr.trim()) { // /help <word>: every command, key and guide line that mentions it (same search as /docs)
         const q = argstr.trim(), hits = NexusDocs.search(nexusRef(), q);
@@ -5251,7 +5256,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         else if (arg === "rm" || arg === "remove" || arg === "del") { const nm = argstr.split(/\s+/)[1]; const key = nm && nm[0] === "/" ? nm : "/" + nm; if (nm && aliases[key]) { delete aliases[key]; saveSetting("aliases", aliases); transcript.push({ role: "system", text: "removed alias " + cyan(key) }); } else transcript.push({ role: "system", text: "no such alias — /alias lists them" }); }
         else if (m) {
           let name = m[1]; if (name[0] !== "/") name = "/" + name; name = name.toLowerCase();
-          if (CMDS.some(([c]) => c === name) || customCmds[name]) transcript.push({ role: "system", text: name + " is a built-in command — pick another alias name" });
+          if (builtinNames().has(name) || customCmds[name]) transcript.push({ role: "system", text: name + " is a built-in command — pick another alias name" });
           else { aliases[name] = m[2].trim(); saveSetting("aliases", aliases); transcript.push({ role: "system", text: "alias " + cyan(name) + gray(" → ") + m[2].trim() + gray("   — type " + name + " to run it") }); }
         }
         else transcript.push({ role: "system", text: "usage: /alias <name> = <text or /command>   ·   /alias rm <name>   ·   /alias (list)" });
