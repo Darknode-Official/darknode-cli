@@ -725,6 +725,7 @@ async function ipInfo(ip) {
   finally { clearTimeout(t); }
 }
 function fileHash(f) {
+  if (!f) { console.log(red("usage: darknode hashfile <file>  — md5/sha1/sha256/sha512 of a file")); return; }
   try { const buf = require("fs").readFileSync(f); h1("Hashes of " + f); ["md5", "sha1", "sha256", "sha512"].forEach((a) => console.log("  " + a.padEnd(8) + cyan(crypto.createHash(a).update(buf).digest("hex")))); }
   catch (e) { console.log(red("error: " + e.message)); }
 }
@@ -949,13 +950,13 @@ async function cliRun(args, gate) {
     if (sub === "start") {
       const { createAPIServer } = require("./lib/cli/api-server");
       const portArg = rest.indexOf("--port"); const apiPort = portArg >= 0 ? parseInt(rest[portArg + 1], 10) || 8080 : 8080;
-      const apiToken = process.env.DARKNODE_API_TOKEN || null;
+      const apiToken = process.env.DARKNODE_API_TOKEN || crypto.randomBytes(24).toString("base64url"); // never unauthenticated: it listens on every interface and /api/v1/ai/ask runs the agent with auto-approve
       const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken });
       srv.listen(apiPort, "0.0.0.0", () => {
         h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://0.0.0.0:" + apiPort));
-        if (t) console.log("  token     " + bold(t)); else console.log("  " + yellow("no API key required (set DARKNODE_API_TOKEN to require one)"));
-        console.log("\n  " + gray("health  ") + "curl http://localhost:" + apiPort + "/health");
-        console.log("  " + gray("scan    ") + "curl -s http://localhost:" + apiPort + "/api/v1/scan/url -H 'Content-Type: application/json' -d '{\"url\":\"https://target.com\"}'");
+        console.log("  token     " + bold(t) + gray("   (send as: X-API-Key: <token> · set DARKNODE_API_TOKEN to pick your own)"));
+        console.log("\n  " + gray("health  ") + "curl http://localhost:" + apiPort + "/health -H 'X-API-Key: " + t + "'");
+        console.log("  " + gray("scan    ") + "curl -s http://localhost:" + apiPort + "/api/v1/scan/url -H 'X-API-Key: " + t + "' -H 'Content-Type: application/json' -d '{\"url\":\"https://target.com\"}'");
         console.log("\n  " + gray("Ctrl-C to stop"));
       });
       srv.on("error", (e) => { console.log(red("  api server failed: " + (e && e.message || e))); process.exit(1); });
@@ -4628,7 +4629,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const quickScan = (host, ports) => new Promise((resolve) => {
       const net = require("net"); const open = []; let done = 0;
       if (!ports.length) return resolve([]);
-      ports.forEach((port) => { const sk = new net.Socket(); sk.setTimeout(1200); sk.once("connect", () => { open.push(port); sk.destroy(); }).once("timeout", () => sk.destroy()).once("error", () => {}).once("close", () => { if (++done === ports.length) resolve(open.sort((x, y) => x - y)); }); try { sk.connect(port, host); } catch (_) { if (++done === ports.length) resolve(open); } });
+      ports.forEach((port) => { const sk = new net.Socket(); sk.setTimeout(1200); sk.once("connect", () => { open.push(port); sk.destroy(); }).once("timeout", () => sk.destroy()).once("error", (e) => { if (e && (e.code === "ENOTFOUND" || e.code === "EAI_AGAIN")) open.unresolved = true; }).once("close", () => { if (++done === ports.length) resolve(open.sort((x, y) => x - y)); }); try { sk.connect(port, host); } catch (_) { if (++done === ports.length) resolve(open); } });
     });
     // /race — run the SAME prompt on multiple engines at once and show every answer (cloud vs local)
     const raceEngines = (prompt) => {
@@ -5237,7 +5238,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       else if (cmd === "/ultrareview" || cmd === "/ur") { ultraReview(); }
       else if (cmd === "/changelog") { (async () => { const range = arg && arg.trim() ? arg.trim() : null; let rng = range; if (!rng) { const t = await sh(["describe", "--tags", "--abbrev=0"]); const tag = (t.stdout || "").trim(); rng = tag ? tag + "..HEAD" : ""; } const lg = await sh(["log", "--no-color", "--no-merges", "--pretty=%h%x09%s%x1f%b%x1e"].concat(rng ? [rng] : ["-40"])); if (lg.err) { transcript.push({ role: "system", text: "git log failed" + (rng ? " for " + rng : "") + ": " + String(lg.stderr || lg.err.message).trim().split("\n")[0] }); render(); return; } const commits = parseCommits(lg.stdout || ""); const md = renderChangelog(commits, { title: "Changelog", range: rng || "recent" }); transcript.push({ role: "system", text: commits.length ? md : "no commits found" + (rng ? " in " + rng : "") }); render(); })(); }
       else if (cmd === "/secrets") { try { const all = _cp.execSync("git ls-files -z --cached --others --exclude-standard", { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).split("\0").filter(Boolean); const files = all.slice(0, 5000); const found = []; /* tracked + new untracked (not ignored) files: a key in a file about to be committed counts too */ for (const f of files) { try { if (fs.statSync(path.join(cwd, f)).size > 400000) continue; const hits = scanSecrets(fs.readFileSync(path.join(cwd, f), "utf8")); if (hits.length) found.push("  " + f + " — " + hits.join(", ")); } catch (_) {} } transcript.push({ role: "system", text: found.length ? ("possible secrets found (tracked + untracked, not ignored):\n" + found.slice(0, 40).join("\n")) : "scanned " + files.length + " file" + (files.length === 1 ? "" : "s") + " (tracked + untracked, not ignored) — no obvious secrets found" }); if (all.length > files.length) transcript.push({ role: "system", text: "only the first " + files.length + " of " + all.length + " files were scanned" }); } catch (_) { transcript.push({ role: "system", text: "/secrets needs a git repo (uses git ls-files)" }); } }
-      else if (cmd === "/scan") { const host = arg || "127.0.0.1"; const COMMON = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 9000]; transcript.push({ role: "system", text: "scanning " + host + " (" + COMMON.length + " common TCP ports)…" }); render(); quickScan(host, COMMON).then((open) => { transcript.push({ role: "system", text: open.length ? ("open on " + host + ": " + open.join(", ")) : "no common ports open on " + host }); render(); }); }
+      else if (cmd === "/scan") { const host = (arg || "").trim().split(/\s+/)[0] || "127.0.0.1"; const COMMON = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 9000]; transcript.push({ role: "system", text: "scanning " + host + " (" + COMMON.length + " common TCP ports)…" }); render(); quickScan(host, COMMON).then((open) => { transcript.push({ role: "system", text: open.length ? ("open on " + host + ": " + open.join(", ")) : open.unresolved ? "could not resolve " + host + " — nothing was scanned" : "no common ports open on " + host }); render(); }); }
       else if (cmd === "/notify") { const a = (arg || "").trim().toLowerCase(); if (a && a !== "on" && a !== "off") { transcript.push({ role: "system", text: "usage: /notify [on|off]  (no argument toggles)" }); render(); return; } notify = a === "on" ? true : a === "off" ? false : !notify; saveSetting("notify", notify); transcript.push({ role: "system", text: "completion notifications " + (notify ? "ON — a bell rings (and a desktop notification) when a turn over ~15s finishes or Nexus stops to ask you something, so you can step away" : "off") }); }
       else if (cmd === "/watch") { if (!argstr) transcript.push({ role: "system", text: "usage: /watch <command>  — runs it, and if it fails has " + engine + " fix the code and re-run, up to 5 times (e.g. /watch npm test)" }); else watchFix(argstr); }
       else if (cmd === "/commit") commitChanges();
@@ -5364,6 +5365,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         if (parts.length) {
           const key = GOV[parts[0].toLowerCase()];
           if (!key) transcript.push({ role: "system", text: "unknown setting '" + parts[0] + "'. Governed (off by default): budget · autoCompact · minimizeCalls · stepCap · trimOutput · cache · map · lean. Usage: /settings <key> on|off  (budget takes a number)" });
+          else if (parts[1] && (key === "budgetCap" ? !(/^off$/i.test(parts[1]) || parseFloat(parts[1]) >= 0) : !/^(on|off)$/i.test(parts[1]))) transcript.push({ role: "system", text: "invalid value '" + parts[1] + "' for " + key + " — nothing changed. Usage: " + (key === "budgetCap" ? "/settings budget <usd>|off" : "/settings " + key + " [on|off]  (no value toggles)") });
           else {
             let nv; const raw = (parts[1] || "").toLowerCase();
             if (key === "budgetCap") { const n = parseFloat(parts[1]); nv = (raw === "off" || n === 0 || isNaN(n)) ? 0 : n; costCap = nv; }
@@ -5386,7 +5388,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           const shown = row.key === "budgetCap" ? (val ? "$" + Number(val).toFixed(2) : "off") : (val ? "ON" : "off");
           const src = Ssrc[row.key] === "env" ? gray(" [env]") : Ssrc[row.key] === "saved" ? gray(" [saved]") : gray(" [default]");
           const envName = nexusSettings.ENV_NAME[row.key];
-          text += "\n  " + row.key.padEnd(24) + bold(shown) + src + gray("   /settings " + row.key + " on|off" + (envName ? "  ·  env " + envName : ""));
+          text += "\n  " + row.key.padEnd(24) + bold(shown) + src + gray("   /settings " + row.key + (row.key === "budgetCap" ? " <usd>|off" : " on|off") + (envName ? "  ·  env " + envName : ""));
         }
         text += "\n  " + gray("colour: NO_COLOR=1 disables, FORCE_COLOR=1 forces (NO_COLOR wins).");
         transcript.push({ role: "system", text });

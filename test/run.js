@@ -848,6 +848,7 @@ group("render helpers (frameDiff + wordHi) — the trickiest pure algorithms");
   ok("sanitizeTerm keeps SGR colour", sanitizeTerm("a\x1b[31mb\x1b[0m") === "a\x1b[31mb\x1b[0m");
   ok("sanitizeTerm drops clears, cursor moves, OSC title/hyperlinks, C0/C1", sanitizeTerm("x\x1b[2J\x1b[5;1H\x1b]0;t\x07\x1b]8;;u\x1b\\y\r\b\x07\x9bz") === "xyz");
   ok("sanitizeTerm keepNl keeps newlines/tabs, otherwise flattens them", sanitizeTerm("a\nb\tc", true) === "a\nb\tc" && sanitizeTerm("a\nb\tc") === "a b  c");
+  { const fam = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u{1F1FA}\u{1F1F8}"; const rows = ansiWrap(fam.repeat(12), 20); ok("ansiWrap keeps ZWJ emoji + flag pairs whole and charges their real width", rows.join("") === fam.repeat(12) && rows.every((r) => !/\u200D$/.test(r) && visLen(r) <= 20) && visLen(rows[0]) === 20); }
   ok("ansiWrap neutralises injected escapes", JSON.stringify(ansiWrap("hi\x1b[2J there\x1b]0;t\x07", 40)) === JSON.stringify(["hi there"]));
   ok("ansiWrap preserves blank lines between paragraphs", JSON.stringify(ansiWrap("a\n\nb", 10)) === JSON.stringify(["a", "", "b"]));
   const CY = (s) => "\x1b[36m" + s + "\x1b[0m";
@@ -4389,6 +4390,44 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const rgw = await ollamaChatNative("gw", [{ role: "user", content: "hi" }], []).catch((e) => ({ e }));
     ok("a 503 with a {message} body is retried", rgw && rgw.body && rgw.body.message && rgw.body.message.content === "hello" && gwHits === 2);
     srv.close();
+    for (const [k, v] of [["OLLAMA_HOST", saved.h], ["DARKNODE_API_BASE", saved.b], ["OPENAI_BASE_URL", saved.o], ["OPENAI_API_BASE", saved.a]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+
+  group("audit/bug-sweep regressions (gates, floor, redaction, MCP, parsers)");
+  {
+    const { execCommand } = require("../lib/nexus/tool-gates");
+    ok("bisect: the gate screens the `test` it will run, not a decoy `command`", execCommand("bisect", { command: "true", test: "rm -rf ~" }) === "rm -rf ~");
+    ok("shrink/explain_break: test wins over command too", execCommand("shrink", { command: "ls", test: "x" }) === "x" && execCommand("explain_break", { command: "ls", test: "x" }) === "x");
+    ok("run_command still screens its own command", execCommand("run_command", { command: "ls", test: "x" }) === "ls");
+    const { classifyDanger } = require("../lib/governance/security");
+    for (const c of ["x=$(rm -rf ~)", "`rm -rf ~`", "rm -rf ~;ls", "rm -rf /;", "(rm -rf ~)", "{ rm -rf ~; }", "rm -rf \\\n ~", "git -C . reset --hard", "git --no-pager reset --hard", "git -c a=b push -f"])
+      ok("danger guard blocks " + JSON.stringify(c), classifyDanger(c).level === "block");
+    ok("danger guard: git -C . status stays ok", classifyDanger("git -C . status").level === "ok");
+    const { policyCheck } = require("../lib/governance/policy");
+    for (const c of ["rm -rf ~;ls", "x=$(rm -rf ~)", "`rm -rf ~`", "rm -rf \"$HOME\"", "rm -rf '/'", "r\"\"m -rf /", "rm -rf \\\n ~", "echo {} > .nexus/\"settings.json\""])
+      ok("hard-deny floor refuses " + JSON.stringify(c), policyCheck({}, { type: "run", command: c }).allow === false);
+    ok("hard-deny floor still allows rm -rf ./build", policyCheck({}, { type: "run", command: "rm -rf ./build" }).allow === true);
+    const { redact } = require("../lib/nexus/redact");
+    ok("redact masks a Shopify token", !/shpat_a{32}/.test(redact("shpat_" + "a".repeat(32), { key: "k" }).text));
+    ok("redact masks a Google OAuth client secret", !/GOCSPX-abcd/.test(redact("GOCSPX-" + "abcdEFGH1234ijklMNOP5678", { key: "k" }).text));
+    const { isSafeUrl } = require("../lib/nexus/url-guard");
+    ok("isSafeUrl rejects a NUL byte", isSafeUrl("a.com/\0") === false);
+    const { applyNotebookOp } = require("../lib/nexus/notebook-edit");
+    for (const op of ["constructor", "__proto__"]) { const nb = { cells: [{ cell_type: "code", source: ["a"] }, { cell_type: "code", source: ["b"] }] }; const r = applyNotebookOp(nb, { op, index: 0 }); ok("notebook op " + op + " is unknown, not a delete", !!r.error && nb.cells.length === 2); }
+    const { parseNmapGrep } = require("../lib/nexus/nmap-parser");
+    const g = parseNmapGrep("Host: 10.0.0.1 (a)\tStatus: Up\nHost: 10.0.0.1 (a)\tPorts: 22/open/tcp//ssh//OpenSSH 7.4/, 53/open|filtered/udp//domain///\tIgnored State: closed (997)\nHost: ::1 ()\tStatus: Up\nHost: ::1 ()\tPorts: 22/open/tcp//ssh///\tOS: Linux");
+    ok("nmap -oG: Status + Ports lines merge into one host each", g.hosts.length === 2 && g.hosts[0].ports.length === 2 && g.hosts[0].status === "up");
+    ok("nmap -oG: IPv6 hosts parse, and OS: is not glued onto the last port", g.hosts[1].ip === "::1" && g.hosts[1].addresses[0].addrtype === "ipv6" && g.hosts[1].ports.length === 1 && g.hosts[1].os[0].name === "Linux");
+    const am = require("child_process").spawnSync(process.execPath, [require("path").join(__dirname, "../lib/nexus/ask-mcp.js")], { input: 'null\n5\n{"jsonrpc":"2.0","id":1,"method":"ping"}\n', encoding: "utf8", timeout: 10000 });
+    ok("ask-mcp survives a bare null/number line and still answers the next request", am.status === 0 && /"id":1,"result":\{\}/.test(am.stdout));
+    // ollamaTags gives up on a server that accepts but never answers (used to hang forever)
+    const net = require("net"); const socks = [];
+    const stall = net.createServer((c) => socks.push(c)); await new Promise((r) => stall.listen(0, "127.0.0.1", r));
+    const saved = { h: process.env.OLLAMA_HOST, b: process.env.DARKNODE_API_BASE, o: process.env.OPENAI_BASE_URL, a: process.env.OPENAI_API_BASE };
+    process.env.OLLAMA_HOST = "127.0.0.1:" + stall.address().port; delete process.env.DARKNODE_API_BASE; delete process.env.OPENAI_BASE_URL; delete process.env.OPENAI_API_BASE;
+    const tags = await Promise.race([require("../lib/nexus/ollama").ollamaTags(), new Promise((r) => setTimeout(() => r("HUNG"), 15000))]);
+    ok("ollamaTags times out on a stalled server instead of hanging", Array.isArray(tags) && tags.unreachable === true);
+    for (const c of socks) c.destroy(); stall.close();
     for (const [k, v] of [["OLLAMA_HOST", saved.h], ["DARKNODE_API_BASE", saved.b], ["OPENAI_BASE_URL", saved.o], ["OPENAI_API_BASE", saved.a]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 

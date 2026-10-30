@@ -518,11 +518,18 @@ group("vim modal editing (/vim)");
   // motions h l 0 $ w b
   {
     const m = vm("alpha beta"); m.vimMode = "normal"; m.cursor = 0;
-    C.feed(m, "$", {}); eq("$ goes to end of line", m.cursor, 10);
+    C.feed(m, "$", {}); eq("$ goes to the last char of the line (vim)", m.cursor, 9);
     C.feed(m, "0", {}); eq("0 goes to start of line", m.cursor, 0);
     C.feed(m, "w", {}); eq("w jumps to next word", m.cursor, 6);
     C.feed(m, "l", {}); C.feed(m, "b", {}); eq("b jumps back a word", m.cursor, 6);
     C.feed(m, "h", {}); eq("h moves left", m.cursor, 5);
+  }
+  // $x deletes the last char; keys coalesced into one chunk still run as vim keys
+  {
+    const m = vm("hello brave world"); m.vimMode = "normal"; m.cursor = 0;
+    C.feed(m, "$", {}); C.feed(m, "x", {}); eq("$x deletes the last char", m.text, "hello brave worl");
+    C.feed(m, "0", {}); C.feed(m, "dw", {}); eq("coalesced 'dw' chunk deletes a word", m.text, "brave worl");
+    C.feed(m, "cwNEW", {}); eq("coalesced 'cwNEW' changes the word then inserts the rest", m.text, "NEW worl"); eq("…and leaves insert mode on", m.vimMode, "insert");
   }
   // edits: x, D, dd, dw, cw
   {
