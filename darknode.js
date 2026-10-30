@@ -834,11 +834,11 @@ function nexusUpdate(opts) {
     if (!hasBin("npm")) return hush("installed at " + dir + "\nnot a git checkout and npm not found — reinstall to update.");
     const v = run("npm", ["view", "darknode-cli", "version"]);
     const latest = (v.stdout || "").trim();
-    if (v.status !== 0 || !latest) return hush("update check failed (npm view): " + (((v.stderr || "") + (v.error ? v.error.message : "")).trim().split("\n").slice(-1)[0] || "no output"));
+    if (v.status !== 0 || !/^\d+\.\d+\.\d+[0-9A-Za-z.+-]*$/.test(latest)) return hush("update check failed (npm view): " + (((v.stderr || "") + (v.error ? v.error.message : "")).trim().split("\n").slice(-1)[0] || "no output"));
     if (!semverGt(latest, VERSION)) return hush("up to date — v" + VERSION + " is the latest (npm).");
     const L = ["update available: v" + VERSION + " → v" + latest + " (npm)"];
     if (!apply) { L.push("run  " + cyan("darknode update") + "  to install (npm i -g darknode-cli@latest)."); return L.join("\n"); }
-    const ni = cp.spawnSync("npm", ["install", "-g", "darknode-cli@latest", "--no-audit", "--no-fund"], { encoding: "utf8", timeout: 600000 });
+    const ni = cp.spawnSync("npm", ["install", "-g", "darknode-cli@" + latest, "--no-audit", "--no-fund"], { encoding: "utf8", timeout: 600000 });
     if (ni.status !== 0) { L.push("auto-update failed (a global npm install may need elevated permissions): " + (((ni.stderr || "") + (ni.error ? ni.error.message : "")).trim().split("\n").slice(-2).join(" ") || "npm error") + "\n  install manually:  npm install -g darknode-cli@latest"); return L.join("\n"); }
     L.push(green("updated") + " to v" + latest + " — restart Nexus to load it."); return L.join("\n");
   }
@@ -859,7 +859,7 @@ function nexusUpdate(opts) {
   // in silent/background mode, a dirty checkout is the user's own WIP — surface that an update
   // exists (so /update still works) but never nag every launch about their local changes.
   if (dirty) { L.push(silent ? "(local changes in the install dir block auto-apply; run /update after committing)" : "can't auto-update — you have local changes in " + dir + ". Commit or stash them first."); return L.join("\n"); }
-  const pull = run("git", ["pull", "--ff-only", "--quiet"]);
+  const pull = run("git", ["merge", "--ff-only", "--quiet", remote]); // the commit just compared: `git pull` re-resolved @{u}, which is missing when we fell back to origin/main
   if (pull.status !== 0) { L.push("update failed: " + (((pull.stderr || "") + (pull.error ? pull.error.message : "")).trim() || "git pull error")); return L.join("\n"); }
   const changed = (run("git", ["diff", "--name-only", local, "HEAD"]).stdout) || "";
   if (/package(-lock)?\.json/.test(changed) && hasBin("npm")) { const ni = cp.spawnSync("npm", ["install", "--silent", "--no-audit", "--no-fund"], { cwd: dir, encoding: "utf8", timeout: 600000 }); if (ni.status !== 0) L.push("note: npm install after update reported an issue — run `npm install` in " + dir); }
