@@ -137,7 +137,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/refactor` — restructure code for clarity without changing behavior
 - `/migrate` — migrate code: /migrate <from> to <to>
 - `/pr` — AI-write a PR title+body from the diff and open it (gh)
-- `/index` — index the repo for local auto-context
+- `/index` — index the repo for code search; /index <question> finds the code it is about
 - `/map` — show the repo map; /map <task> ranks it for a task; /map on|off
 - `/verify` — detect + run this project's tests/build
 - `/radar` — codebase complexity + hotspot map
