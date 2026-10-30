@@ -1722,7 +1722,7 @@ async function aiCoder(argv) {
       const r = (reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it."; if (printMode) answer(r); else console.log("  " + r + "\n");
       if (printMode) return; continue;
     }
-    let didTool = false, nudges = 0; const protoSt = { bad: 0 };
+    let didTool = false, nudges = 0; const protoSt = { bad: 0 }, loopGuard = makeLoopGuard(); // same stall breaker as the TUI and sub-agent loops
     for (let step = 1; step <= (lean ? 12 : 25); step++) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); if (printMode) process.exitCode = 1; break; }
       let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
@@ -1783,6 +1783,9 @@ async function aiCoder(argv) {
       } catch (e) { result = "error: " + e.message; }
       if (["read_file", "write_file", "edit_file", "list_dir", "run_command"].includes(name)) didTool = true;
       messages.push({ role: "tool", content: String(result).slice(0, 8000) });
+      const _lg = loopGuard.note(loopGuard.signature(name, a), !/^(error:|blocked:|denied|exit [1-9])/i.test(String(result)), loopGuard.hashStr(String(result)));
+      if (_lg && _lg.action === "break") { if (printMode) { answer(_lg.message); process.exitCode = 1; } else console.log("\n  " + yellow(_lg.message) + "\n"); break; }
+      if (_lg) messages.push({ role: "tool", content: "[loop guard] " + _lg.message });
       if (step >= (lean ? 12 : 25)) console.log("  " + red("(step limit reached)"));
     }
     if (printMode) return;
