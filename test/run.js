@@ -4491,6 +4491,52 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("codereview: pool keeps input order and runs at most n at once", JSON.stringify(res) === "[0,10,20,30]" && order[0] === 1);
     try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
   }
+
+  { // darknode mcp: the Deck's tools as an MCP server
+    const M = require("../lib/nexus/darknode-mcp"); const { PassThrough } = require("stream");
+    eq("mcp: import specifiers (static, export-from, bare, dynamic)", M.importSpecifiers('import { a } from "./a.js";\nexport { b } from "../b.js?v=1";\nimport "/js/c.js";\nconst d = await import("./d.js");\nconst s = "import x from y";'), ["./a.js", "../b.js?v=1", "/js/c.js", "./d.js"]);
+    eq("mcp: specifiers resolve inside /js only", [M.resolveSpec("../core/x.js?v=2", "ops/a.js"), M.resolveSpec("/js/core/y.js", "ops/a.js"), M.resolveSpec("https://x/y.js", "a.js"), M.resolveSpec("../../etc/p.js", "a.js"), M.resolveSpec("lodash", "a.js")], ["core/x.js", "core/y.js", null, null, null]);
+    eq("mcp: site-absolute imports become relative so the copy loads from disk", M.relativize('import a from "/js/core/x.js?v=9"; import b from "./y.js";', "ops/a.js"), 'import a from "../core/x.js"; import b from "./y.js";');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nx-mcp-")), site = { "api/catalog.js": 'import { t } from "../core/e.js";\nexport const TOOLS = [];', "core/e.js": 'import "/js/core/f.js?v=1";\nexport const t = 1;', "core/f.js": "export const f = 2;" };
+    const fetchText = async (u) => { const k = u.replace(/^https:\/\/s\/js\//, ""); if (!(k in site)) throw new Error("404 " + k); return site[k]; };
+    const files = await M.syncEngines(path.join(tmp, "js"), ["api/catalog.js"], fetchText, "https://s");
+    ok("mcp: sync downloads the whole import graph and rewrites it to load offline", files.length === 3 && fs.readFileSync(path.join(tmp, "js", "core", "e.js"), "utf8").includes('"./f.js"') && fs.existsSync(path.join(tmp, "js", ".synced.json")));
+    let threw = null; try { await M.syncEngines(path.join(tmp, "js"), ["api/catalog.js", "missing.js"], fetchText, "https://s"); } catch (e) { threw = e; }
+    ok("mcp: a failed sync leaves the previous copy intact", !!threw && fs.existsSync(path.join(tmp, "js", "core", "f.js")));
+    const jwt = (c) => "h." + Buffer.from(JSON.stringify(c)).toString("base64url") + ".s";
+    const acct = (over) => Object.assign({ readAuth: () => ({ uid: "u1", email: "test@darknode.ai", idToken: jwt({ exp: Date.now() / 1000 + 3600 }), refreshToken: "r" }), saveAuth() {}, refresh: async () => null, projectId: "p", getJson: async (u, h) => ({ status: 200, json: { fields: { tier: { stringValue: "pro" } } }, u, h }) }, over || {});
+    eq("mcp: plan comes from the account's users doc", (await M.resolveAccount(acct())).tier, "pro");
+    eq("mcp: the owner's admin claim is the top plan", (await M.resolveAccount(acct({ readAuth: () => ({ uid: "u", idToken: jwt({ exp: Date.now() / 1000 + 3600, admin: true }) }) }))).tier, "enterprise");
+    eq("mcp: signed out is Free", (await M.resolveAccount(acct({ readAuth: () => null }))).tier, "free");
+    let saved = null; const ref = await M.resolveAccount(acct({ readAuth: () => ({ uid: "u", idToken: jwt({ exp: 1 }), refreshToken: "r" }), refresh: async () => ({ id_token: jwt({ exp: Date.now() / 1000 + 3600 }), refresh_token: "r2" }), saveAuth: (a) => { saved = a; } }));
+    ok("mcp: an expired token is refreshed and saved before the plan is read", ref.tier === "pro" && saved && saved.refreshToken === "r2");
+    ok("mcp: a token that cannot be refreshed falls back to Free with a note", /expired/.test((await M.resolveAccount(acct({ readAuth: () => ({ uid: "u", idToken: jwt({ exp: 1 }) }) }))).note || ""));
+    fs.mkdirSync(path.join(tmp, "w", "sub", "node_modules"), { recursive: true }); fs.writeFileSync(path.join(tmp, "w", "a.tf"), "x"); fs.writeFileSync(path.join(tmp, "w", "sub", "b.yaml"), "y"); fs.writeFileSync(path.join(tmp, "w", "sub", "node_modules", "c.js"), "z"); fs.writeFileSync(path.join(tmp, "w", "bin"), Buffer.from([1, 0, 2]));
+    const g = M.gatherFiles({ paths: ["w", "nope"], files: [{ name: "i.txt", text: "q" }] }, tmp);
+    eq("mcp: folders are read recursively (no node_modules, no binaries), inline files kept, missing paths reported", [g.files.map((f) => f.name).sort(), g.skipped.sort()], [["i.txt", "w/a.tf", "w/sub/b.yaml"], ["nope (not found)", "w/bin (binary)"]]);
+    // a server over the real Deck engines (the sibling darknode-web checkout), when present
+    const web = path.resolve(__dirname, "..", "..", "darknode-web", "public", "js", "api", "catalog.js");
+    if (fs.existsSync(web)) {
+      const posted = [];
+      const srv = M.createServer({ env: {}, home: tmp, here: path.join(__dirname, "..", "lib", "nexus"), cwd: tmp, fetchText: async () => { throw new Error("offline"); }, postJson: async (u, b, h) => { posted.push({ u, b, h }); return { status: 200, json: { accepted: b.findings.length } }; }, account: acct() });
+      const names = (await srv.listTools()).map((t) => t.name);
+      ok("mcp: a Pro account lists Pro tools and not Team or Enterprise ones", names.includes("darknode_iacscan") && names.includes("darknode_account") && !names.includes("darknode_nhi") && !names.includes("darknode_breachclock"));
+      fs.writeFileSync(path.join(tmp, "main.tf"), 'resource "aws_security_group" "sg" {\n  ingress {\n    from_port = 22\n    to_port = 22\n    protocol = "tcp"\n    cidr_blocks = ["0.0.0.0/0"]\n  }\n}\n');
+      const r = await srv.call("darknode_iacscan", { paths: ["main.tf"] });
+      ok("mcp: a tool runs the Deck engine on a local file and returns findings + a result_id", !r.isError && /SSH or RDP from 0\.0\.0\.0\/0/.test(r.content[0].text) && /^r/.test(r.structuredContent.result_id));
+      ok("mcp: a tool above the plan is refused, not run", /needs the Team plan/.test((await srv.call("darknode_nhi", { text: "x" })).content[0].text));
+      ok("mcp: send_to_deck needs a key and workspace", /API key/.test((await srv.call("darknode_send_to_deck", { result_id: r.structuredContent.result_id })).content[0].text));
+      const sent = await srv.call("darknode_send_to_deck", { result_id: r.structuredContent.result_id, workspace_id: "w_1", api_key: "dk_k" });
+      ok("mcp: send_to_deck posts the findings in the Deck contract to the workspace ingest API", !sent.isError && posted.length === 1 && /\/api\/v1\/ingest\/w_1$/.test(posted[0].u) && posted[0].h.Authorization === "Bearer dk_k" && posted[0].b.findings.every((f) => f.title && f.severity && f.category === "iacscan"));
+      // stdio framing end to end
+      const inp = new PassThrough(), out = new PassThrough(); let txt = ""; out.on("data", (d) => { txt += d; });
+      const fin = M.serveStdio(srv, inp, out);
+      inp.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\nnot json\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n{"jsonrpc":"2.0","id":3,"method":"nope"}\n'); inp.end();
+      await fin; const msgs = txt.trim().split("\n").map((l) => JSON.parse(l));
+      ok("mcp stdio: negotiates the version, answers every request (not notifications) before exiting, reports parse and unknown-method errors", msgs.length === 4 && msgs.find((m) => m.id === 1).result.protocolVersion === "2025-03-26" && msgs.find((m) => m.id === 2).result.tools.length > 2 && msgs.some((m) => m.error && m.error.code === -32700) && msgs.find((m) => m.id === 3).error.code === -32601);
+    }
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
+  }
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
   process.exit(fail ? 1 : 0);
 })();

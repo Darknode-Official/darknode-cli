@@ -1,7 +1,7 @@
 {
   "generatedFrom": "lib/cli/reference.js COMMAND_GROUPS",
   "version": "2.46.3",
-  "commandCount": 88,
+  "commandCount": 89,
   "groups": [
     {
       "title": "AI & Nexus",
@@ -83,6 +83,10 @@
         {
           "usage": "doctor",
           "desc": "health check: engines, Ollama, models, MCP, policy, memory, disk"
+        },
+        {
+          "usage": "mcp [--list]",
+          "desc": "MCP server: the Darknode Deck's tools for any AI client (Claude, Cursor, Codex, Gemini...)"
         },
         {
           "usage": "policy [init|--json]",

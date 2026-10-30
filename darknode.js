@@ -1174,6 +1174,15 @@ async function cliRun(args, gate) {
     console.log("\n  " + (problem ? yellow("some checks need attention") : green("all systems healthy")) + gray("   (machine-readable: darknode doctor --json)") + "\n");
     process.exit(problem ? 1 : 0);
   }
+  else if (cmd === "mcp") { // the Deck's tools as an MCP server for any AI client (lib/nexus/darknode-mcp.js); stdout is the protocol
+    const M = require("./lib/nexus/darknode-mcp"), fb = firebaseCfg();
+    const fetchText = async (url) => { const r = await httpReq({ url, timeout: 30000 }); if (r.status !== 200) throw new Error("HTTP " + r.status + " for " + url); return r.text; };
+    const server = M.createServer({ env: process.env, home: require("os").homedir(), here: __dirname + "/lib/nexus", cwd: process.cwd(), version: require("./package.json").version, fetchText,
+      postJson: (url, body, headers) => httpReq({ url, method: "POST", body, headers: Object.assign({ "Content-Type": "application/json" }, headers) }),
+      account: { readAuth: nexusAuth, saveAuth: (a) => writeGlobal("auth.json", a), refresh: firebaseRefresh, projectId: fb.projectId, getJson: (url, headers) => httpReq({ url, headers }) } });
+    if (rest[0] === "--list") { const tools = await server.listTools(); console.log(tools.map((t) => t.name).join("\n")); return; }
+    await M.serveStdio(server, process.stdin, process.stdout);
+  }
   else if (cmd === "nexus" || cmd === "code" || cmd === "ai") {
     const sub = (rest[0] || "").toLowerCase();
     if (sub === "init") nexusInit();
