@@ -1726,7 +1726,7 @@ async function aiCoder(argv) {
     for (let step = 1; step <= (lean ? 12 : 25); step++) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); if (printMode) process.exitCode = 1; break; }
       let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
-      if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, messages, protoSt); if (br.stop) { if (printMode) answer(br.answer || PR.GAVE_UP); else console.log("\n  " + (br.answer || PR.GAVE_UP) + "\n"); break; } continue; }
+      if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, messages, protoSt); if (br.stop) { if (printMode) { answer(br.answer || PR.GAVE_UP); if (!br.answer) process.exitCode = 1; } else console.log("\n  " + (br.answer || PR.GAVE_UP) + "\n"); break; } continue; }
       protoSt.bad = 0;
       // Strip thought from context to save tokens — it's displayed, not needed in history
       const compact = { action: o.action };
@@ -1786,7 +1786,7 @@ async function aiCoder(argv) {
       const _lg = loopGuard.note(loopGuard.signature(name, a), !/^(error:|blocked:|denied|exit [1-9])/i.test(String(result)), loopGuard.hashStr(String(result)));
       if (_lg && _lg.action === "break") { if (printMode) { answer(_lg.message); process.exitCode = 1; } else console.log("\n  " + yellow(_lg.message) + "\n"); break; }
       if (_lg) messages.push({ role: "tool", content: "[loop guard] " + _lg.message });
-      if (step >= (lean ? 12 : 25)) console.log("  " + red("(step limit reached)"));
+      if (step >= (lean ? 12 : 25)) { console.log("  " + red("(step limit reached)")); if (printMode) { answer("Stopped: reached the " + step + "-step limit before the task was finished."); process.exitCode = 1; } } // a script must not read an unfinished run as success
     }
     if (printMode) return;
   }
