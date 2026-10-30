@@ -1552,7 +1552,8 @@ function nexusHelp() {
   console.log("    -y, --yes                     auto-approve every file write and command");
   console.log("    -p, --print                   for scripts: the answer alone on stdout,");
   console.log("                                  progress on stderr; piped input joins the task");
-  console.log("                                  (implies -y: nobody is there to approve)");
+  console.log("                                  (implies -y, but pushes, sudo, rm -r and");
+  console.log("                                  global git config need an explicit -y)");
   console.log("        --lean                    minimal output (also /lean in the session)");
   console.log("        --resume / --new          reopen the last chat (default) / start blank");
   console.log("        --                        the rest is the task, even if it starts with -");
@@ -1581,11 +1582,11 @@ async function aiCoder(argv) {
   const cwd = process.cwd();
   // ---- parse flags ----
   const arr = [].concat(...(Array.isArray(argv) ? argv.slice() : String(argv || "").split(/\s+/).filter(Boolean)).map((a) => { const m = /^(--model|--engine|-m|-e)=(.*)$/.exec(a); return m ? [m[1], m[2]] : [a]; })); // --model=x / --engine=x == --model x
-  let autoApprove = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, resumeFlag = false, leanFlag = false, parts = [];
+  let autoApprove = false, explicitYes = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, resumeFlag = false, leanFlag = false, parts = [];
   const unknownFlags = [];
   for (let i = 0; i < arr.length; i++) {
     const a = arr[i];
-    if (a === "-y" || a === "--yes" || a === "--skip-permissions" || a === "--dangerously-skip-permissions") autoApprove = true;
+    if (a === "-y" || a === "--yes" || a === "--skip-permissions" || a === "--dangerously-skip-permissions") autoApprove = explicitYes = true;
     else if (a === "--print" || a === "-p") { printMode = true; autoApprove = true; }
     else if (a === "--lean") leanFlag = true;
     else if (a === "--tui" || a === "--ui") tuiFlag = true;
@@ -1672,7 +1673,7 @@ async function aiCoder(argv) {
     for (const ln of bootHeader({ version: VERSION, engine, engineLabel: (ENGINES[engine] || {}).label, model: model || "", cwd, home: os.homedir(), cols, paint })) console.log(ln);
     if (nexusMd || autoApprove) console.log("  " + gray((nexusMd ? "instructions: " + _instr.files.map((f) => f.rel).join(", ") : "") + (nexusMd && autoApprove ? "  ·  " : "") + (autoApprove ? "auto-approve ON" : "")) + "\n");
   }
-  const SYS = "Nexus — coding agent in " + cwd + ". One action/step, read observation, repeat. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} list_dir{path?} run_command{command}. Reply ONE JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Prefer edit_file for changes. Greetings/questions → action:final immediately. Else work until done.\nEfficiency: minimize calls. Chain shell commands with && or ;. Read only needed lines. Never re-read after write. Simple task = 2-5 calls." + (nexusMd ? "\n\nPROJECT:\n" + nexusMd.slice(0, 1000) : "");
+  const SYS = "Nexus — coding agent in " + cwd + ". One action/step, read observation, repeat. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} list_dir{path?} run_command{command}. Reply ONE JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Prefer edit_file for changes; read_file a file before editing it. If the task does not name the file, find it first (run_command grep -rn) and change it there: never write a new file in place of code that already exists. Greetings/questions → action:final immediately. Else work until done.\nEfficiency: minimize calls. Chain shell commands with && or ;. Read only needed lines. Never re-read after write. Simple task = 2-5 calls." + (nexusMd ? "\n\nPROJECT:\n" + nexusMd.slice(0, 1000) : "");
   const messages = [{ role: "system", content: SYS }];
   let delegated = false;
   const changed = [];  // session change log for /undo and /diff: {path, before|null, label}
@@ -1745,7 +1746,7 @@ async function aiCoder(argv) {
       const _pol = _pa ? loadPolicy(cwd) : null;
       if (_pa) { const pc = policyCheck(_pol, _pa); if (!pc.allow) _pblk = "policy — " + pc.reason; }
       if (!_pblk && name === "write_file" && _pol.blockSecrets) { const _sec = scanSecrets(a && a.content == null ? "" : a.content); if (_sec.length) _pblk = "policy — file contains " + _sec.join(", ") + " (policy.blockSecrets)"; } // the other loops checked this; here a key could be written with blockSecrets on
-      if (!_pblk && isExecTool(name)) { const dg = classifyDanger(execCommand(name, a) || ""); if (dg.level === "block") _pblk = dg.why; } // bisect/shrink run their `test` command too
+      if (!_pblk && isExecTool(name)) { const dg = classifyDanger(execCommand(name, a) || ""); if (dg.level === "block") _pblk = dg.why; else if (dg.level === "warn" && printMode && !explicitYes) _pblk = dg.why + " (nobody is here to approve it in --print mode; add -y to allow)"; } // bisect/shrink run their `test` command too
       if (_pblk) { result = "blocked: " + _pblk; if (!printMode) console.log("  " + red("blocked: ") + _pblk); if (_pol && _pol.audit) try { auditLog(cwd, { engine: "ollama", tool: name, path: _pa.path, cmd: _pa.command, status: "blocked", reason: _pblk }); } catch (_) {} }
       else try {
         // Sandbox every file tool to the project root (symlink/dot-dot safe); a throw here is reported as a tool error below.
