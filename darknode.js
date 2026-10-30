@@ -896,8 +896,7 @@ async function cliRun(args, gate) {
   if (!process.env.DARKNODE_ENGAGEMENT) {
     const DG = require("./lib/governance/default-guard");
     if (DG.ACTIVE.has(cmd)) {
-      const _target = rest.find((a) => a && a[0] !== "-") || rest[0];
-      const _g = DG.guardActive(cmd, _target, { authorized: _authorized });
+      const _g = DG.guardArgs(cmd, rest, { authorized: _authorized }); // every target in argv, not only the first
       if (!_g.allow) { console.error("  " + red("refused: ") + _g.reason); process.exitCode = 2; return; }
     }
   }
