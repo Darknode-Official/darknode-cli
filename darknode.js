@@ -899,6 +899,7 @@ async function cliRun(args, gate) {
     }
   }
   if (CMD_MAP[cmd]) { console.log(CMD_MAP[cmd].run({ rest, c: { red, green, yellow, cyan, gray, bold } })); }
+  else if (cmd === "pentest") { await require("./lib/nexus/pentest-engine").startPentest(rest[0] || null, { reportDir: process.cwd() }); process.exit(0); } // HYDRA; the TUI's /pentest runs this in its own process
   else if (cmd === "scan") { const host = rest[0]; if (!host) return usage(); await scan(host, parsePorts(rest[1])); }
   else if (cmd === "dns") { const recs = await dnsLookup(rest[0] || ""); recs.forEach(([k, v]) => console.log(k.padEnd(6) + v)); }
   else if (cmd === "whois") { console.log(await whois(rest[0] || "")); }
@@ -2070,7 +2071,9 @@ function mcpConnect(name, spec, cwd) {
     const notify = (method, params) => { try { cp.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params: params || {} }) + "\n"); } catch (_) {} };
     (async () => {
       try {
-        await call("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "nexus", version: "1.0" } });
+        // uvx/npx/bunx download the server on its first run, which can take far longer than a normal start
+        const initMs = /^(uvx|npx|pnpx|bunx|pipx)(\.cmd|\.exe)?$/i.test(require("path").basename(String(spec.command || ""))) ? 60000 : 20000;
+        await call("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "nexus", version: "1.0" } }, initMs).catch((e) => { throw new Error(/did not answer/.test(e.message) ? "did not start within " + initMs / 1000 + "s" : e.message); });
         notify("notifications/initialized", {});
         const tl = await call("tools/list", {});
         resolve({ name, cp, call, tools: (tl && tl.tools) || [] });
@@ -2947,7 +2950,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/index", "index the repo for code search; /index <question> finds the code it is about"], ["/map", "show the repo map; /map <task> ranks it for a task; /map on|off"], ["/verify", "detect + run this project's tests/build"], ["/radar", "codebase complexity + hotspot map"], ["/review-fast", "fast rule-based review of changed code (no AI)"], ["/diffexplain", "explain the current git diff"], ["/testgen", "scaffold tests for a function/file"], ["/snippet", "save / use a prompt macro"], ["/snippets", "list saved prompt macros"],
       ["/plan", "make & run an editable task checklist"], ["/git", "branch, status & recent commits"], ["/blame", "who last changed a file's lines"],
       ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "max token savings with ZERO quality loss (status · off)"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens) · /lean on|off"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max|ultracode)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
-      ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "session savings (tokens & cost avoided)"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "Nexus docs: /docs <topic> or /docs <words> to search every command & key"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
+      ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "same as /savings — cost-savings analysis"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "Nexus docs: /docs <topic> or /docs <words> to search every command & key"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
       ["/tree", "show the project file tree"], ["/theme", "change the color theme"],
       ["/color", "set the accent color · /color <name|0-255|#hex> · /color reset"], ["/colors", "list accent colors"], ["/gradient", "set the logo gradient · /gradient <theme|reset>"], ["/mouse", "toggle mouse capture · /mouse off to select & copy text"],
       ["/hack", "offensive-security mode — pentest/CTF persona + the Darknode toolkit"],
@@ -2958,7 +2961,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/stats", "codebase overview: files, lines & languages, largest files"],
       ["/deps", "dependency hygiene: unused + undeclared package imports"],
       ["/env", "env-var audit: used-but-undocumented vs .env.example"],
-      ["/login", "sign in with Google or GitHub (Firebase)"], ["/logout", "sign out of Nexus"], ["/whoami", "show the signed-in account"], ["/setup", "install Ollama + pull a local model"],
+      ["/login", "sign in: /login <code from the website> (or /login google|github)"], ["/logout", "sign out of Nexus"], ["/whoami", "show the signed-in account"], ["/setup", "install Ollama + pull a local model"],
       ["/restart", "save session, restart Nexus with latest code, resume where you left off"],
       ["/update", "check for & install a newer Nexus (/update apply to install now)"],
       ["/autoupdate", "auto-update on launch: /autoupdate on | check | off"],
@@ -3712,7 +3715,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     let curTurnFromQueue = false, _nextFromQueue = false; // is the running turn itself a drained queued prompt? (so a second Ctrl+X can't abort the queue the first press launched)
     // Clickable status buttons (mouse) — one-tap access to cost/usage & more,
     // instead of only the passive metrics line. Each runs its slash command.
-    const NAV_BUTTONS = [["Cost", "/status"], ["Savings", "/savings"], ["Impact", "/impact"], ["Models", "/models"], ["Settings", "/settings"], ["Help", "/help"]];
+    const NAV_BUTTONS = [["Cost", "/status"], ["Savings", "/savings"], ["Models", "/models"], ["Settings", "/settings"], ["Help", "/help"]];
     let modelPick = []; // last catalog shown by /model, so /model <number> can pick from it
     // Lay the composer buffer out in visual rows of width iw. Breaks at the last
     // space that fits (the space stays on the upper row, so offsets stay
@@ -4033,6 +4036,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const doCompact = (auto) => {
       if (compact.on) return;
       if (busy) { transcript.push({ role: "system", text: "a turn is still running — /compact once it finishes" }); render(); return; }
+      if (!auto && !transcript.some((m) => m.role === "user")) { transcript.push({ role: "system", text: "nothing to compact yet — the conversation is empty" }); render(); return; }
       const c = { auto: !!auto, before: sess.ctxUsed || 0, ctl: makeCtl(), cancelled: false };
       compact.on = true; compact.start = Date.now(); compact.tok = 0; compact.cur = c; startTick(); render();
       const finish = (summary) => {
@@ -4708,7 +4712,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       block.items.push(card); startTick(); render();
       (async () => {
         let diff = ""; let src = "working tree";
-        try { let d = await sh(["diff", "--no-color"]); diff = (d.stdout || "").trim(); if (!diff) { d = await sh(["diff", "--cached", "--no-color"]); diff = (d.stdout || "").trim(); src = "staged"; } if (!diff) { d = await sh(["diff", "--no-color", "HEAD~1"]); diff = (d.stdout || "").trim(); src = "last commit"; } } catch (_) {}
+        try { let d = await sh(["diff", "--no-color"]); diff = (d.stdout || "").trim(); if (!diff) { d = await sh(["diff", "--cached", "--no-color"]); diff = (d.stdout || "").trim(); src = "staged"; } if (!diff) { d = await sh(["show", "--no-color", "--format=", "HEAD"]); diff = (d.stdout || "").trim(); src = "last commit"; } } catch (_) {}
         if (!diff) { card.status = "err"; card.end = Date.now(); ensureText(block).full = "nothing to review — no working, staged, or last-commit changes found (make some edits first)"; busy = false; ctl = null; render(); return; }
         const prompt = buildReviewPrompt(diff);
         let out; try { if (re === "ollama") { const mdl = pickCoderModel(await ollamaTags()); out = await ollamaChat(mdl, [{ role: "user", content: prompt }], undefined, aSignal(ctl)); } else { out = (await runEngineTask(re, prompt, cwd, false, false, null, ctl)).output; } } catch (e) { out = "error: " + e.message; }
@@ -5176,10 +5180,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           else { const cfg = addServerToConfig({ mcpServers: loadMcpConfig(cwd) || {} }, name); if (writeMcp(cfg)) { trustRepo(cwd); _untrustedRepoConfig = false; mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "added " + cyan(name) + " → .nexus/mcp.json" + (e.needsEnv ? "\n  " + yellow("set env first: " + e.needsEnv.join(", ")) : "") + (e.note ? "\n  " + gray("note: " + e.note) : "") + "\n  connecting…  " + gray("(first run may npx/uvx-install the server)") }); } else transcript.push({ role: "system", text: "could not write .nexus/mcp.json" }); }
         }
         else if (sub === "remove" || sub === "rm") { const name = (ps[1] || "").toLowerCase(); const cur = loadMcpConfig(cwd) || {}; if (!cur[name]) transcript.push({ role: "system", text: "no server '" + name + "' in .nexus/mcp.json" }); else { writeMcp(removeServerFromConfig({ mcpServers: cur }, name)); mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "removed " + name + " — reconnecting the rest…" }); } }
-        else if (sub === "connect" || sub === "reconnect") { mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "reconnecting MCP servers from .nexus/mcp.json…" }); }
+        else if (sub === "connect" || sub === "reconnect") { mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "reconnecting MCP servers (bundled + .nexus/mcp.json)…" }); }
         else if (!mcpServers.length && !loadMcpConfig(cwd)) transcript.push({ role: "system", text: (process.env.DARKNODE_NO_DEFAULT_MCP ? "bundled MCP servers are disabled (DARKNODE_NO_DEFAULT_MCP).\n  " : "bundled MCP servers still connecting… (first launch npx/uvx-installs them). Run /mcp again in a moment.\n  ") + cyan("/mcp add github") + gray("   · or playwright · exa · notion · postgres · …  ·  /mcp catalog to browse") + "\n  The claude engine AND any local/API model get the tools." });
         else if (!mcpServers.length) transcript.push({ role: "system", text: "MCP servers are still connecting… run /mcp again in a moment" });
-        else transcript.push({ role: "system", text: "MCP servers " + green("(★ = bundled with Nexus)") + ":\n" + mcpServers.map((s) => s.error ? ("  " + red("×") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + s.error) : ("  " + green("●") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + (s.tools || []).length + " tool(s): " + (s.tools || []).map((t) => t.name).slice(0, 8).join(", "))).join("\n") + "\n  any model calls these as mcp__<server>__<tool>  ·  /mcp add <name> · /mcp catalog · /mcp remove <name>" }); }
+        else transcript.push({ role: "system", text: "MCP servers " + green("(★ = bundled with Nexus)") + ":\n" + mcpServers.map((s) => s.error ? ("  " + red("×") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + s.error) : ("  " + green("●") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + (s.tools || []).length + " tool(s): " + (s.tools || []).map((t) => t.name).slice(0, 8).join(", "))).join("\n") + "\n  any model calls these as mcp__<server>__<tool>  ·  /mcp add <name> · /mcp catalog · /mcp remove <name>" + (mcpServers.some((s) => s.error) ? "  ·  /mcp reconnect retries the failed ones" : "") }); }
       else if (cmd === "/agents" || cmd === "/parallel") { const tasks = argstr.split(/\s*;;\s*/).map((s) => s.trim()).filter(Boolean); if (tasks.length < 2) transcript.push({ role: "system", text: "usage: /agents <task 1> ;; <task 2> ;; …   — runs each task in parallel on the " + engine + " engine, each in its own isolated git worktree, then merges the changes back" }); else spawnAgents(tasks); }
       else if (cmd === "/hooks") { transcript.push({ role: "system", text: hooks ? ("hooks (.nexus/hooks.json) active for events: " + Object.keys(hooks).join(", ") + "\n  PreToolUse/PostToolUse run for the local engine; UserPromptSubmit & Stop run for every engine") : "no hooks configured. Create .nexus/hooks.json:\n  { \"PreToolUse\": [ { \"matcher\": \"run_command|write_file\", \"command\": \"echo $TOOL_NAME >> .nexus/audit.log\" } ] }\n  events: UserPromptSubmit · PreToolUse · PostToolUse · Stop  (non-zero exit on PreToolUse/UserPromptSubmit blocks the action)" }); }
       else if (cmd === "/status") transcript.push({ role: "system", text: "status:\n  engine   " + engine + "\n  model    " + (modelLabel(shownModel()) || "engine default") + "\n  dir      " + cwd + "\n  mode     " + MODES[mode].k + "\n  context  " + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "% of " + fmtK(sess.ctxWindow) + "\n  tokens   ↑" + fmtK(sess.inTok) + " ↓" + fmtK(sess.outTok) + (PAID[engine] ? (sess.cost ? " · $" + sess.cost.toFixed(4) : " · billed") : " · local · free") + "\n  budget   " + (costCap ? "$" + costCap.toFixed(2) + " cap" : "none") + "\n  undo     " + checkpoints.length + " checkpoint(s)" });
@@ -5286,7 +5290,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       else if (cmd === "/retry") {
         if (busy) transcript.push({ role: "system", text: "a turn is still running — wait for it to finish, then /retry" });
-        else { let last = null; for (let i = transcript.length - 1; i >= 0; i--) if (transcript[i].role === "user") { last = transcript[i].text; break; } if (last == null) transcript.push({ role: "system", text: "nothing to retry yet" }); else { bypassCacheOnce = true; transcript.push({ role: "system", text: gray("re-running your last prompt (fresh, skipping the exact-repeat cache)…") }); submit(last); } }
+        else { let last = null; for (let i = transcript.length - 1; i >= 0; i--) if (transcript[i].role === "user") { last = transcript[i].text; break; } if (last == null) transcript.push({ role: "system", text: "nothing to retry yet" }); else if (/^\//.test(last)) transcript.push({ role: "system", text: "the last thing you ran was the command " + last.split(/\s+/)[0] + " — run it again directly (↑ recalls it); /retry re-sends a prompt to the model" }); else { bypassCacheOnce = true; transcript.push({ role: "system", text: gray("re-running your last prompt (fresh, skipping the exact-repeat cache)…") }); submit(last); } }
       }
       else if (cmd === "/cheaper") {
         transcript.push({ role: "system", lines: Ledger.renderAdvice(turnLog, { paid: !!PAID[engine], cacheOn, effort, engine, autoCompact, ctxPct: (sess.ctxUsed / (sess.ctxWindow || 200000)) * 100 }, { cyan, gray, bold, dim, green, yellow, mag }) });
@@ -5314,12 +5318,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       else if (cmd === "/pricing") {
         const cur = priceOf(shownModel());
         const row = (r) => padR(r.label, 20) + padR(money(r.in), 9) + padR(money(r.cw5), 10) + padR(money(r.cw1h), 10) + padR(money(r.cr), 11) + money(r.out);
-        const out = ["exact Claude prices, USD per million tokens " + gray("(" + PRICING_SOURCE + ", checked " + PRICING_CHECKED + ")"), "  current: " + bold(cur.label) + (cur.cr != null ? "  in " + money(cur.in) + " · out " + money(cur.out) + " · cache read " + money(cur.cr) + " · 5m write " + money(cur.cw5) + " · 1h write " + money(cur.cw1h) : "  in " + money(cur.in) + " · out " + money(cur.out)), "", "  " + gray(padR("model", 20) + padR("input", 9) + padR("5m write", 10) + padR("1h write", 10) + padR("cache read", 11) + "output")];
+        const out = ["exact Claude prices, USD per million tokens " + gray("(" + PRICING_SOURCE + ", checked " + PRICING_CHECKED + ")"), "  current: " + bold(cur.label) + (!PAID[engine] ? "  local model, free (no token charges)" : !cur.known ? "  not in the price table, costed at the fallback  in " + money(cur.in) + " · out " + money(cur.out) : cur.cr != null ? "  in " + money(cur.in) + " · out " + money(cur.out) + " · cache read " + money(cur.cr) + " · 5m write " + money(cur.cw5) + " · 1h write " + money(cur.cw1h) : "  in " + money(cur.in) + " · out " + money(cur.out)), "", "  " + gray(padR("model", 20) + padR("input", 9) + padR("5m write", 10) + padR("1h write", 10) + padR("cache read", 11) + "output")];
         for (const r of pricingTable()) { out.push("  " + (r.label === cur.label ? cyan(row(r)) : row(r))); if (r.over100k) out.push("  " + gray(row(Object.assign({}, r.over100k, { label: "  prompt >100k" })))); if (r.fast) out.push("  " + gray(padR("  fast mode", 20) + padR(money(r.fast.in), 9) + padR("", 31) + money(r.fast.out))); }
         out.push(gray("  Batch API: 50% off input and output. US-only inference (inference_geo: \"us\"): 1.1x on every category."));
         transcript.push({ role: "system", text: out.join("\n") });
       }
-      else if (cmd === "/budget") { const v = parseFloat(arg); if (arg && !isNaN(v) && v > 0) { costCap = v; saveSetting("budgetCap", v); transcript.push({ role: "system", text: "budget cap set to $" + v.toFixed(2) + " — turns pause when session cost reaches it (saved)" }); } else if (arg === "off" || arg === "0") { costCap = 0; saveSetting("budgetCap", 0); transcript.push({ role: "system", text: "budget cap removed (unlimited) — no --max-budget-usd is sent (saved)" }); } else transcript.push({ role: "system", text: "usage: /budget <usd>  (e.g. /budget 5.00, or /budget off)" }); }
+      else if (cmd === "/budget") { const v = parseFloat(arg); if (arg && !isNaN(v) && v > 0) { costCap = v; saveSetting("budgetCap", v); transcript.push({ role: "system", text: "budget cap set to $" + v.toFixed(2) + " — turns pause when session cost reaches it (saved)" }); } else if (arg === "off" || arg === "0") { costCap = 0; saveSetting("budgetCap", 0); transcript.push({ role: "system", text: "budget cap removed (unlimited) — no --max-budget-usd is sent (saved)" }); } else transcript.push({ role: "system", text: (arg ? "" : (costCap > 0 ? "budget cap: $" + costCap.toFixed(2) + " per session\n" : "budget cap: off (unlimited)\n")) + "usage: /budget <usd>  (e.g. /budget 5.00, or /budget off)" }); }
       else if (cmd === "/report") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet" + (since ? " since " + since : "") + " (.nexus/usage.jsonl fills up as you run turns)" }); } else { const s = summarize(recs); if (parts[0] === "json") transcript.push({ role: "system", text: JSON.stringify(s, null, 2) }); else { const rep = renderReport(s, { project: path.basename(cwd) }); if (parts[0] === "save") { try { const f = path.join(cwd, ".nexus", "usage-report.md"); fs.writeFileSync(f, "```\n" + rep + "\n```\n"); transcript.push({ role: "system", text: "saved usage report to " + f }); } catch (e) { transcript.push({ role: "system", text: "could not save report: " + (e && e.message || e) }); } } else transcript.push({ role: "system", text: rep + "\n\n  /report json · /report save · /report since 2026-08-01 · headless: darknode report" }); } } }
       else if (cmd === "/docs") {
         let txt = nexusDocsText(argstr);
@@ -5612,7 +5616,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       else if (cmd === "/effort") { const _ml = modelLabel(shownModel() || engine); if (["low", "medium", "high", "xhigh", "max", "ultracode"].includes(arg)) { effort = arg; saveSetting("effort", arg); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort " + bold(arg) + " — the claude engine uses " + (arg === "low" ? "less thinking (fewer tokens, cheaper; good for mechanical work)" : arg === "ultracode" ? "max thinking and orchestrates multi-agent workflows on every substantive task (fans out, adversarially verifies; by far the most tokens — /budget still caps it)" : arg === "high" || arg === "xhigh" || arg === "max" ? "more thinking (better on hard problems, more tokens)" : "the default thinking budget") + (engineCap(engine, "effort") ? "" : " · note: only claude uses effort; " + engine + " ignores it") }); } else if (arg === "off" || arg === "default") { effort = ""; saveSetting("effort", ""); transcript.push({ role: "system", text: "model " + bold(_ml) + " · effort reset to the model default" }); } else { const _i = EFFORT_LEVELS.findIndex((l) => l[0] === (effort || "high")); pendingEffort = { sel: _i < 0 ? 2 : _i }; render(); } }
       else if (cmd === "/hack") { hack = arg === "on" ? true : arg === "off" ? false : !hack; transcript.push({ role: "system", text: hack ? red("● HACK MODE") + " — Nexus is now an offensive-security specialist for AUTHORIZED engagements, with the full Darknode toolkit (scan · dns · cert · subs · cve · payloads · revshell · dorks · jwt · hash · totp · encode …) available via run_command. Systems you own or are explicitly in-scope to test only. " + gray("/hack off to exit") : "hack mode OFF — back to the standard coding agent" }); }
-      else if (cmd === "/pentest") { const { startPentest } = require("./lib/nexus/pentest-engine"); startPentest(arg || null, { reportDir: process.cwd() }).catch(e => transcript.push({ role: "system", text: "HYDRA error: " + e.message })); }
+      else if (cmd === "/pentest") {
+        // HYDRA is its own readline program: sharing the TUI's raw-mode stdin left Nexus deaf to
+        // keys once it exited. Hand it the real terminal in a child process, then take it back.
+        const sub = ["pentest"].concat(arg ? [arg.trim().split(/\s+/)[0]] : []);
+        const r = withRealTerminal(() => _cp.spawnSync(process.execPath, process.pkg ? sub : [process.argv[1]].concat(sub), { stdio: "inherit", cwd }));
+        transcript.push({ role: "system", text: r && r.error ? "HYDRA could not start: " + r.error.message : "HYDRA session ended" + (r && r.status ? " (exit " + r.status + ")" : "") + " — a finished engagement leaves its hydra-report-*.md in " + cwd });
+      }
       else if (cmd === "/ai-prompt" || cmd === "/aiprompt") {
         const raw = argstr.trim();
         if (!raw) transcript.push({ role: "system", text: "usage: /ai-prompt <rough prompt> — the AI rewrites & sharpens it, then drops the result in your input box to edit or send" });
@@ -5793,7 +5803,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           transcript.push({ role: "system", text: engine + " models" + (tag ? " " + gray(tag) : "") + "  ·  current: " + cyan(cur) + "\n" + list + "\n  " + gray("set with /model <name>  or  /model <number>") }); render();
         };
         const a = (arg || "").trim();
-        if (/^\d+$/.test(a)) { if (modelPick[+a - 1]) setModel(modelPick[+a - 1]); else transcript.push({ role: "system", text: "run /model first to see the numbered list, then /model <number>" }); }
+        // a number picks from the list /model shows; with no list yet, build the same one first
+        const pickNth = (names) => { modelPick = names.slice(); if (names[+a - 1]) setModel(names[+a - 1]); else transcript.push({ role: "system", text: names.length ? "no model #" + a + " — /model lists " + names.length : "no numbered list for " + engine + " — use /model <name>" }); render(); };
+        if (/^\d+$/.test(a)) { if (modelPick[+a - 1]) setModel(modelPick[+a - 1]); else if (engine === "ollama") ollamaTags().then((ms) => pickNth(ms || [])).catch(() => pickNth([])); else pickNth(eng.models || []); }
         else if (a) setModel(a);
         else if (engine === "ollama") { transcript.push({ role: "system", text: "listing local models…" }); render(); ollamaTags().then((ms) => show(ms, "(installed)")).catch(() => show([], "(Ollama unreachable)")); }
         else show(eng.models || [], (eng.models && eng.models.length) ? "" : "(configured inside the tool)");
@@ -5920,7 +5932,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           // in it would turn the restart into a one-shot run instead of the TUI.
           // Carry the CURRENT engine so a mid-session /engine switch survives (the
           // resumed session also restores it, so this is just a fallback default).
-          const sub = ["nexus", "--resume", "-e", engine];
+          const sub = ["nexus", "--resume", "-e", engine].concat(sess.model && sess.model !== engine ? ["-m", sess.model] : []); // the model too: an empty session is not saved, so --resume alone would drop it
           const args = process.pkg ? sub : [process.argv[1]].concat(sub); // pkg binary: the exe is already the entry
           // Become a thin supervisor: spawn the TUI (inheriting our stdio so it keeps
           // the terminal's foreground process group — spawning then exiting would
@@ -5989,7 +6001,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         }
         render();
       }
-      else if (cmd === "/expand") expanded = !expanded;
+      else if (cmd === "/expand") { expanded = !expanded; transcript.push({ role: "system", text: "tool output " + (expanded ? "expanded — full results shown" : "collapsed — one-line summaries") + "  (ctrl+o toggles)" }); }
       else if (cmd === "/permissions" || cmd === "/perms") {
         if ((argstr || "").trim() === "clear") { perms = { allow: [], deny: [] }; heldAllow = []; savePerms(); transcript.push({ role: "system", text: "cleared all permission rules." }); }
         else transcript.push({ role: "system", text: "permission rules " + gray("(.nexus/permissions.json)") + "\n  " + green("allow") + gray(" (auto-run, bypass guard): ") + (perms.allow.length ? perms.allow.join(", ") : gray("none")) + (heldAllow.length ? "\n  " + yellow("held") + gray(" (from the repo file, not applied until /trust): ") + heldAllow.join(", ") : "") + "\n  " + red("deny") + gray(" (block): ") + (perms.deny.length ? perms.deny.join(", ") : gray("none")) + "\n  " + gray("/allow <rule> · /deny <rule> · /permissions clear") + "\n  " + gray("rule = tool | tool:glob | Bash(glob) | *   e.g. /allow run_command:npm* · /deny Bash(rm *) · /allow read_file") });
@@ -6019,7 +6031,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         if (!ps.length) {
           transcript.push({ role: "system", text: apiConfigured()
             ? "Any-model API is ON\n  base   " + API_BASE() + "\n  model  " + (sess.model && sess.model !== engine ? sess.model : gray("(none — /model <name>)")) + "\n  key    " + (process.env.DARKNODE_API_KEY ? green("set") : yellow("not set — /api key <k>")) + "\n  /api off to go back to local Ollama"
-            : "Drive ANY model via an OpenAI-compatible API (OpenAI · OpenRouter · Groq · DeepSeek · Together · Mistral · LM Studio · vLLM · llama.cpp).\n  /api <base-url> [model]   e.g. /api https://openrouter.ai/api/v1 anthropic/claude-3.5-sonnet\n  /api key <your-key>       set the key for this session (or export DARKNODE_API_KEY)\n  /api off                  back to local Ollama\nCurrently: " + (engine === "ollama" ? "local Ollama" : engine) });
+            : "Drive ANY model via an OpenAI-compatible API (OpenAI · OpenRouter · Groq · DeepSeek · Together · Mistral · LM Studio · vLLM · llama.cpp).\n  /api <base-url> [model]   e.g. /api https://openrouter.ai/api/v1 anthropic/claude-sonnet-5.5\n  /api key <your-key>       set the key for this session (or export DARKNODE_API_KEY)\n  /api off                  back to local Ollama\nCurrently: " + (engine === "ollama" ? "local Ollama" : engine) });
         } else if (ps[0] === "off") {
           delete process.env.DARKNODE_API_BASE; transcript.push({ role: "system", text: "API off — back to local Ollama." });
         } else if (ps[0] === "key") {
@@ -6043,7 +6055,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         // switching AI starts a fresh conversation + resets the cost/context meters (like /engine)
         const reset = () => { sess.userModel = false; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; oMsgs.length = 1; };
         locals.forEach((m) => opts.push({ name: m, note: "local · free", paid: false, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = CTXW.ollama || 32768; reset(); } }));
-        if (hasAnthropic()) ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"].forEach((m) => opts.push({ name: m, note: "Claude · API — BILLED to your Anthropic key", paid: true, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = 200000; reset(); } }));
+        if (hasAnthropic()) ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"].forEach((m) => opts.push({ name: m, note: "Claude · API — BILLED to your Anthropic key", paid: true, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = 200000; reset(); } }));
         if (API_BASE()) opts.push({ name: (sess.model && sess.model !== engine && !/^claude/i.test(sess.model) ? sess.model : "api-model"), note: API_BASE() + " · likely billed", paid: true, apply: () => { engine = "ollama"; if (!sess.model || /^claude/i.test(sess.model) || sess.model === engine) sess.model = ""; reset(); } });
         const selArg = /^claude\s+\S/i.test(arg) ? "claude" : arg;
         if (!selArg) {
@@ -6063,6 +6075,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         else if (!ENGINES[arg]) transcript.push({ role: "system", text: "unknown engine '" + arg + "' — options: " + ENGINE_ORDER.join(", ") });
         else if (offline && ENGINES[arg].kind !== "local") transcript.push({ role: "system", text: "offline lock is ON — cloud engines are blocked. Turn it off with /offline first." });
         else if (!engineAvail(arg)) transcript.push({ role: "system", text: "'" + arg + "' (" + ENGINES[arg].label + ") isn't installed — install its CLI, then /engine " + arg });
+        else if (arg === engine) transcript.push({ role: "system", text: "already on " + arg + " (" + ENGINES[arg].label + ") — /clear starts a fresh conversation" });
         else { engine = arg; sess.model = arg; sess.userModel = false; sess.ctxWindow = CTXW[arg] || 200000; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; oMsgs.length = 1; transcript.push({ role: "system", text: "engine switched to " + arg + " (" + ENGINES[arg].label + ") — cost meter now tracks " + (PAID[arg] ? arg + " (billed)" : arg + " (local · free)") + "; fresh conversation" }); }
       }
       else if (documentedVerbs().has(cmd.slice(1)) && !NEXUS_NO_BRIDGE.has(cmd.slice(1))) {
@@ -6188,16 +6201,23 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // Leaves the alt-screen + raw mode so the editor has the real terminal, then
     // restores the TUI (raw mode, alt-screen, bracketed paste, mouse) and loads
     // the edited file back into the composer buffer.
+    // Leave the alt-screen + raw mode so a child program gets the real terminal, run it, then
+    // restore the TUI (raw mode, alt-screen, bracketed paste, mouse). Returns run()'s result.
+    const withRealTerminal = (run) => {
+      try { out.write(term.disableString()); } catch (_) {}
+      try { process.stdin.setRawMode(false); } catch (_) {}
+      let r; try { r = run(); } catch (e) { r = { error: e }; }
+      try { process.stdin.setRawMode(true); } catch (_) {}
+      process.stdin.resume();
+      try { out.write(term.enableString() + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[2J"); } catch (_) {}
+      lastLines = null;
+      return r;
+    };
     const openEditor = () => {
       const edBin = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : (hasBin("nano") ? "nano" : "vi"));
       let tmp;
       try { tmp = path.join(require("os").tmpdir(), "nexus-compose-" + process.pid + "-" + Date.now() + ".md"); fs.writeFileSync(tmp, composer.expand(input)); } catch (_) { return; }
-      try { out.write(term.disableString()); } catch (_) {}
-      try { process.stdin.setRawMode(false); } catch (_) {}
-      try { _cp.spawnSync(edBin, [tmp], { stdio: "inherit" }); } catch (_) {}
-      try { process.stdin.setRawMode(true); } catch (_) {}
-      process.stdin.resume();
-      try { out.write(term.enableString() + (mouseOn ? ESC + "[?1000h" + ESC + "[?1006h" : "") + ESC + "[2J"); } catch (_) {}
+      withRealTerminal(() => _cp.spawnSync(edBin, [tmp], { stdio: "inherit" }));
       try { const txt = fs.readFileSync(tmp, "utf8").replace(/\n$/, ""); input = txt; curPos = txt.length; composer.text = txt; composer.cursor = txt.length; } catch (_) {}
       try { fs.unlinkSync(tmp); } catch (_) {}
       lastLines = null; render();

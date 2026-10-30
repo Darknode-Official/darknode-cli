@@ -120,6 +120,15 @@ group("capability index (what a module can DO)");
       const AR = require("../lib/nexus/code-review-auto.js").autoReview;
       ok("code review: a staged non-ASCII file name is reviewed", /2 file\(s\)/.test(AR(undefined, g)) && /\u00e9\.js/.test(AR(undefined, g)));
       ok("code review: run from a subfolder still finds the staged files", /2 file\(s\)/.test(AR(undefined, path.join(g, "sub"))));
+      fs.writeFileSync(path.join(g, "view.tsx"), "eval(z);\n"); cp.execFileSync("git", ["add", "view.tsx"], { cwd: g });
+      ok("code review: .tsx is source", /view\.tsx/.test(AR(undefined, g)));
+      const DX = require("../lib/nexus/code-diff-explain").explainDiff;
+      ok("diff explain: staged changes count with no commit yet", /plain\.js/.test(DX("", g)) && /uncommitted changes/.test(DX("", g)));
+      cp.execFileSync("git", ["-c", "user.email=test@darknode.ai", "-c", "user.name=t", "commit", "-qm", "x"], { cwd: g });
+      fs.writeFileSync(path.join(g, "sub", "plain.js"), "eval(y);\nlet more = 1;\n"); cp.execFileSync("git", ["add", "-A"], { cwd: g });
+      ok("diff explain: staged changes count after a commit", /plain\.js/.test(DX("", g)) && !/No changes/.test(DX("", g)));
+      fs.writeFileSync(path.join(g, "notes.txt"), "x\n"); cp.execFileSync("git", ["-c", "user.email=test@darknode.ai", "-c", "user.name=t", "commit", "-qam", "y"], { cwd: g });
+      ok("code review: nothing changed says so without asking to stage", /No changed source files/.test(AR(undefined, g)) && !/git add/.test(AR(undefined, g)));
       fs.rmSync(g, { recursive: true, force: true });
     }
     fs.rmSync(d, { recursive: true, force: true });
@@ -1789,6 +1798,7 @@ group("cost-savings analysis");
   ok("totalSavable = local + downshift", Math.round(a.totalSavable) === Math.round(a.localSaved + a.downshiftSaved));
   const txt = renderSavings(a, { project: "acme" });
   ok("renders headline + opportunities + downshift table", /cost-savings analysis — acme/.test(txt) && txt.includes("Run rate") && txt.includes("Local routing") && txt.includes("→ sonnet"));
+  ok("no paid turns → nothing to save, no $0 opportunities", (() => { const t = renderSavings(analyzeSavings([{ ts: Date.now(), model: "qwen2.5-coder", cost: 0, in: 10, out: 5 }])); return /Nothing to save/.test(t) && !/Local routing/.test(t); })());
   ok("empty ledger → zeroed analysis, no crash", (() => { const z = analyzeSavings([]); return z.turns === 0 && z.totalSavable === 0 && z.activeDays === 1; })());
 }
 

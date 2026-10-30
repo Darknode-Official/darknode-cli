@@ -159,7 +159,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/fallback` — auto-switch model on rate-limit
 - `/guard` — preflight destructive commands (enforce|warn|off)
 - `/permissions` — allow/deny tool rules — /allow /deny <rule>
-- `/impact` — session savings (tokens & cost avoided) (opens in the side panel)
+- `/impact` — same as /savings — cost-savings analysis (opens in the side panel)
 - `/savings` — cross-session cost-savings analysis + 30d projection (opens in the side panel)
 - `/cache` — serve exact-repeat read-only answers free (on/off/clear)
 - `/models` — list cloud & local models
@@ -183,7 +183,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/stats` — codebase overview: files, lines & languages, largest files (opens in the side panel)
 - `/deps` — dependency hygiene: unused + undeclared package imports
 - `/env` — env-var audit: used-but-undocumented vs .env.example
-- `/login` — sign in with Google or GitHub (Firebase)
+- `/login` — sign in: /login <code from the website> (or /login google|github)
 - `/logout` — sign out of Nexus
 - `/whoami` — show the signed-in account
 - `/setup` — install Ollama + pull a local model
