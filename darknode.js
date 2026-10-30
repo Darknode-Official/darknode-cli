@@ -1615,7 +1615,7 @@ async function aiCoder(argv) {
   // env) turns the local engine into a driver for ANY model. Env wins over config.
   if (cfg.apiBase && !process.env.DARKNODE_API_BASE) process.env.DARKNODE_API_BASE = cfg.apiBase;
   if (cfg.apiKey && !process.env.DARKNODE_API_KEY) process.env.DARKNODE_API_KEY = cfg.apiKey;
-  const _instr = require("./lib/nexus/instructions").loadInstructions(cwd); // AGENTS.md / CLAUDE.md / GEMINI.md / .cursorrules root->cwd, then .nexus/NEXUS.md
+  const _instr = require("./lib/nexus/instructions").loadInstructions(cwd, { allowOutside: isRepoTrusted(cwd) }); // AGENTS.md / CLAUDE.md / GEMINI.md / .cursorrules root->cwd, then .nexus/NEXUS.md
   let nexusMd = _instr.text;
   const avail = {}; for (const e of ENGINE_ORDER) avail[e] = engineAvail(e);
   // "api" is an alias for the local tool loop pointed at the configured API.
@@ -1674,7 +1674,7 @@ async function aiCoder(argv) {
     const paint = useColor ? { brand: bold, accent: mag, muted: gray, faint: dim, rule: gray, value: cyan } : null;
     const cols = (process.stdout.columns || 80);
     for (const ln of bootHeader({ version: VERSION, engine, engineLabel: (ENGINES[engine] || {}).label, model: model || "", cwd, home: os.homedir(), cols, paint })) console.log(ln);
-    if (nexusMd || autoApprove) console.log("  " + gray((nexusMd ? "instructions: " + _instr.files.map((f) => f.rel).join(", ") : "") + (nexusMd && autoApprove ? "  ·  " : "") + (autoApprove ? "auto-approve ON" : "")) + "\n");
+    if (nexusMd || autoApprove) console.log("  " + gray((nexusMd ? "instructions: " + (_instr.files.map((f) => f.rel).join(", ") || "none loaded") : "") + (nexusMd && autoApprove ? "  ·  " : "") + (autoApprove ? "auto-approve ON" : "")) + "\n");
   }
   const SYS = "Nexus — coding agent in " + cwd + ". One action/step, read observation, repeat. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} list_dir{path?} run_command{command}. Reply ONE JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Prefer edit_file for changes; read_file a file before editing it. If the task does not name the file, find it first (run_command grep -rn) and change it there: never write a new file in place of code that already exists. Greetings/questions → action:final immediately. Else work until done.\nEfficiency: minimize calls. Chain shell commands with && or ;. Read only needed lines. Never re-read after write. Simple task = 2-5 calls." + (nexusMd ? "\n\nPROJECT:\n" + nexusMd.slice(0, 1000) : "");
   const messages = [{ role: "system", content: SYS }];
@@ -2317,7 +2317,7 @@ async function deviceTool(name, a, cwd) {
     for (const t of items) {
       const content = typeof t === "string" ? t : (t.content || t.task || t.title || t.text || "");
       const st = typeof t === "object" ? String(t.status || t.state || "pending") : "pending";
-      if (content) AGENT_TODOS.push({ content: String(content).slice(0, 200), status: /done|complete|finish/i.test(st) ? "done" : /prog|doing|active|current/i.test(st) ? "in_progress" : "pending" });
+      if (content) AGENT_TODOS.push({ content: String(content).slice(0, 200), status: /\b(?:done|complete|completed|finish|finished)\b/i.test(st) ? "done" : /prog|doing|active|current/i.test(st) ? "in_progress" : "pending" });
     }
     try { fs.mkdirSync(rp(".nexus"), { recursive: true }); fs.writeFileSync(rp(".nexus/todos.json"), JSON.stringify(AGENT_TODOS)); } catch (_) {}
     const rendered = AGENT_TODOS.map((t) => (t.status === "done" ? "[x] " : t.status === "in_progress" ? "[~] " : "[ ] ") + t.content).join("\n");
