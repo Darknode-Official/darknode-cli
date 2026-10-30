@@ -2347,6 +2347,12 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     // hash distinguishes same-length different content and same-prefix content
     ok("hash distinguishes equal-length but different content", FS2.hashStr("AAAA") !== FS2.hashStr("AAAB"));
     ok("hash includes length so a prefix isn't equal to its extension", FS2.hashStr("AB") !== FS2.hashStr("ABAB"));
+    // read-before-edit: hasSeen tracks reads and writes; the error tells the model to read first
+    ok("hasSeen is true for a file that was read", fg.hasSeen("/x/a.js") === true);
+    ok("hasSeen is false for a file never read or written", fg.hasSeen("/x/never.js") === false);
+    fg.recordWrite("/x/new.js", "x");
+    ok("hasSeen is true for a file the agent wrote", fg.hasSeen("/x/new.js") === true);
+    ok("unread-edit error tells the model to read the file first", /read a\.js first/.test(FS2.unreadEditError("a.js")));
     // forget drops tracking for a path
     fg.recordRead("/x/b.js", "z"); fg.forget("/x/b.js");
     ok("forget() stops guarding a path", fg.checkOverwrite("/x/b.js", "different").stale === false);
