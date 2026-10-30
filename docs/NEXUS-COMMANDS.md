@@ -176,7 +176,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/gradient` — set the logo gradient · /gradient <theme|reset>
 - `/mouse` — toggle mouse capture · /mouse off to select & copy text
 - `/hack` — offensive-security mode — pentest/CTF persona + the Darknode toolkit
-- `/pentest` — HYDRA — interactive AI-assisted penetration testing · /pentest <target>
+- `/pentest` — HYDRA — interactive AI-assisted penetration testing · /pentest <target> [--authorized] (public targets need --authorized)
 - `/ai-prompt` — AI rewrites & sharpens your prompt, then loads it to edit/send
 - `/offline` — local-only privacy lock · /offline on|off
 - `/todo` — scan the project for TODO/FIXME/HACK markers (/todo <TAG> filters)

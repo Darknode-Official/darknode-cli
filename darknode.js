@@ -2974,7 +2974,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/tree", "show the project file tree"], ["/theme", "change the color theme"],
       ["/color", "set the accent color · /color <name|0-255|#hex> · /color reset"], ["/colors", "list accent colors"], ["/gradient", "set the logo gradient · /gradient <theme|reset>"], ["/mouse", "toggle mouse capture · /mouse off to select & copy text"],
       ["/hack", "offensive-security mode — pentest/CTF persona + the Darknode toolkit"],
-      ["/pentest", "HYDRA — interactive AI-assisted penetration testing · /pentest <target>"],
+      ["/pentest", "HYDRA — interactive AI-assisted penetration testing · /pentest <target> [--authorized] (public targets need --authorized)"],
       ["/ai-prompt", "AI rewrites & sharpens your prompt, then loads it to edit/send"],
       ["/offline", "local-only privacy lock · /offline on|off"],
       ["/todo", "scan the project for TODO/FIXME/HACK markers (/todo <TAG> filters)"],
@@ -5644,7 +5644,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       else if (cmd === "/pentest") {
         // HYDRA is its own readline program: sharing the TUI's raw-mode stdin left Nexus deaf to
         // keys once it exited. Hand it the real terminal in a child process, then take it back.
-        const sub = ["pentest"].concat(arg ? [arg.trim().split(/\s+/)[0]] : []);
+        const _pt = arg ? arg.trim().split(/\s+/) : [], sub = ["pentest"].concat(_pt.filter((t) => t !== "--authorized").slice(0, 1), _pt.includes("--authorized") ? ["--authorized"] : []); // the default guard needs --authorized for a public target
         const r = withRealTerminal(() => _cp.spawnSync(process.execPath, process.pkg ? sub : [process.argv[1]].concat(sub), { stdio: "inherit", cwd }));
         transcript.push({ role: "system", text: r && r.error ? "HYDRA could not start: " + r.error.message : "HYDRA session ended" + (r && r.status ? " (exit " + r.status + ")" : "") + " — a finished engagement leaves its hydra-report-*.md in " + cwd });
       }
