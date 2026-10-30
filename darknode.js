@@ -3956,14 +3956,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const handleBridgeAsk = async (req, link) => {
       const q = String((req && req.question) || "");
       if (!q) return { skipped: true };
-      transcript.push({ role: "system", text: gray("the model is asking: ") + oneline(q, 60) }); render();
+      // live while the popup is open; once settled it becomes a record of the answer, so it never
+      // keeps saying the model is asking
+      const line = { role: "system", text: gray("the model is asking: ") + oneline(q, 60) }; transcript.push(line); render();
+      const settle = (r) => { const a = r && (r.selected != null ? [].concat(r.selected).join(", ") : r.answer); const i = transcript.indexOf(line); if (i >= 0) transcript[i] = { role: "system", text: gray("asked: ") + oneline(q, 50) + gray("  → ") + (a != null && a !== "" ? oneline(String(a), 50) : gray((r && r.withdrawn) || tok.gone ? "withdrawn" : "skipped")) }; _blCache = null; _pre = null; render(); return r; }; // a new object: lines are cached per message and by the last message only
       // Tag this request's popup; if the engine disconnects before the user answers,
       // withdraw it (with a notice) rather than accept an answer that goes nowhere.
       const tok = {};
       const tagAsk = (qq, oo, ex) => { const pr = askUser(qq, oo, ex); if (pendingAsk) pendingAsk._bridge = tok; return pr; };
-      if (link && link.onGone) link.onGone(() => { if (pendingAsk && pendingAsk._bridge === tok) { const p = pendingAsk; pendingAsk = null; transcript.push({ role: "system", text: yellow("the engine stopped before you answered — the question was withdrawn (your answer was not sent)") }); p.resolve({ cancelled: true }); render(); } });
+      if (link && link.onGone) link.onGone(() => { if (pendingAsk && pendingAsk._bridge === tok) { tok.gone = true; const p = pendingAsk; pendingAsk = null; transcript.push({ role: "system", text: yellow("the engine stopped before you answered — the question was withdrawn (your answer was not sent)") }); p.resolve({ cancelled: true }); render(); } });
       engineWaits.n++; // the engine is silent while it waits on the user — never treat that as hung
-      try { return await answerBridgeAsk(req, q, tagAsk); } finally { engineWaits.n--; }
+      try { return settle(await answerBridgeAsk(req, q, tagAsk)); } catch (e) { settle({ withdrawn: true }); throw e; } finally { engineWaits.n--; }
     };
     const answerBridgeAsk = async (req, q, askUser) => {
       if (req.input) { const ans = await askUser(q, [], { input: true, placeholder: req.placeholder }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
