@@ -954,10 +954,11 @@ async function cliRun(args, gate) {
     if (sub === "start") {
       const { createAPIServer } = require("./lib/cli/api-server");
       const portArg = rest.indexOf("--port"); const apiPort = portArg >= 0 ? parseInt(rest[portArg + 1], 10) || 8080 : 8080;
-      const apiToken = process.env.DARKNODE_API_TOKEN || crypto.randomBytes(24).toString("base64url"); // never unauthenticated: it listens on every interface and /api/v1/ai/ask runs the agent with auto-approve
-      const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken });
-      srv.listen(apiPort, "0.0.0.0", () => {
-        h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://0.0.0.0:" + apiPort));
+      const apiToken = process.env.DARKNODE_API_TOKEN || crypto.randomBytes(24).toString("base64url"); // never unauthenticated: /api/v1/ai/ask runs the agent with auto-approve
+      const hostArg = rest.indexOf("--host"), apiHost = hostArg >= 0 && rest[hostArg + 1] ? rest[hostArg + 1] : "127.0.0.1"; // loopback by default; --host 0.0.0.0 opts in to the LAN
+      const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken, host: apiHost });
+      srv.listen(apiPort, apiHost, () => {
+        h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://" + (apiHost.includes(":") ? "[" + apiHost + "]" : apiHost) + ":" + apiPort) + (apiHost === "127.0.0.1" ? gray("   (this machine only · --host 0.0.0.0 to serve the network)") : ""));
         console.log("  token     " + bold(t) + gray("   (send as: X-API-Key: <token> · set DARKNODE_API_TOKEN to pick your own)"));
         console.log("\n  " + gray("health  ") + "curl http://localhost:" + apiPort + "/health -H 'X-API-Key: " + t + "'");
         console.log("  " + gray("scan    ") + "curl -s http://localhost:" + apiPort + "/api/v1/scan/url -H 'X-API-Key: " + t + "' -H 'Content-Type: application/json' -d '{\"url\":\"https://target.com\"}'");
@@ -966,7 +967,7 @@ async function cliRun(args, gate) {
       srv.on("error", (e) => { console.log(red("  api server failed: " + (e && e.message || e))); process.exit(1); });
       await new Promise(() => {});
     } else if (sub === "stop") { console.log(gray("  send SIGTERM to the darknode api process to stop it")); }
-    else { console.log("darknode api start [--port 8080]   start the REST API server\ndarknode api stop                  stop the server"); }
+    else { console.log("darknode api start [--port 8080] [--host 127.0.0.1]   start the REST API server (loopback unless --host)\ndarknode api stop                  stop the server"); }
   }
   else if (cmd === "serve") { serveDir(rest[0], rest[1]); await new Promise(() => {}); }
   else if (cmd === "listen") { listen(rest[0]); await new Promise(() => {}); }
