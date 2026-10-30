@@ -101,6 +101,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/status` — session engine, model, tokens & cost (opens in the side panel)
 - `/session` — this session's uptime, files changed & tools used (opens in the side panel)
 - `/doctor` — check engines & tools are available
+- `/fixshell` — repair a shell that won't start (E2BIG), keeps the chat · /fixshell check|all
 - `/init` — scaffold .nexus/ in this project
 - `/model` — pick the model — lists the engine catalog; /model <name|number>
 - `/engine` — switch AI: claude · gemini · codex · opencode · aider · ollama
@@ -176,7 +177,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/gradient` — set the logo gradient · /gradient <theme|reset>
 - `/mouse` — toggle mouse capture · /mouse off to select & copy text
 - `/hack` — offensive-security mode — pentest/CTF persona + the Darknode toolkit
-- `/pentest` — HYDRA — interactive AI-assisted penetration testing · /pentest <target>
+- `/pentest` — HYDRA — interactive AI-assisted penetration testing · /pentest <target> [--authorized] (public targets need --authorized)
 - `/ai-prompt` — AI rewrites & sharpens your prompt, then loads it to edit/send
 - `/offline` — local-only privacy lock · /offline on|off
 - `/todo` — scan the project for TODO/FIXME/HACK markers (/todo <TAG> filters)
@@ -217,6 +218,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/clear` — start a new conversation
 - `/chat-clear` — clear the screen but keep the conversation in memory
 - `/compact` — summarize the conversation to free up context
+- `/fixshell` — repair the engine shell when commands fail with E2BIG, without /clear (check = report only, all = clear every snapshot)
 - `/resume` — reload the last saved session
 - `/export` — save the conversation to markdown (/export <file> to pick where)
 - `/copy` — copy the last reply to the clipboard
