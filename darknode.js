@@ -1680,8 +1680,12 @@ async function aiCoder(argv) {
   const seenFiles = new Set(); // files whose text the model has seen (read, attached whole, or written): edits need one of these
   const relp = (p) => path.relative(cwd, p) || p;
   // ---- permission gate: confirm risky actions unless auto-approve ----
+  let noTtyNoted = false;
   async function approve(label) {
     if (autoApprove) return true;
+    // no terminal to answer (cron, CI, </dev/null): readline would close unanswered and the run would
+    // exit 0 mid-task, so deny instead and say how to allow it
+    if (!process.stdin.isTTY) { if (!noTtyNoted) { noTtyNoted = true; console.log("  " + yellow("no terminal to approve changes, so they are denied; add -y to allow them")); } return false; }
     const ans = (await ask(cyan("  approve ") + label + gray("  [y]es / [n]o / [a]lways: "))).trim().toLowerCase();
     if (ans === "a" || ans === "always") { autoApprove = true; return true; }
     return ans === "" || ans === "y" || ans === "yes";
