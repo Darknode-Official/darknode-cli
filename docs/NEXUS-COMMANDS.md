@@ -110,7 +110,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/hooks` — show configured tool hooks
 - `/race` — run a prompt on every engine at once
 - `/review` — second opinion from a different engine
-- `/codereview` — AI review of your changes for real bugs · /codereview [file|branch|PR#] [--fix]
+- `/codereview` — multi-agent bug review: parallel reviewers, each finding verified · /codereview [low|medium|high|xhigh|max] [file|branch|PR#] [--fix] [--comment] [--max-findings n|all]
 - `/redo` — reapply an undone change
 - `/ultrareview` — rigorous multi-lens review of the working diff (severity-ranked)
 - `/changelog` — release notes from git history, grouped by type
@@ -243,7 +243,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/diff` — colored word-level diff of your changes
 - `/commit` — write a commit message & commit
 - `/review` — second opinion from another engine
-- `/codereview` — review changes for bugs, ranked by severity (--fix applies)
+- `/codereview` — parallel reviewers + a verifier per finding, ranked by severity (--fix applies, --comment posts to a PR)
 - `/test` — generate & run tests for a file
 - `/explain` — explain the diff or a file in plain English
 - `/plan` — make & run an editable task checklist

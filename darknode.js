@@ -2239,6 +2239,7 @@ const { detectProjectCommands, pickVerify } = require("./lib/nexus/verify"); // 
 const { persistCheckpoint: bisectPersist } = require("./lib/nexus/bisect"); // persist the per-turn checkpoint timeline for `bisect` (lib/nexus/bisect.js)
 const { scanProject: radarScan } = require("./lib/nexus/code-radar"); // codebase complexity/hotspot radar
 const { autoReview } = require("./lib/nexus/code-review-auto"); // fast rule-based reviewer (no LLM)
+const CR = require("./lib/nexus/code-review"); // /codereview multi-agent pipeline (pure parts)
 const { explainDiff } = require("./lib/nexus/code-diff-explain"); // semantic diff explainer
 const { generateTests } = require("./lib/nexus/smart-test"); // structure-aware test scaffolder
 const { MCP_CATALOG, catalogGet, isBundled, bundledSpecs, addServerToConfig, removeServerFromConfig } = require("./lib/nexus/mcp-catalog"); // one-command + bundled MCP servers (lib/mcp-catalog.js)
@@ -2916,7 +2917,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/status", "session engine, model, tokens & cost"], ["/session", "this session's uptime, files changed & tools used"], ["/doctor", "check engines & tools are available"], ["/init", "scaffold .nexus/ in this project"],
       ["/model", "pick the model — lists the engine catalog; /model <name|number>"], ["/engine", "switch AI: claude · gemini · codex · opencode · aider · ollama"], ["/commands", "list custom project commands"],
       ["/agents", "run tasks in parallel: /agents a ;; b ;; c"], ["/mcp", "list / connect MCP servers"], ["/hooks", "show configured tool hooks"],
-      ["/race", "run a prompt on every engine at once"], ["/review", "second opinion from a different engine"], ["/codereview", "AI review of your changes for real bugs · /codereview [file|branch|PR#] [--fix]"], ["/redo", "reapply an undone change"],
+      ["/race", "run a prompt on every engine at once"], ["/review", "second opinion from a different engine"], ["/codereview", "multi-agent bug review: parallel reviewers, each finding verified · /codereview [low|medium|high|xhigh|max] [file|branch|PR#] [--fix] [--comment] [--max-findings n|all]"], ["/redo", "reapply an undone change"],
       ["/ultrareview", "rigorous multi-lens review of the working diff (severity-ranked)"], ["/changelog", "release notes from git history, grouped by type"],
       ["/secrets", "scan the repo for leaked credentials"], ["/scan", "quick TCP port scan of a host"], ["/notify", "bell + desktop alert on long turns and questions · /notify on|off"],
       ["/watch", "run a cmd; auto-fix & re-run until it passes"], ["/commit", "AI commit message + commit the diff"], ["/diff", "colored word-level diff · /diff <file> · /diff --staged"],
@@ -2960,7 +2961,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const HELP_SECTIONS = [
       { title: "Session", rows: [["/clear","start a new conversation"],["/chat-clear","clear the screen but keep the conversation in memory"],["/compact","summarize the conversation to free up context"],["/resume","reload the last saved session"],["/export","save the conversation to markdown (/export <file> to pick where)"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/recap","recap the session so far (/recap [on|off] for after-task recaps)"],["/title","name the terminal tab for this topic (/title [text|on|off])"],["/exit","quit Nexus"]] },
       { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low … max | ultracode"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max token savings, zero quality loss"],["/tight","surgical minimal edits (lossless)"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
-      { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/codereview","review changes for bugs, ranked by severity (--fix applies)"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
+      { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/codereview","parallel reviewers + a verifier per finding, ranked by severity (--fix applies, --comment posts to a PR)"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
       { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/open","launch the live web dashboard in your browser"],["/dashboard","start/stop the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
       { title: "Input prefixes", rows: [["/command","run a command (type / to browse)"],["@file","attach a file or image (Tab completes the path)"],["!command","run a shell command (output goes to the AI)"],["#note","save a note to memory"]] },
     ];
@@ -4691,6 +4692,70 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
       })();
     };
+    // /codereview — multi-agent review in the shape of Claude Code's /code-review: parallel
+    // reviewers (one angle each) -> merge -> one verifier per candidate tries to disprove it ->
+    // ranked, capped report. The level and --max-findings are sticky. Pipeline: lib/nexus/code-review.js.
+    const codeReview = (argstr) => {
+      const o = CR.parseArgs(argstr, { level: settingsStore.getSaved("codeReviewLevel"), maxFindings: (() => { const v = settingsStore.getSaved("codeReviewMax"); return v === "all" ? Infinity : v; })() });
+      transcript.push({ role: "user", text: "/codereview" + (argstr ? "  " + argstr : "") });
+      if (o.error) { transcript.push({ role: "system", text: o.error + "\nusage: /codereview [low|medium|high|xhigh|max] [file|branch|PR#] [--fix] [--comment] [--max-findings n|all|default]" }); return; }
+      if (o.levelGiven) saveSetting("codeReviewLevel", o.level);
+      if (o.maxGiven) saveSetting("codeReviewMax", o.maxFindings === Infinity ? "all" : o.maxFindings);
+      const L = CR.LEVELS[o.level], cap = o.maxFindings == null ? L.max : o.maxFindings;
+      // read-only engines only: aider/opencode apply edits on their own, so they never review
+      const re = offline ? "ollama" : ["claude", "gemini", "codex", "ollama"].includes(engine) ? engine : (engineAvail("claude") ? "claude" : "ollama");
+      const block = { role: "nexus", items: [] }; transcript.push(block);
+      const t0 = Date.now(), out0 = sess.outTok; scroll = 0; busy = true; busyStart = Date.now(); busyWord = "Reviewing"; ctl = makeCtl(); const mainCtl = ctl;
+      if (o.note) block.items.push({ type: "text", full: o.note + "\n", shown: 0 });
+      startTick(); render();
+      const io = { run: (cmd, args) => new Promise((res) => _cp.execFile(cmd, args, { cwd, maxBuffer: 5e7 }, (err, stdout) => res({ code: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout: String(stdout || "") }))),
+        exists: (p) => fs.existsSync(path.resolve(cwd, p)), read: (p) => { try { const f = path.resolve(cwd, p); return fs.statSync(f).isFile() ? fs.readFileSync(f, "utf8") : null; } catch (_) { return null; } } };
+      let mdlP = null; const reModel = async () => { if (re === "ollama") return mdlP || (mdlP = (sess.model && sess.model !== engine && engine === "ollama") ? Promise.resolve(sess.model) : ollamaTags().then(pickCoderModel)); return re === engine && sess.model && sess.model !== engine ? sess.model : undefined; };
+      // one agent = one read-only engine call, shown live in the Agents panel and stoppable on its own
+      const ask = async (label, prompt) => {
+        const actl = makeCtl(); mainCtl.kids.push(() => actl.kill());
+        const reg = addAgent(label, { native: re !== "claude", engine: re, ctl: actl });
+        const card = { type: "tool", id: "cr" + block.items.length, name: "Task", label: "Task(" + oneline(label, 40) + ")", status: "run", start: Date.now() }; block.items.push(card); render();
+        let out = "";
+        try {
+          if (re === "ollama") out = await ollamaChat(await reModel(), [{ role: "user", content: prompt }], undefined, aSignal(actl));
+          else { if (re === "claude") oneShotRan = true; const r = await runEngineTask(re, prompt, cwd, false, false, null, actl, await reModel()); out = r.output || ""; const proto = ENGINES[re].proto;
+            if (proto === "gemini-json") { const p = geminiParse(out); if (p && p.text) out = p.text; } else if (proto === "codex-json") { const p = codexParse(out); if (p && p.text) out = p.text; } }
+        } catch (e) { out = "error: " + (e && e.message || e); }
+        sess.outTok += Math.ceil(String(out).length / 4); sess.inTok += Math.ceil(prompt.length / 4);
+        card.status = /^error:/.test(out) || actl.stopped ? "err" : "ok"; card.end = Date.now(); finishAgent(reg, card.status === "ok" ? "ok" : "fail", out); render();
+        return actl.stopped ? "" : String(out);
+      };
+      const done = (text) => { ensureText(block).full += text; block.summary = "code review · " + o.level + "  ·  ↓" + fmtK(sess.outTok - out0) + " tok  ·  " + fmtDur((Date.now() - t0) / 1000); busy = false; ctl = null; try { saveSession(); } catch (_) {} render(); };
+      (async () => {
+        const tg = await CR.resolveTarget(o.target, io);
+        if (tg.error) return done(tg.error);
+        const files = CR.changedFiles(tg.diff), sections = CR.fileSections(tg.diff), scope = tg.label;
+        const toolless = re === "ollama"; // no file tools: hand it the current file contents
+        const ctxOf = (f) => (toolless ? io.read(f) : null);
+        const allCtx = toolless ? files.map((f) => { const t = io.read(f); return t == null ? "" : "=== " + f + " ===\n" + t; }).join("\n\n") : null;
+        const outs = await CR.pool(L.angles, 4, (a) => ask("review: " + CR.ANGLES[a].label, CR.buildReviewerPrompt({ angle: a, scope, diff: tg.diff, files, cap: Math.max(3, Math.ceil(cap === Infinity ? 10 : cap) + 2), context: allCtx })));
+        if (mainCtl.stopped) return done("Review stopped.");
+        let failed = 0; const found = [];
+        outs.forEach((t, i) => { const f = CR.parseFindings(t, L.angles[i]); if (f === null) failed++; else found.push(...f); });
+        let cands = CR.dedupe(found), rejected = 0, verified = 0;
+        if (L.verify && cands.length) {
+          const vs = await CR.pool(cands, 4, (f) => ask("verify: " + f.file + (f.line ? ":" + f.line : ""), CR.buildVerifyPrompt(f, { scope, section: sections[f.file] || "", context: ctxOf(f.file) })));
+          if (mainCtl.stopped) return done("Review stopped.");
+          cands = cands.map((f, i) => { const v = CR.parseVerdict(vs[i]); if (!v) return Object.assign(f, { verdict: "PLAUSIBLE", reason: "the verifier gave no verdict" }); verified++; if (v.verdict === "REJECTED") rejected++; return Object.assign(f, { verdict: v.verdict, reason: v.reason }, v.severity ? { severity: v.severity } : {}, v.line ? { line: v.line } : {}); });
+        }
+        const rk = CR.rank(cands, { plausible: L.plausible, verify: L.verify, max: cap });
+        const report = CR.formatReport({ level: o.level, label: scope + " · " + re, reviewers: L.angles.length, failedReviewers: failed, candidates: cands.length, verified, rejected, shown: rk.shown, hidden: rk.hidden }, { red, yellow, gray, bold, cyan, green });
+        if (o.comment && tg.kind === "pr") {
+          if (!rk.shown.length) return done(report + "\n\n" + gray("Nothing to post to the pull request."));
+          const payload = JSON.stringify(CR.buildPrReview(rk.shown, tg.diff, tg.head));
+          const r = await new Promise((res) => { const p = _cp.execFile("gh", ["api", "--method", "POST", "repos/{owner}/{repo}/pulls/" + tg.pr + "/reviews", "--input", "-"], { cwd }, (err, so, se) => res({ ok: !err, msg: String(se || so || (err && err.message) || "") })); p.stdin.end(payload); });
+          return done(report + "\n\n" + (r.ok ? green("Posted the findings to pull request #" + tg.pr + " as a review.") : red("Could not post to pull request #" + tg.pr + ": ") + oneline(r.msg, 200)));
+        }
+        done(report);
+        if (o.fix && rk.shown.length) submit(CR.buildFixPrompt(rk.shown, scope));
+      })().catch((e) => done("code review failed: " + (e && e.message || e)));
+    };
     // ask one engine a question (no file changes) — used by /ensemble
     const engineAnswer = async (e, prompt) => { try { if (e === "ollama") { const mdl = sess.model && sess.model !== engine ? sess.model : pickCoderModel(await ollamaTags()); return await ollamaChat(mdl, [{ role: "user", content: prompt }], undefined, aSignal(ctl)); } if (e === "claude") oneShotRan = true; return (await runEngineTask(e, prompt, cwd, false, false, null, ctl, (cowork.on && e === "claude") ? cowork.weak : undefined)).output; } catch (err) { return "error: " + err.message; } };
     // /ensemble — run the prompt on every engine, then synthesize the single best answer
@@ -5618,17 +5683,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         else if (sub && snippets[sub]) { const rest = argstr.split(/\s+/).slice(1).join(" "); submit(snippets[sub].replace(/\$ARGUMENTS/g, rest).replace(/\$(\d+)/g, (_, n) => rest.split(/\s+/)[+n - 1] || "")); }
         else transcript.push({ role: "system", text: "usage:  /snippet save <name> <text…>   ·   /snippet <name> [args]   ·   /snippet del <name>   ·   /snippets to list" }); }
       else if (cmd === "/snippets") { const ks = Object.keys(snippets); transcript.push({ role: "system", text: ks.length ? ("saved snippets:\n" + ks.map((k) => "  " + k + "  " + gray(oneline(snippets[k], 50))).join("\n")) : "no snippets yet — /snippet save <name> <text>" }); }
-      else if (cmd === "/codereview" || cmd === "/code-review") {
-        const fix = /(^|\s)--fix(\s|$)/.test(arg || ""); const tgt = (arg || "").replace(/(^|\s)--fix(?=\s|$)/g, " ").trim();
-        let scope;
-        if (/^#?\d+$/.test(tgt)) scope = "GitHub pull request #" + tgt.replace("#", "") + " (read it with `gh pr diff " + tgt.replace("#", "") + "`)";
-        else if (tgt && fs.existsSync(path.resolve(cwd, tgt))) scope = "the file/path @" + tgt + " (its uncommitted diff if it has one, otherwise the whole file)";
-        else if (tgt) scope = "branch " + tgt + " (read `git diff $(git merge-base HEAD " + tgt + ")...` or `git diff " + tgt + "...HEAD` as appropriate)";
-        else { let d = ""; try { d = _cp.execSync("git -c color.ui=never status --porcelain", { cwd, encoding: "utf8" }); } catch (_) { d = null; }
-          scope = d === null ? null : d.trim() ? "the uncommitted changes (read them with `git diff HEAD` plus any untracked files from `git status`)" : "the most recent commit (read it with `git show HEAD`)"; }
-        if (!scope) transcript.push({ role: "system", text: "/codereview needs a git repo — or pass a file: /codereview <file>" });
-        else submit("Do a code review of " + scope + ". Read the changes yourself and enough surrounding code to understand them. Hunt for real correctness defects: logic errors, broken edge cases, crashes, races, resource leaks, security holes, API misuse, and regressions in callers. Verify each suspected issue against the actual code before reporting it; drop anything you cannot confirm, and skip pure style nitpicks.\n\nReport findings ranked most severe first, each as: severity (high/medium/low), file:line, one-sentence defect, and a concrete failure scenario (inputs/state -> wrong result). If nothing survives verification, say so plainly. " + (fix ? "Then apply minimal, surgical fixes for every confirmed finding and run the project's tests if it has them." : "Do not modify any files."));
-      }
+      else if (cmd === "/codereview" || cmd === "/code-review") codeReview(argstr);
       else if (cmd === "/explain") { if (arg) submit("Explain, in plain English, what @" + arg + " does and how it works. Do not modify anything."); else { let d = ""; try { d = _cp.execSync("git -c color.ui=never diff HEAD", { cwd, encoding: "utf8" }); } catch (_) {} if (!d.trim()) transcript.push({ role: "system", text: "no uncommitted changes to explain — try /explain <file>" }); else submit("Explain, in plain English, what these uncommitted changes do (do not modify anything):\n\n" + d.slice(0, 4000)); } }
       else if (cmd === "/test") { if (!arg) transcript.push({ role: "system", text: "usage: /test <file> — generate thorough unit tests for it and run them" }); else submit("Write thorough unit tests for @" + arg + ", save them in this project's conventional test location/framework, then run the tests."); }
       else if (cmd === "/refactor") { if (!argstr) transcript.push({ role: "system", text: "usage: /refactor <file or area> — restructure it for clarity WITHOUT changing behavior (runs the tests after to prove it)" }); else submit("Refactor " + argstr + " for clarity, structure, and maintainability WITHOUT changing its observable behavior or public API. If tests exist, run them afterward and make sure they still pass; otherwise verify by exercising the code. Then summarize what you changed and why."); }
