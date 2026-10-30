@@ -2746,6 +2746,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     let bypassCacheOnce = false; // /retry sets this so the next send skips the exact-repeat cache and really re-runs
     let aliases = {}; // loaded from ~/.nexus/settings.json once the settings store exists (below)
     const AGENTS_MAX = 24; // cap the registry; drop the oldest FINISHED agents past this
+    // A finished agent shows its done / failed / stopped badge for a few seconds, then leaves the
+    // panel on its own (its result is already in the chat). Not while the panel has keyboard focus
+    // or an agent is open: the list and agentView.i must not shift under the user.
+    const AGENT_LINGER_MS = 5000;
+    const pruneAgents = () => {
+      if (agentSel >= 0 || agentView || !agents.length) return;
+      const t = Date.now();
+      const keep = agents.filter((a) => a.status === "run" || !a.end || t - a.end < AGENT_LINGER_MS);
+      if (keep.length !== agents.length) agents = keep;
+    };
     const addAgent = (task, opts) => { const a = Object.assign({ id: "ag_" + Date.now().toString(36) + "_" + agents.length, task: String(task || "").slice(0, 300), status: "run", start: Date.now(), result: "", native: true }, opts || {}); agents.push(a); if (agents.length > AGENTS_MAX) { const keep = agents.filter((x) => x.status === "run"); const fin = agents.filter((x) => x.status !== "run"); agents = fin.slice(Math.max(0, fin.length - (AGENTS_MAX - keep.length))).concat(keep).sort((x, y) => x.start - y.start); } return a; };
     // An agent's conversation as chat messages (rendered by bodyLines like the
     // main chat): its brief as the user turn, then its own text/thinking/tool
@@ -2761,7 +2771,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       return a._msgs;
     };
     const subAgentOf = (pid) => pid ? agents.find((x) => x.toolId === pid && x.items) || null : null; // Claude Task sub-agent by its tool_use id
-    const finishAgent = (a, status, result) => { if (!a || a.status !== "run") return; a.status = status || "ok"; a.end = Date.now(); if (a.items) for (const it of a.items) if (it.type === "tool" && it.status === "run") { it.status = a.status === "ok" ? "ok" : "err"; it.interrupted = a.status !== "ok"; it.end = a.end; } if (result != null) a.result = String(result); };
+    const finishAgent = (a, status, result) => { if (!a || a.status !== "run") return; a.status = status || "ok"; a.end = Date.now(); if (a.items) for (const it of a.items) if (it.type === "tool" && it.status === "run") { it.status = a.status === "ok" ? "ok" : "err"; it.interrupted = a.status !== "ok"; it.end = a.end; } if (result != null) a.result = String(result); { const tm = setTimeout(() => { try { render(); } catch (_) {} }, AGENT_LINGER_MS + 50); if (tm.unref) tm.unref(); } };
     // Stop one running agent. Native sub-agents carry their own controller (a.ctl);
     // a Claude-engine Task runs inside the main turn and can't be killed on its own,
     // so point the user at the turn interrupt instead.
@@ -3736,6 +3746,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     let _wasBusy = false, _drainT = null, cleaned = false;
     const scheduleDrain = (ms) => { if (cleaned || _drainT) return; _drainT = setTimeout(() => { _drainT = null; drainNext(); }, ms); };
     const render = () => {
+      pruneAgents();
       if (cleaned) return; // after teardown: never touch the terminal again (a pending timer could still fire)
       if (_wasBusy && !busy && nextQueue.length) scheduleDrain(300);
       _wasBusy = busy;
