@@ -749,8 +749,10 @@ async function nexusServe(args, ctx) {
     if (req.method === "GET" && url === "/health") return send(200, { ok: true, engine: engineDefault, version: VERSION });
     { const _got = Buffer.from(req.headers["authorization"] || ""), _exp = Buffer.from("Bearer " + token); if (_got.length !== _exp.length || !crypto.timingSafeEqual(_got, _exp)) return send(401, { error: "unauthorized" }); }
     if (req.method === "POST" && url === "/run") {
-      let body = ""; req.on("data", (d) => { body += d; if (body.length > 1e6) req.destroy(); });
+      // over 1 MB: answer 413 and close, rather than resetting the connection with no reply
+      let body = "", tooBig = false; req.on("data", (d) => { if (tooBig) return; body += d; if (body.length > 1e6) { tooBig = true; body = ""; res.setHeader("Connection", "close"); send(413, { error: "request body over 1 MB" }); } });
       req.on("end", () => {
+        if (tooBig) return;
         let j = {}; try { j = JSON.parse(body || "{}"); } catch (_) { return send(400, { error: "bad json" }); }
         const goal = String(j.goal || j.task || "").trim();
         if (!goal) return send(400, { error: "missing 'goal'" });
