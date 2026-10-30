@@ -730,7 +730,7 @@ function fileHash(f) {
   catch (e) { console.log(red("error: " + e.message)); }
 }
 // Headless Nexus: a loopback-only, token-gated JSON service so the app or any
-// script can drive Nexus programmatically. POST /run {goal} runs one headless
+// script can drive Nexus programmatically. POST /run {goal, yes?} runs one headless
 // turn (via the real `nexus --print` path in a child, so engine behavior is
 // identical) and returns its output. Same safety shape as the honeypot bridge:
 // 127.0.0.1 only + Bearer token. `darknode nexus serve [port]`.
@@ -758,7 +758,8 @@ async function nexusServe(args, ctx) {
         if (!goal) return send(400, { error: "missing 'goal'" });
         const eng = String(j.engine || engineDefault);
         const model = typeof j.model === "string" && j.model.trim() ? ["-m", j.model.trim()] : [];
-        const child = _cp.spawn(process.execPath, [__filename, "nexus", "--print", "-e", eng, ...model, "--", goal], { cwd: process.cwd(), env: Object.assign({}, process.env, { NO_COLOR: "1" }) });
+        const yes = j.yes === true ? ["-y"] : []; // the token holder may allow pushes, sudo, rm -r, like -y on the command line
+        const child = _cp.spawn(process.execPath, [__filename, "nexus", "--print", "-e", eng, ...model, ...yes, "--", goal], { cwd: process.cwd(), env: Object.assign({}, process.env, { NO_COLOR: "1" }) });
         let out = "", err = ""; child.stdout.on("data", (b) => out += b); child.stderr.on("data", (b) => err += b);
         // a caller that hung up gets nothing back: stop the agent instead of letting it keep working unattended
         res.on("close", () => { if (!res.writableEnded && child.exitCode === null) child.kill("SIGTERM"); });
@@ -768,7 +769,7 @@ async function nexusServe(args, ctx) {
       });
       return;
     }
-    send(404, { error: "not found — GET /health · POST /run {goal, engine?, model?}" });
+    send(404, { error: "not found — GET /health · POST /run {goal, engine?, model?, yes?}" });
   });
   srv.on("error", (e) => { console.error(red("  serve failed: " + (e && e.code === "EADDRINUSE" ? "port " + port + " is already in use" : (e && e.message || e))) + (e && e.code === "EADDRINUSE" ? gray(" — pick another: nexus serve " + (port < 65535 ? port + 1 : 8765)) : "")); process.exit(1); });
   srv.listen(port, "127.0.0.1", () => {
