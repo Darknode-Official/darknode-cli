@@ -1817,6 +1817,7 @@ function hasBin(b) {
   return (_binCache[b] = false);
 }
 
+const shellfix = require("./lib/nexus/shellfix"); // E2BIG diagnosis + repair for /fixshell and /doctor
 const { osNotify } = require("./lib/nexus/os-notify"); // desktop notification; title/body never become script source
 
 // Copy text to the clipboard and report honestly which path was used. OSC-52 is
@@ -1937,13 +1938,16 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
   const ultra = opts.effort === "ultracode"; // Nexus level above max: max thinking + standing multi-agent orchestration
   if (ultra && !/^\s*\//.test(prompt)) prompt = "ultracode: " + prompt; // the keyword in the prompt is claude's opt-in for its Workflow tool (skip slash commands)
   return new Promise((resolve) => {
-    const args = opts.readonly ? ["-p", prompt, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--permission-mode", "plan"] : ["-p", prompt, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions"]; // partial messages = live text/thinking/token deltas so the counter climbs during a long turn instead of freezing between whole messages
+    const viaStdin = shellfix.bytes(prompt) > shellfix.SAFE_STR; // a prompt over 128 KB in argv makes the spawn fail with E2BIG: feed it on stdin instead
+    const args = opts.readonly ? ["-p", ...(viaStdin ? [] : [prompt]), "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--permission-mode", "plan"] : ["-p", ...(viaStdin ? [] : [prompt]), "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions"]; // partial messages = live text/thinking/token deltas so the counter climbs during a long turn instead of freezing between whole messages
     if (opts.resume) args.push("--resume", opts.resume); // resume a tracked session id (survives intervening one-shot calls that would hijack --continue)
     else if (cont) args.push("--continue");
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", ultra ? "max" : opts.effort);
     const _sys = (opts.appendSystemPrompt || "") + (ultra ? "\n" + ULTRACODE_DIR : "");
-    if (_sys) args.push("--append-system-prompt", _sys);
+    let sysFile = "";
+    if (_sys && shellfix.bytes(_sys) > shellfix.SAFE_STR) { try { sysFile = require("path").join(os.tmpdir(), "nexus-sys-" + process.pid + "-" + Date.now() + ".txt"); require("fs").writeFileSync(sysFile, _sys, { mode: 0o600 }); args.push("--append-system-prompt-file", sysFile); } catch (_) { sysFile = ""; } } // same 128 KB argv limit
+    else if (_sys) args.push("--append-system-prompt", _sys);
     if (opts.fallbackModel) args.push("--fallback-model", opts.fallbackModel);
     if (opts.maxBudgetUsd) args.push("--max-budget-usd", String(opts.maxBudgetUsd));
     if (opts.maxTurns) args.push("--max-turns", String(opts.maxTurns));
@@ -1952,7 +1956,8 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     const env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
     const cp = _cp.spawn("claude", args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
     const to = idleWatchdog(() => killGroup(cp, "SIGKILL"));
-    try { cp.stdin.end(); } catch (_) {} // signal EOF so claude doesn't wait on stdin
+    try { cp.stdin.on("error", () => {}); cp.stdin.end(viaStdin ? prompt : undefined); } catch (_) {} // big prompt on stdin, else EOF so claude doesn't wait on stdin
+    const dropSys = () => { if (sysFile) { try { require("fs").unlinkSync(sysFile); } catch (_) {} sysFile = ""; } };
     let buf = "", finalText = "", res = null, killed = false;
     if (ctl) ctl.kill = () => { killed = true; killGroup(cp, "SIGINT"); setTimeout(() => killGroup(cp, "SIGKILL"), 1500); };
     cp.stdout.setEncoding("utf8");
@@ -1988,8 +1993,8 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
       }
     });
     cp.stderr.on("data", () => { to.touch(); });
-    cp.on("close", (code) => { to.clear(); resolve({ ok: code === 0 && !killed, interrupted: killed, output: finalText, result: res }); });
-    cp.on("error", (e) => { to.clear(); resolve({ ok: false, output: "engine spawn error: " + e.message + " (is claude installed & logged in?)" }); });
+    cp.on("close", (code) => { to.clear(); dropSys(); resolve({ ok: code === 0 && !killed, interrupted: killed, output: finalText, result: res }); });
+    cp.on("error", (e) => { to.clear(); dropSys(); resolve({ ok: false, output: "engine spawn error: " + e.message + (e.code === "E2BIG" ? " (the environment is too large to start a process; run /fixshell)" : " (is claude installed & logged in?)") }); });
   });
 }
 // Safe, non-destructive git checkpoint (captures tracked + untracked into a tree
@@ -2958,7 +2963,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/undo", "revert the last turn's file changes"], ["/rewind", "restore a specific checkpoint (/rewind N)"], ["/checkpoints", "list undo checkpoints"],
       ["/invariants", "diff-lint the pending diff against .nexus/invariants.json"], ["/attest", "capability manifest from the hash-chained audit log"], ["/bisect", "find the turn that broke the test (/bisect [test cmd])"], ["/whatbroke", "instant blame: which turn most likely broke a failing test"], ["/shrink", "delta-debug the edits to the minimal breaking file set (/shrink [test cmd])"],
       ["/resume", "reload the last saved session"], ["/branch", "fork & switch conversation branches (/branch new <name>)"], ["/export", "save the conversation to markdown (/export <file> to pick where)"], ["/copy", "copy the last reply to the clipboard"],
-      ["/status", "session engine, model, tokens & cost"], ["/session", "this session's uptime, files changed & tools used"], ["/doctor", "check engines & tools are available"], ["/init", "scaffold .nexus/ in this project"],
+      ["/status", "session engine, model, tokens & cost"], ["/session", "this session's uptime, files changed & tools used"], ["/doctor", "check engines & tools are available"], ["/fixshell", "repair a shell that won't start (E2BIG), keeps the chat · /fixshell check|all"], ["/init", "scaffold .nexus/ in this project"],
       ["/model", "pick the model — lists the engine catalog; /model <name|number>"], ["/engine", "switch AI: claude · gemini · codex · opencode · aider · ollama"], ["/commands", "list custom project commands"],
       ["/agents", "run tasks in parallel: /agents a ;; b ;; c"], ["/mcp", "list / connect MCP servers"], ["/hooks", "show configured tool hooks"],
       ["/race", "run a prompt on every engine at once"], ["/review", "second opinion from a different engine"], ["/codereview", "multi-agent bug review: parallel reviewers, each finding verified · /codereview [low|medium|high|xhigh|max] [file|branch|PR#] [--fix] [--comment] [--max-findings n|all]"], ["/redo", "reapply an undone change"],
@@ -3003,7 +3008,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     ];
     // /help and /keys tables — also feed the Nexus reference the model reads (lib/cli/nexus-docs.js)
     const HELP_SECTIONS = [
-      { title: "Session", rows: [["/clear","start a new conversation"],["/chat-clear","clear the screen but keep the conversation in memory"],["/compact","summarize the conversation to free up context"],["/resume","reload the last saved session"],["/export","save the conversation to markdown (/export <file> to pick where)"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/recap","recap the session so far (/recap [on|off] for after-task recaps)"],["/title","name the terminal tab for this topic (/title [text|on|off])"],["/exit","quit Nexus"]] },
+      { title: "Session", rows: [["/clear","start a new conversation"],["/chat-clear","clear the screen but keep the conversation in memory"],["/compact","summarize the conversation to free up context"],["/fixshell","repair the engine shell when commands fail with E2BIG, without /clear (check = report only, all = clear every snapshot)"],["/resume","reload the last saved session"],["/export","save the conversation to markdown (/export <file> to pick where)"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/recap","recap the session so far (/recap [on|off] for after-task recaps)"],["/title","name the terminal tab for this topic (/title [text|on|off])"],["/exit","quit Nexus"]] },
       { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low … max | ultracode"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max token savings, zero quality loss"],["/tight","surgical minimal edits (lossless)"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
       { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/codereview","parallel reviewers + a verifier per finding, ranked by severity (--fix applies, --comment posts to a PR)"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
       { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/open","launch the live web dashboard in your browser"],["/dashboard","start/stop the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
@@ -3663,6 +3668,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     let claudeSid = "";     // most recent claude CLI session id (from the stream init)
     let claudeMuSid = "", claudeMuBase = {}; // result.modelUsage is ALSO cumulative across --continue/--resume: keep the last snapshot per session and charge only the delta
     let claudeCostSid = "", claudeCostBase = 0; // claude's result.total_cost_usd is CUMULATIVE per session across --continue, so charge only the per-turn delta (reset when the session id changes)
+    let e2bigHinted = false; // shown the "/fixshell" hint once this session
     let oneShotRan = false; // a claude one-shot ran since the last main turn → resume the tracked
                             // session id next turn instead of letting --continue pick the one-shot
     const renderBtw = (C, R, st) => {
@@ -4343,7 +4349,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           },
           onToolResult: (tr, pid) => {
             const _sa = subAgentOf(pid), it = (_sa ? _sa.items : block.items).find((x) => x.type === "tool" && x.id === tr.id);
-            if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if ((it.name === "Task" || it.name === "Agent") && activeAgents) activeAgents--; if (it._agId) { const rg = agents.find((x) => x.id === it._agId); if (rg && rg.status === "run") finishAgent(rg, tr.isError ? "fail" : "ok", resultText(tr.content)); } }
+            if (it) { it.status = tr.isError ? "err" : "ok"; it.end = Date.now(); it.result = tr.content; it.isError = !!tr.isError; it.detail = oneline(resultText(tr.content), 260); if (it.name === "Bash" && runningShells) runningShells--; if (it.name === "Bash" && tr.isError && !e2bigHinted && shellfix.isE2big(resultText(tr.content))) { e2bigHinted = true; transcript.push({ role: "system", text: yellow("the engine's shell can't start (E2BIG: argument list too long).") + gray(" Run /fixshell: it repairs the shell and keeps this conversation, no /clear needed.") }); } if ((it.name === "Task" || it.name === "Agent") && activeAgents) activeAgents--; if (it._agId) { const rg = agents.find((x) => x.id === it._agId); if (rg && rg.status === "run") finishAgent(rg, tr.isError ? "fail" : "ok", resultText(tr.content)); } }
             render();
           },
           onUsage: (u, _m, sub, mid) => { const k = mid || ("anon" + (++anonUse)); outById.set(k, Math.max(outById.get(k) || 0, u.output_tokens || 0)); estOut = 0; setLive(); if (!sub) { const c = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0); if (c > 0) lastCtx = c + (u.output_tokens || 0); } }, // lock in the real output tokens for the message that just finished (each agentic tool round is its own assistant message) and clear the streaming estimate; the next message's estimate climbs on top of this. lastCtx tracks the latest main-thread call's prompt = the real context size
@@ -5240,6 +5246,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         lines.push("  " + (fs.existsSync(path.join(cwd, ".nexus", "policy.json")) ? ok("policy.json") : gray("  ○ policy.json  (optional — /policy init)")));
         lines.push("  " + (index ? ok("index".padEnd(14) + gray((index.files || 0) + " files indexed")) : warn("index".padEnd(14) + gray("not built — /index"))));
         lines.push("  " + (mcpServers.length ? ok("MCP servers".padEnd(14) + gray(mcpServers.filter((s) => !s.error).length + " connected")) : warn("MCP servers".padEnd(14) + gray("none — /mcp catalog"))));
+        { const er = shellfix.envReport(process.env), snaps = shellfix.listSnapshots(shellfix.snapDir()), big = snaps.filter((x) => x.size > shellfix.SNAP_WARN);
+          lines.push("\n  " + bold("Shell"));
+          lines.push("  " + (er.oversize.length ? no("environment".padEnd(14) + gray(shellfix.fmtKB(er.total) + ", too large: " + er.oversize.join(", ") + " — /fixshell")) : ok("environment".padEnd(14) + gray(shellfix.fmtKB(er.total) + " in " + er.count + " vars"))));
+          lines.push("  " + (big.length ? warn("snapshots".padEnd(14) + gray(big.length + " oversized (largest " + shellfix.fmtKB(big[0].size) + ") — /fixshell")) : ok("snapshots".padEnd(14) + gray(snaps.length + " engine shell snapshot(s), all small")))); }
         lines.push("\n  " + bold("Intelligence"));
         lines.push("  " + (secRAG ? ok("Security RAG".padEnd(14) + gray(secRAG.stats().documents + " docs loaded")) : warn("Security RAG".padEnd(14) + gray("not loaded"))));
         lines.push("  " + (learnMod ? (() => { try { const s = learnMod.learningStats(cwd); return ok("Learning".padEnd(14) + gray(s.totalDataPoints + " data points")); } catch (_) { return ok("Learning".padEnd(14) + gray("active, no data yet")); } })() : warn("Learning".padEnd(14) + gray("not loaded"))));
@@ -5251,6 +5261,29 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           blk.text += "\n\n  " + gray("all green? you're ready to go. fix ○ items to unlock that feature.");
           render();
         }).catch(() => { blk.text += "\n  " + no("Ollama unreachable"); render(); });
+      }
+      else if (cmd === "/fixshell" || cmd === "/shell-fix") {
+        // Repair the engine's tool shell in place. Every turn is a fresh engine process resumed by
+        // session id, so a clean environment + fresh shell snapshot fixes the next turn and the
+        // conversation is kept (the alternative was /clear, which loses it).
+        const mode = (argstr || "").trim().toLowerCase(), dry = mode === "check", all = mode === "all";
+        const before = shellfix.envReport(process.env), dir = shellfix.snapDir(), snaps = shellfix.listSnapshots(dir);
+        const L = [bold("fixshell") + gray(dry ? "  check only, nothing changed" : "  repairing the engine shell, conversation kept")];
+        L.push("  environment  " + shellfix.fmtKB(before.total) + " in " + before.count + " vars" + gray("  largest: " + before.largest.slice(0, 3).map((r) => r.name + " " + shellfix.fmtKB(r.size)).join(", ")));
+        L.push("  snapshots    " + snaps.length + " in " + dir + (snaps.length ? gray("  largest " + shellfix.fmtKB(snaps[0].size)) : ""));
+        if (dry) {
+          const bad = before.oversize.length + snaps.filter((x) => x.size > shellfix.SNAP_WARN).length;
+          L.push(bad ? yellow("  " + bad + " problem(s) found — run /fixshell to repair") : green("  nothing to fix"));
+        } else {
+          const r = shellfix.repairEnv(process.env), gone = shellfix.cleanSnapshots(dir, { all });
+          for (const x of r.deduped) L.push(green("  fixed  ") + x.name + gray(" — removed repeated entries (" + shellfix.fmtKB(x.saved) + ")"));
+          for (const x of r.removed) L.push(green("  fixed  ") + "dropped " + x.name + gray(" (" + shellfix.fmtKB(x.size) + ", too large to start a process)"));
+          if (gone.length) L.push(green("  fixed  ") + "removed " + gone.length + " shell snapshot(s)" + gray(all ? "" : " over " + shellfix.fmtKB(shellfix.SNAP_WARN)) + gray(" — the engine writes a fresh one next turn"));
+          if (!r.deduped.length && !r.removed.length && !gone.length) L.push(gray("  nothing needed repair") + (all ? "" : gray(" — /fixshell all also clears every snapshot")));
+          let probe = null; try { probe = _cp.spawnSync(process.platform === "win32" ? "cmd" : "sh", process.platform === "win32" ? ["/c", "exit 0"] : ["-c", "exit 0"], { env: process.env, timeout: 5000 }); } catch (e) { probe = { error: e }; }
+          L.push(probe && !probe.error && probe.status === 0 ? green("  shell starts OK") + gray(" (" + shellfix.fmtKB(shellfix.envReport(process.env).total) + " env) — your next message runs in a fresh engine shell") : red("  shell still can't start: " + ((probe && probe.error && (probe.error.code || probe.error.message)) || "exit " + (probe && probe.status))) + gray(" — check ~/.bashrc for large exports, then relaunch"));
+        }
+        transcript.push({ role: "system", text: L.join("\n") });
       }
       else if (cmd === "/resume") { try { const s = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8"))); restoreSession(s); scroll = 0; transcript.push({ role: "system", text: "resumed the saved session from " + new Date(s.ts).toLocaleString() + " (" + engine + ")" }); } catch (e) { transcript.push({ role: "system", text: e && e.code === "ENOENT" ? "no saved session to resume (sessions are saved to .nexus/session.json after each turn)" : "the saved session (.nexus/session.json) could not be read: " + String((e && e.message) || e).split("\n")[0] }); } }
       else if (cmd === "/export") { try { const L = ["# Nexus conversation", "", "_" + new Date().toLocaleString() + " · " + engine + " · " + cwd + "_", ""]; for (const m of transcript) { if (m.role === "user") L.push("## You", "", m.text, ""); else if (m.role === "nexus") { L.push("## Nexus", ""); for (const it of (m.items || [])) { if (it.type === "text") L.push(it.full); else if (it.type === "tool") L.push("- `" + it.label + "`"); } L.push(""); } else if (m.role === "system") L.push("> " + String(m.text).replace(/\n/g, " "), ""); } const dir = path.join(cwd, ".nexus"); try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {} const fp = arg && arg.trim() ? path.resolve(cwd, arg.trim().replace(/^~(?=\/|$)/, require("os").homedir())) : path.join(dir, "export-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, L.join("\n")); /* /export <file> writes there (its folder must exist) */ transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) + " (" + fp + ")" }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }

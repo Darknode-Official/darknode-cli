@@ -101,6 +101,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/status` — session engine, model, tokens & cost (opens in the side panel)
 - `/session` — this session's uptime, files changed & tools used (opens in the side panel)
 - `/doctor` — check engines & tools are available
+- `/fixshell` — repair a shell that won't start (E2BIG), keeps the chat · /fixshell check|all
 - `/init` — scaffold .nexus/ in this project
 - `/model` — pick the model — lists the engine catalog; /model <name|number>
 - `/engine` — switch AI: claude · gemini · codex · opencode · aider · ollama
@@ -217,6 +218,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/clear` — start a new conversation
 - `/chat-clear` — clear the screen but keep the conversation in memory
 - `/compact` — summarize the conversation to free up context
+- `/fixshell` — repair the engine shell when commands fail with E2BIG, without /clear (check = report only, all = clear every snapshot)
 - `/resume` — reload the last saved session
 - `/export` — save the conversation to markdown (/export <file> to pick where)
 - `/copy` — copy the last reply to the clipboard
