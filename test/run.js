@@ -2857,6 +2857,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("pickTarget by id", B.pickTarget(targets, "C").id, "C");
     ok("pickTarget no match -> null", B.pickTarget(targets, "nope") === null);
     ok("startHint names the chosen port", /9222/.test(B.startHint(9222)));
+    ok("browser_screenshot refuses a path outside the project", /escapes the project/.test(((await B.browserTool("browser_screenshot", { path: "../x.png", port: 59997 }, os.tmpdir())) || {}).error || "") && /escapes the project/.test(((await B.browserTool("browser_screenshot", { path: "/etc/x.png", port: 59997 }, os.tmpdir())) || {}).error || ""));
     ok("browserTool ignores a non-browser name (null)", (await B.browserTool("read_file", {}, ".")) === null);
     const st = await B.browserTool("browser_status", { port: 59997 }, ".");
     ok("browser_status reports unreachable + a how-to-start hint when no debug browser", st && st.reachable === false && /remote-debugging-port/.test(st.hint || ""));

@@ -2515,6 +2515,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     const _pa = isExecTool(name) ? { type: "run", command: execCommand(name, a) }
       : ["http_fetch", "web_fetch", "fetch_url", "http"].includes(name) ? { type: "fetch" }
       : name === "write_file" ? { type: "write", path: a && a.path }
+      : ["browser_screenshot", "browser_shot"].includes(name) ? { type: "write", path: a && (a.path || a.file) }
       : name === "edit_file" ? { type: "edit", path: a && a.path }
       : ["delete", "delete_file", "rm"].includes(name) ? { type: "delete", path: a && (a.path || a.file), cwd }
       : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a && (a.to || a.dest || a.destination || a.path), from: a && (a.from || a.src || a.source) }
@@ -4480,6 +4481,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               const act = isExecTool(name) ? { type: "run", command: execCommand(name, a) }
                 : ["http_fetch", "web_fetch", "fetch_url", "http"].includes(name) ? { type: "fetch" }
                 : name === "write_file" ? { type: "write", path: a.path }
+                : ["browser_screenshot", "browser_shot"].includes(name) ? { type: "write", path: a.path || a.file }
                 : (name === "edit_file" || name === "multi_edit" || name === "multiedit") ? { type: "edit", path: a.path }
                 : (name === "apply_patch" || name === "patch") ? { type: "edit" }
                 : name === "undo_edit" ? { type: "edit", path: a.path }
