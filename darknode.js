@@ -4904,7 +4904,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         for (let att = 1; att <= 5 && !(ctl && ctl.stopped); att++) {
           attempts = att;
           const rc = { type: "tool", id: "wr" + att, name: "Bash", label: "Bash(" + oneline(command, 40) + ")", status: "run", start: Date.now() }; block.items.push(rc); render();
-          const r = await coderShell(command, cwd); rc.status = r.code === 0 ? "ok" : "err"; rc.end = Date.now(); rc.detail = oneline(r.output, 260); render();
+          const r = await coderShell(command, cwd, { ctl }); rc.status = r.code === 0 ? "ok" : "err"; // ctl: Esc stops a hung attempt now, not after the 120s timeout rc.end = Date.now(); rc.detail = oneline(r.output, 260); render();
+          if (ctl && ctl.stopped) break;
           if (r.code === 0) { const t = ensureText(block); t.full += (t.full ? "\n" : "") + "command passed on attempt " + att + "."; passed = true; break; }
           if (att === 5) break;
           const t = ensureText(block); t.full += (t.full ? "\n" : "") + "attempt " + att + " failed — asking " + engine + " to fix…"; render();
