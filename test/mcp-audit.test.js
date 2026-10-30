@@ -111,6 +111,19 @@ function runAsk(input, env) {
     ok("sentry points at a package that exists (@sentry/mcp-server, not the 404 @modelcontextprotocol/server-sentry)", MCP_CATALOG.sentry.spec.args.includes("@sentry/mcp-server@latest") && MCP_CATALOG.sentry.needsEnv[0] === "SENTRY_" + "ACCESS_TOKEN");
   }
 
+  group("engine MCP config: remote servers and odd names");
+  {
+    const E = require("../lib/nexus/engine-mcp");
+    const sv = E.buildEngineMcpServers({ userServers: { docs: { type: "http", url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer x" } }, ev: { type: "sse", url: "https://mcp.example.com/sse" } } });
+    ok("a url-only (http/sse) server is forwarded to engines, not dropped", sv.docs && sv.docs.url && sv.ev);
+    const oc = E.toOpencodeConfig(sv, {}).mcp;
+    ok("opencode gets a url server as type remote with its headers", oc.docs.type === "remote" && oc.docs.url === "https://mcp.example.com/mcp" && oc.docs.headers.Authorization === "Bearer x");
+    const gm = E.toGeminiServers(sv);
+    ok("gemini gets httpUrl for http and url for sse", gm.docs.httpUrl === "https://mcp.example.com/mcp" && !gm.docs.url && gm.ev.url === "https://mcp.example.com/sse" && !gm.ev.type);
+    const ca = E.codexMcpArgs("my.srv x", { command: "npx", env: { "A.B": "1" } }).join(" ");
+    ok("codex -c keys survive a dotted/spaced server name and env key", /mcp_servers\.my_srv_x\.command=/.test(ca) && /\{ "A\.B" = "1" \}/.test(ca));
+  }
+
   group("MCP client (darknode.js mcpConnect) against a paginating server that can fail or die");
   {
     const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8"), i = src.indexOf("function mcpConnect("), body = src.slice(i, src.indexOf("\n// ---------- Hooks", i));

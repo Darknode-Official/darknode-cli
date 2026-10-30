@@ -69,7 +69,7 @@ const CacheWarm = require("./lib/cli/cachewarm"); // pure prompt-cache TTL count
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
 const { idleWatchdog, engineWaits } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based, paused while the user answers a popup
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
-const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
+const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, toGeminiServers, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
 const ASK_MCP_PATH = require("path").join(__dirname, "lib", "nexus", "ask-mcp.js"); // stdio MCP shim spawned by the engine
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
 const Jail = require("./lib/nexus/jail"); // canonical path jail shared by every file tool (symlink/dot-dot safe) (lib/nexus/jail.js)
@@ -4018,7 +4018,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           let base = {}; for (const f of ["opencode.json", "opencode.jsonc"]) { try { base = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, f), "utf8"))); break; } catch (_) {} }
           obj = toOpencodeConfig(servers, base); fname = "opencode.json";
         } else { // claude-style { mcpServers } (gemini's system-overrides settings file — gemini merges it, so only 'nexus' is added)
-          obj = { mcpServers: servers }; fname = ".gemini-settings.json";
+          obj = { mcpServers: toGeminiServers(servers) }; fname = ".gemini-settings.json";
         }
         const p = writeEngineConfigFile(path.join(cwd, ".nexus"), fname, obj);
         return (p && m.mcpEnvVar) ? { env: { [m.mcpEnvVar]: p } } : undefined;
