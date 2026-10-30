@@ -69,7 +69,7 @@ const CacheWarm = require("./lib/cli/cachewarm"); // pure prompt-cache TTL count
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
 const { idleWatchdog, engineWaits } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based, paused while the user answers a popup
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
-const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
+const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, toGeminiServers, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
 const ASK_MCP_PATH = require("path").join(__dirname, "lib", "nexus", "ask-mcp.js"); // stdio MCP shim spawned by the engine
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
 const Jail = require("./lib/nexus/jail"); // canonical path jail shared by every file tool (symlink/dot-dot safe) (lib/nexus/jail.js)
@@ -730,7 +730,7 @@ function fileHash(f) {
   catch (e) { console.log(red("error: " + e.message)); }
 }
 // Headless Nexus: a loopback-only, token-gated JSON service so the app or any
-// script can drive Nexus programmatically. POST /run {goal} runs one headless
+// script can drive Nexus programmatically. POST /run {goal, yes?} runs one headless
 // turn (via the real `nexus --print` path in a child, so engine behavior is
 // identical) and returns its output. Same safety shape as the honeypot bridge:
 // 127.0.0.1 only + Bearer token. `darknode nexus serve [port]`.
@@ -749,14 +749,17 @@ async function nexusServe(args, ctx) {
     if (req.method === "GET" && url === "/health") return send(200, { ok: true, engine: engineDefault, version: VERSION });
     { const _got = Buffer.from(req.headers["authorization"] || ""), _exp = Buffer.from("Bearer " + token); if (_got.length !== _exp.length || !crypto.timingSafeEqual(_got, _exp)) return send(401, { error: "unauthorized" }); }
     if (req.method === "POST" && url === "/run") {
-      let body = ""; req.on("data", (d) => { body += d; if (body.length > 1e6) req.destroy(); });
+      // over 1 MB: answer 413 and close, rather than resetting the connection with no reply
+      let body = "", tooBig = false; req.on("data", (d) => { if (tooBig) return; body += d; if (body.length > 1e6) { tooBig = true; body = ""; res.setHeader("Connection", "close"); send(413, { error: "request body over 1 MB" }); } });
       req.on("end", () => {
+        if (tooBig) return;
         let j = {}; try { j = JSON.parse(body || "{}"); } catch (_) { return send(400, { error: "bad json" }); }
         const goal = String(j.goal || j.task || "").trim();
         if (!goal) return send(400, { error: "missing 'goal'" });
         const eng = String(j.engine || engineDefault);
         const model = typeof j.model === "string" && j.model.trim() ? ["-m", j.model.trim()] : [];
-        const child = _cp.spawn(process.execPath, [__filename, "nexus", "--print", "-e", eng, ...model, "--", goal], { cwd: process.cwd(), env: Object.assign({}, process.env, { NO_COLOR: "1" }) });
+        const yes = j.yes === true ? ["-y"] : []; // the token holder may allow pushes, sudo, rm -r, like -y on the command line
+        const child = _cp.spawn(process.execPath, [__filename, "nexus", "--print", "-e", eng, ...model, ...yes, "--", goal], { cwd: process.cwd(), env: Object.assign({}, process.env, { NO_COLOR: "1" }) });
         let out = "", err = ""; child.stdout.on("data", (b) => out += b); child.stderr.on("data", (b) => err += b);
         // a caller that hung up gets nothing back: stop the agent instead of letting it keep working unattended
         res.on("close", () => { if (!res.writableEnded && child.exitCode === null) child.kill("SIGTERM"); });
@@ -766,7 +769,7 @@ async function nexusServe(args, ctx) {
       });
       return;
     }
-    send(404, { error: "not found — GET /health · POST /run {goal, engine?, model?}" });
+    send(404, { error: "not found — GET /health · POST /run {goal, engine?, model?, yes?}" });
   });
   srv.on("error", (e) => { console.error(red("  serve failed: " + (e && e.code === "EADDRINUSE" ? "port " + port + " is already in use" : (e && e.message || e))) + (e && e.code === "EADDRINUSE" ? gray(" — pick another: nexus serve " + (port < 65535 ? port + 1 : 8765)) : "")); process.exit(1); });
   srv.listen(port, "127.0.0.1", () => {
@@ -831,11 +834,11 @@ function nexusUpdate(opts) {
     if (!hasBin("npm")) return hush("installed at " + dir + "\nnot a git checkout and npm not found — reinstall to update.");
     const v = run("npm", ["view", "darknode-cli", "version"]);
     const latest = (v.stdout || "").trim();
-    if (v.status !== 0 || !latest) return hush("update check failed (npm view): " + (((v.stderr || "") + (v.error ? v.error.message : "")).trim().split("\n").slice(-1)[0] || "no output"));
+    if (v.status !== 0 || !/^\d+\.\d+\.\d+[0-9A-Za-z.+-]*$/.test(latest)) return hush("update check failed (npm view): " + (((v.stderr || "") + (v.error ? v.error.message : "")).trim().split("\n").slice(-1)[0] || "no output"));
     if (!semverGt(latest, VERSION)) return hush("up to date — v" + VERSION + " is the latest (npm).");
     const L = ["update available: v" + VERSION + " → v" + latest + " (npm)"];
     if (!apply) { L.push("run  " + cyan("darknode update") + "  to install (npm i -g darknode-cli@latest)."); return L.join("\n"); }
-    const ni = cp.spawnSync("npm", ["install", "-g", "darknode-cli@latest", "--no-audit", "--no-fund"], { encoding: "utf8", timeout: 600000 });
+    const ni = cp.spawnSync("npm", ["install", "-g", "darknode-cli@" + latest, "--no-audit", "--no-fund"], { encoding: "utf8", timeout: 600000 });
     if (ni.status !== 0) { L.push("auto-update failed (a global npm install may need elevated permissions): " + (((ni.stderr || "") + (ni.error ? ni.error.message : "")).trim().split("\n").slice(-2).join(" ") || "npm error") + "\n  install manually:  npm install -g darknode-cli@latest"); return L.join("\n"); }
     L.push(green("updated") + " to v" + latest + " — restart Nexus to load it."); return L.join("\n");
   }
@@ -856,7 +859,7 @@ function nexusUpdate(opts) {
   // in silent/background mode, a dirty checkout is the user's own WIP — surface that an update
   // exists (so /update still works) but never nag every launch about their local changes.
   if (dirty) { L.push(silent ? "(local changes in the install dir block auto-apply; run /update after committing)" : "can't auto-update — you have local changes in " + dir + ". Commit or stash them first."); return L.join("\n"); }
-  const pull = run("git", ["pull", "--ff-only", "--quiet"]);
+  const pull = run("git", ["merge", "--ff-only", "--quiet", remote]); // the commit just compared: `git pull` re-resolved @{u}, which is missing when we fell back to origin/main
   if (pull.status !== 0) { L.push("update failed: " + (((pull.stderr || "") + (pull.error ? pull.error.message : "")).trim() || "git pull error")); return L.join("\n"); }
   const changed = (run("git", ["diff", "--name-only", local, "HEAD"]).stdout) || "";
   if (/package(-lock)?\.json/.test(changed) && hasBin("npm")) { const ni = cp.spawnSync("npm", ["install", "--silent", "--no-audit", "--no-fund"], { cwd: dir, encoding: "utf8", timeout: 600000 }); if (ni.status !== 0) L.push("note: npm install after update reported an issue — run `npm install` in " + dir); }
@@ -874,11 +877,11 @@ async function cli(args) {
   const G = require("./lib/governance/engagement-gate");
   const deny = (e) => { console.error("  " + red(e.message)); process.exitCode = 1; };
   try {
-    if (G.TOOLS[cmd]) {
+    if (Object.prototype.hasOwnProperty.call(G.TOOLS, cmd)) {
       if (G.TOOLS[cmd].bin) { const r = await G.runExternal(eng, cmd, rest); process.exitCode = r.code; return; }   // nmap / nuclei: the gate spawns the binary itself
       return await G.guard(eng, cmd, rest, () => cliRun(args, { filter: (hosts) => G.filterInScope(eng, "scan", hosts) }));
     }
-    if (CMD_MAP[cmd] || G.OFFLINE_COMMANDS.has(cmd)) return cliRun(args);   // offline helpers: no target is touched
+    if (Object.prototype.hasOwnProperty.call(CMD_MAP, cmd) || G.OFFLINE_COMMANDS.has(cmd)) return cliRun(args);   // offline helpers: no target is touched
     const d = G.authorize({ engagement: eng, tool: cmd || "", argv: rest });   // unknown command: audited deny
     throw new G.GateDenied(d.allow ? { code: "GATE_ERROR", reason: "unexpected allow for ungated command" } : d);
   } catch (e) { if (e instanceof G.GateDenied) return deny(e); throw e; }
@@ -893,12 +896,11 @@ async function cliRun(args, gate) {
   if (!process.env.DARKNODE_ENGAGEMENT) {
     const DG = require("./lib/governance/default-guard");
     if (DG.ACTIVE.has(cmd)) {
-      const _target = rest.find((a) => a && a[0] !== "-") || rest[0];
-      const _g = DG.guardActive(cmd, _target, { authorized: _authorized });
+      const _g = DG.guardArgs(cmd, rest, { authorized: _authorized }); // every target in argv, not only the first
       if (!_g.allow) { console.error("  " + red("refused: ") + _g.reason); process.exitCode = 2; return; }
     }
   }
-  if (CMD_MAP[cmd]) { console.log(CMD_MAP[cmd].run({ rest, c: { red, green, yellow, cyan, gray, bold } })); }
+  if (Object.prototype.hasOwnProperty.call(CMD_MAP, cmd)) { console.log(CMD_MAP[cmd].run({ rest, c: { red, green, yellow, cyan, gray, bold } })); }
   else if (cmd === "pentest") { await require("./lib/nexus/pentest-engine").startPentest(rest[0] || null, { reportDir: process.cwd() }); process.exit(0); } // HYDRA; the TUI's /pentest runs this in its own process
   else if (cmd === "scan") { const host = rest[0]; if (!host) return usage(); await scan(host, parsePorts(rest[1])); }
   else if (cmd === "dns") { const recs = await dnsLookup(rest[0] || ""); recs.forEach(([k, v]) => console.log(k.padEnd(6) + v)); }
@@ -951,10 +953,11 @@ async function cliRun(args, gate) {
     if (sub === "start") {
       const { createAPIServer } = require("./lib/cli/api-server");
       const portArg = rest.indexOf("--port"); const apiPort = portArg >= 0 ? parseInt(rest[portArg + 1], 10) || 8080 : 8080;
-      const apiToken = process.env.DARKNODE_API_TOKEN || crypto.randomBytes(24).toString("base64url"); // never unauthenticated: it listens on every interface and /api/v1/ai/ask runs the agent with auto-approve
-      const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken });
-      srv.listen(apiPort, "0.0.0.0", () => {
-        h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://0.0.0.0:" + apiPort));
+      const apiToken = process.env.DARKNODE_API_TOKEN || crypto.randomBytes(24).toString("base64url"); // never unauthenticated: /api/v1/ai/ask runs the agent with auto-approve
+      const hostArg = rest.indexOf("--host"), apiHost = hostArg >= 0 && rest[hostArg + 1] ? rest[hostArg + 1] : "127.0.0.1"; // loopback by default; --host 0.0.0.0 opts in to the LAN
+      const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken, host: apiHost });
+      srv.listen(apiPort, apiHost, () => {
+        h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://" + (apiHost.includes(":") ? "[" + apiHost + "]" : apiHost) + ":" + apiPort) + (apiHost === "127.0.0.1" ? gray("   (this machine only · --host 0.0.0.0 to serve the network)") : ""));
         console.log("  token     " + bold(t) + gray("   (send as: X-API-Key: <token> · set DARKNODE_API_TOKEN to pick your own)"));
         console.log("\n  " + gray("health  ") + "curl http://localhost:" + apiPort + "/health -H 'X-API-Key: " + t + "'");
         console.log("  " + gray("scan    ") + "curl -s http://localhost:" + apiPort + "/api/v1/scan/url -H 'X-API-Key: " + t + "' -H 'Content-Type: application/json' -d '{\"url\":\"https://target.com\"}'");
@@ -963,7 +966,7 @@ async function cliRun(args, gate) {
       srv.on("error", (e) => { console.log(red("  api server failed: " + (e && e.message || e))); process.exit(1); });
       await new Promise(() => {});
     } else if (sub === "stop") { console.log(gray("  send SIGTERM to the darknode api process to stop it")); }
-    else { console.log("darknode api start [--port 8080]   start the REST API server\ndarknode api stop                  stop the server"); }
+    else { console.log("darknode api start [--port 8080] [--host 127.0.0.1]   start the REST API server (loopback unless --host)\ndarknode api stop                  stop the server"); }
   }
   else if (cmd === "serve") { serveDir(rest[0], rest[1]); await new Promise(() => {}); }
   else if (cmd === "listen") { listen(rest[0]); await new Promise(() => {}); }
@@ -1552,7 +1555,8 @@ function nexusHelp() {
   console.log("    -y, --yes                     auto-approve every file write and command");
   console.log("    -p, --print                   for scripts: the answer alone on stdout,");
   console.log("                                  progress on stderr; piped input joins the task");
-  console.log("                                  (implies -y: nobody is there to approve)");
+  console.log("                                  (implies -y, but pushes, sudo, rm -r and");
+  console.log("                                  global git config need an explicit -y)");
   console.log("        --lean                    minimal output (also /lean in the session)");
   console.log("        --resume / --new          reopen the last chat (default) / start blank");
   console.log("        --                        the rest is the task, even if it starts with -");
@@ -1581,11 +1585,11 @@ async function aiCoder(argv) {
   const cwd = process.cwd();
   // ---- parse flags ----
   const arr = [].concat(...(Array.isArray(argv) ? argv.slice() : String(argv || "").split(/\s+/).filter(Boolean)).map((a) => { const m = /^(--model|--engine|-m|-e)=(.*)$/.exec(a); return m ? [m[1], m[2]] : [a]; })); // --model=x / --engine=x == --model x
-  let autoApprove = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, resumeFlag = false, leanFlag = false, parts = [];
+  let autoApprove = false, explicitYes = false, printMode = false, modelOverride = "", enginePref = "", tuiFlag = false, resumeFlag = false, leanFlag = false, parts = [];
   const unknownFlags = [];
   for (let i = 0; i < arr.length; i++) {
     const a = arr[i];
-    if (a === "-y" || a === "--yes" || a === "--skip-permissions" || a === "--dangerously-skip-permissions") autoApprove = true;
+    if (a === "-y" || a === "--yes" || a === "--skip-permissions" || a === "--dangerously-skip-permissions") autoApprove = explicitYes = true;
     else if (a === "--print" || a === "-p") { printMode = true; autoApprove = true; }
     else if (a === "--lean") leanFlag = true;
     else if (a === "--tui" || a === "--ui") tuiFlag = true;
@@ -1611,7 +1615,7 @@ async function aiCoder(argv) {
   // env) turns the local engine into a driver for ANY model. Env wins over config.
   if (cfg.apiBase && !process.env.DARKNODE_API_BASE) process.env.DARKNODE_API_BASE = cfg.apiBase;
   if (cfg.apiKey && !process.env.DARKNODE_API_KEY) process.env.DARKNODE_API_KEY = cfg.apiKey;
-  const _instr = require("./lib/nexus/instructions").loadInstructions(cwd); // AGENTS.md / CLAUDE.md / GEMINI.md / .cursorrules root->cwd, then .nexus/NEXUS.md
+  const _instr = require("./lib/nexus/instructions").loadInstructions(cwd, { allowOutside: isRepoTrusted(cwd) }); // AGENTS.md / CLAUDE.md / GEMINI.md / .cursorrules root->cwd, then .nexus/NEXUS.md
   let nexusMd = _instr.text;
   const avail = {}; for (const e of ENGINE_ORDER) avail[e] = engineAvail(e);
   // "api" is an alias for the local tool loop pointed at the configured API.
@@ -1670,16 +1674,21 @@ async function aiCoder(argv) {
     const paint = useColor ? { brand: bold, accent: mag, muted: gray, faint: dim, rule: gray, value: cyan } : null;
     const cols = (process.stdout.columns || 80);
     for (const ln of bootHeader({ version: VERSION, engine, engineLabel: (ENGINES[engine] || {}).label, model: model || "", cwd, home: os.homedir(), cols, paint })) console.log(ln);
-    if (nexusMd || autoApprove) console.log("  " + gray((nexusMd ? "instructions: " + _instr.files.map((f) => f.rel).join(", ") : "") + (nexusMd && autoApprove ? "  ·  " : "") + (autoApprove ? "auto-approve ON" : "")) + "\n");
+    if (nexusMd || autoApprove) console.log("  " + gray((nexusMd ? "instructions: " + (_instr.files.map((f) => f.rel).join(", ") || "none loaded") : "") + (nexusMd && autoApprove ? "  ·  " : "") + (autoApprove ? "auto-approve ON" : "")) + "\n");
   }
-  const SYS = "Nexus — coding agent in " + cwd + ". One action/step, read observation, repeat. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} list_dir{path?} run_command{command}. Reply ONE JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Prefer edit_file for changes. Greetings/questions → action:final immediately. Else work until done.\nEfficiency: minimize calls. Chain shell commands with && or ;. Read only needed lines. Never re-read after write. Simple task = 2-5 calls." + (nexusMd ? "\n\nPROJECT:\n" + nexusMd.slice(0, 1000) : "");
+  const SYS = "Nexus — coding agent in " + cwd + ". One action/step, read observation, repeat. Tools: read_file{path} write_file{path,content} edit_file{path,find,replace} list_dir{path?} run_command{command}. Reply ONE JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Prefer edit_file for changes; read_file a file before editing it. If the task does not name the file, find it first (run_command grep -rn) and change it there: never write a new file in place of code that already exists. Greetings/questions → action:final immediately. Else work until done.\nEfficiency: minimize calls. Chain shell commands with && or ;. Read only needed lines. Never re-read after write. Simple task = 2-5 calls." + (nexusMd ? "\n\nPROJECT:\n" + nexusMd.slice(0, 1000) : "");
   const messages = [{ role: "system", content: SYS }];
   let delegated = false;
   const changed = [];  // session change log for /undo and /diff: {path, before|null, label}
+  const seenFiles = new Set(); // files whose text the model has seen (read, attached whole, or written): edits need one of these
   const relp = (p) => path.relative(cwd, p) || p;
   // ---- permission gate: confirm risky actions unless auto-approve ----
+  let noTtyNoted = false;
   async function approve(label) {
     if (autoApprove) return true;
+    // no terminal to answer (cron, CI, </dev/null): readline would close unanswered and the run would
+    // exit 0 mid-task, so deny instead and say how to allow it
+    if (!process.stdin.isTTY) { if (!noTtyNoted) { noTtyNoted = true; console.log("  " + yellow("no terminal to approve changes, so they are denied; add -y to allow them")); } return false; }
     const ans = (await ask(cyan("  approve ") + label + gray("  [y]es / [n]o / [a]lways: "))).trim().toLowerCase();
     if (ans === "a" || ans === "always") { autoApprove = true; return true; }
     return ans === "" || ans === "y" || ans === "yes";
@@ -1701,7 +1710,7 @@ async function aiCoder(argv) {
       task = t;
     }
     // @path attaches a file's contents to the prompt (e.g. "fix the bug in @src/app.js")
-    const userMsg = task.replace(/(^|\s)@(\S+)/g, (m, pre, p) => { try { const c = fs.readFileSync(path.resolve(cwd, p), "utf8"); return pre + "\n\n--- " + p + " ---\n" + c.slice(0, lean ? 3000 : 6000) + "\n--- end " + p + " ---\n"; } catch (_) { return m; } });
+    const userMsg = task.replace(/(^|\s)@(\S+)/g, (m, pre, p) => { try { const c = fs.readFileSync(path.resolve(cwd, p), "utf8"); if (c.length <= (lean ? 3000 : 6000)) seenFiles.add(path.resolve(cwd, p)); return pre + "\n\n--- " + p + " ---\n" + c.slice(0, lean ? 3000 : 6000) + "\n--- end " + p + " ---\n"; } catch (_) { return m; } });
     messages.push({ role: "user", content: userMsg }); task = "";
     if (!printMode) console.log(cyan("  ▎ ") + bold("nexus") + gray("  " + engine) + "\n");
     if (engine !== "ollama") {
@@ -1720,11 +1729,11 @@ async function aiCoder(argv) {
       const r = (reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it."; if (printMode) answer(r); else console.log("  " + r + "\n");
       if (printMode) return; continue;
     }
-    let didTool = false, nudges = 0; const protoSt = { bad: 0 };
+    let didTool = false, nudges = 0; const protoSt = { bad: 0 }, loopGuard = makeLoopGuard(); // same stall breaker as the TUI and sub-agent loops
     for (let step = 1; step <= (lean ? 12 : 25); step++) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); if (printMode) process.exitCode = 1; break; }
       let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
-      if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, messages, protoSt); if (br.stop) { if (printMode) answer(br.answer || PR.GAVE_UP); else console.log("\n  " + (br.answer || PR.GAVE_UP) + "\n"); break; } continue; }
+      if (!o || typeof o !== "object") { const br = PR.badProtoReply(raw, messages, protoSt); if (br.stop) { if (printMode) { answer(br.answer || PR.GAVE_UP); if (!br.answer) process.exitCode = 1; } else console.log("\n  " + (br.answer || PR.GAVE_UP) + "\n"); break; } continue; }
       protoSt.bad = 0;
       // Strip thought from context to save tokens — it's displayed, not needed in history
       const compact = { action: o.action };
@@ -1744,22 +1753,24 @@ async function aiCoder(argv) {
       const _pol = _pa ? loadPolicy(cwd) : null;
       if (_pa) { const pc = policyCheck(_pol, _pa); if (!pc.allow) _pblk = "policy — " + pc.reason; }
       if (!_pblk && name === "write_file" && _pol.blockSecrets) { const _sec = scanSecrets(a && a.content == null ? "" : a.content); if (_sec.length) _pblk = "policy — file contains " + _sec.join(", ") + " (policy.blockSecrets)"; } // the other loops checked this; here a key could be written with blockSecrets on
-      if (!_pblk && isExecTool(name)) { const dg = classifyDanger(execCommand(name, a) || ""); if (dg.level === "block") _pblk = dg.why; } // bisect/shrink run their `test` command too
+      if (!_pblk && isExecTool(name)) { const dg = classifyDanger(execCommand(name, a) || ""); if (dg.level === "block") _pblk = dg.why; else if (dg.level === "warn" && printMode && !explicitYes) _pblk = dg.why + " (nobody is here to approve it in --print mode; add -y to allow)"; } // bisect/shrink run their `test` command too
       if (_pblk) { result = "blocked: " + _pblk; if (!printMode) console.log("  " + red("blocked: ") + _pblk); if (_pol && _pol.audit) try { auditLog(cwd, { engine: "ollama", tool: name, path: _pa.path, cmd: _pa.command, status: "blocked", reason: _pblk }); } catch (_) {} }
       else try {
         // Sandbox every file tool to the project root (symlink/dot-dot safe); a throw here is reported as a tool error below.
         if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) Jail.assertInJail(a.path, cwd);
         if (name === "read_file" || name === "list_dir") { // shared impl (as in the other loop): line ranges/offset, a line-boundary cap that says where to continue, binary refusal - this copy cut mid-line at a char count and ignored offset/limit
           const dr = await deviceTool(name, a, cwd); result = dr && typeof dr === "object" ? (dr.error ? "error: " + dr.error : JSON.stringify(dr)) : String(dr);
+          if (name === "read_file" && !(dr && dr.error)) seenFiles.add(path.resolve(cwd, a.path));
           if (!printMode) console.log("  " + cyan(name === "read_file" ? "read " : "ls ") + (name === "read_file" ? gray(a.path) : (a.path || ".")));
         }
         else if (name === "write_file") {
           if (!(await approve("write " + a.path))) { result = "denied"; console.log("  " + red("denied ") + a.path); }
-          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp); } catch (e) { if (e.code === "ENOENT") isNew = true; } /* raw bytes: /undo of an overwritten binary file restored it mangled */ fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = "ok"; console.log("  " + green("write ") + a.path + gray(" · " + String(a.content || "").split("\n").length + " lines")); }
+          else { const fp = path.resolve(cwd, a.path); let before = null, isNew = false; try { before = fs.readFileSync(fp); } catch (e) { if (e.code === "ENOENT") isNew = true; } /* raw bytes: /undo of an overwritten binary file restored it mangled */ fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); seenFiles.add(fp); changed.push({ path: fp, before, isNew, label: "write " + a.path }); result = "ok"; console.log("  " + green("write ") + a.path + gray(" · " + String(a.content || "").split("\n").length + " lines")); }
         }
         else if (name === "edit_file") {
           const fp = path.resolve(cwd, a.path); const _rd = readEditable(fp, a.path), t = _rd.error ? null : _rd.text;
           if (t == null) { result = "error: " + _rd.error; }
+          else if (!seenFiles.has(fp)) { result = "error: " + unreadEditError(a.path); }
           else if (typeof a.find !== "string" || !a.find) { result = "error: empty find (give the exact text to replace)"; }
           else { // same edit engine as the other loops (this copy was exact-match only: a CRLF file or an indentation slip just failed)
             const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]);
@@ -1768,7 +1779,7 @@ async function aiCoder(argv) {
             else if (_sec.length) result = "blocked: policy — edit would introduce " + _sec.join(", ");
             else if (r.content === t) result = "ok (no change — find and replace are identical)";
             else if (!(await approve("edit " + a.path))) { result = "denied"; console.log("  " + red("denied ") + a.path); }
-            else { fs.writeFileSync(fp, r.content); changed.push({ path: fp, before: t, label: "edit " + a.path }); const cr = changedRegion(t, r.content); result = "ok" + (cr ? " — line " + cr.lines + " now reads:\n" + cr.now : ""); console.log("  " + green("edit ") + gray(a.path)); }
+            else { fs.writeFileSync(fp, r.content); seenFiles.add(fp); changed.push({ path: fp, before: t, label: "edit " + a.path }); const cr = changedRegion(t, r.content); result = "ok" + (cr ? " — line " + cr.lines + " now reads:\n" + cr.now : ""); console.log("  " + green("edit ") + gray(a.path)); }
           }
         }
         else if (name === "run_command") {
@@ -1779,7 +1790,10 @@ async function aiCoder(argv) {
       } catch (e) { result = "error: " + e.message; }
       if (["read_file", "write_file", "edit_file", "list_dir", "run_command"].includes(name)) didTool = true;
       messages.push({ role: "tool", content: String(result).slice(0, 8000) });
-      if (step >= (lean ? 12 : 25)) console.log("  " + red("(step limit reached)"));
+      const _lg = loopGuard.note(loopGuard.signature(name, a), !/^(error:|blocked:|denied|exit [1-9])/i.test(String(result)), loopGuard.hashStr(String(result)));
+      if (_lg && _lg.action === "break") { if (printMode) { answer(_lg.message); process.exitCode = 1; } else console.log("\n  " + yellow(_lg.message) + "\n"); break; }
+      if (_lg) messages.push({ role: "tool", content: "[loop guard] " + _lg.message });
+      if (step >= (lean ? 12 : 25)) { console.log("  " + red("(step limit reached)")); if (printMode) { answer("Stopped: reached the " + step + "-step limit before the task was finished."); process.exitCode = 1; } } // a script must not read an unfinished run as success
     }
     if (printMode) return;
   }
@@ -2067,7 +2081,9 @@ function mcpConnect(name, spec, cwd) {
     let buf = "", idc = 0; const pending = Object.create(null); // null-proto: a server reply with id "__proto__"/"toString" can't resolve an inherited member (crash / silent mis-route)
     cp.stdout.setEncoding("utf8"); cp.stdout.on("data", (d) => { buf += d; let nl; while ((nl = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); if (!line.trim()) continue; let m; try { m = JSON.parse(line); } catch (_) { continue; } if (m && m.method) { if (m.id != null) { try { cp.stdin.write(JSON.stringify(m.method === "ping" ? { jsonrpc: "2.0", id: m.id, result: {} } : { jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "method not found: " + m.method } }) + "\n"); } catch (_) {} } continue; } /* a request FROM the server (ping, roots/list) shares the id space: never route it to our pending call */ if (m.id != null) { const cb = pending[m.id]; if (typeof cb === "function") { delete pending[m.id]; cb(m); } } } });
     cp.on("error", () => {});
-    const call = (method, params, ms) => new Promise((res, rej) => { const id = ++idc; let tm = null; pending[id] = (m) => (clearTimeout(tm), m.error) ? rej(new Error(m.error.message || "mcp error")) : res(m.result); try { cp.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params: params || {} }) + "\n"); } catch (e) { return rej(e); } tm = setTimeout(() => { if (pending[id]) { delete pending[id]; rej(new Error(ms ? "MCP tool did not answer within " + Math.round(ms / 60000) + " min" : "mcp timeout")); } }, ms || 20000); });
+    // a server that dies mid-call fails its pending calls now, not at the 10-minute tool timeout
+    cp.on("exit", (code, sig) => { for (const k of Object.keys(pending)) { const f = pending[k]; delete pending[k]; f({ error: { message: "MCP server " + name + " exited" + (sig ? " (" + sig + ")" : code != null ? " (code " + code + ")" : "") } }); } });
+    const call = (method, params, ms) => new Promise((res, rej) => { const id = ++idc; let tm = null; pending[id] = (m) => (clearTimeout(tm), m.error) ? rej(new Error(m.error.message || "mcp error")) : res(m.result); try { cp.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params: params || {} }) + "\n"); } catch (e) { return rej(e); } tm = setTimeout(() => { if (pending[id]) { delete pending[id]; rej(new Error(ms ? "MCP tool did not answer within " + (ms >= 60000 ? Math.round(ms / 60000) + " min" : Math.round(ms / 1000) + " s") : "mcp timeout")); } }, ms || 20000); });
     const notify = (method, params) => { try { cp.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params: params || {} }) + "\n"); } catch (_) {} };
     (async () => {
       try {
@@ -2075,8 +2091,10 @@ function mcpConnect(name, spec, cwd) {
         const initMs = /^(uvx|npx|pnpx|bunx|pipx)(\.cmd|\.exe)?$/i.test(require("path").basename(String(spec.command || ""))) ? 60000 : 20000;
         await call("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "nexus", version: "1.0" } }, initMs).catch((e) => { throw new Error(/did not answer/.test(e.message) ? "did not start within " + initMs / 1000 + "s" : e.message); });
         notify("notifications/initialized", {});
-        const tl = await call("tools/list", {});
-        resolve({ name, cp, call, tools: (tl && tl.tools) || [] });
+        // tools/list is paginated: follow nextCursor (a server with many tools sent only page one)
+        const tools = []; let cursor;
+        for (let pg = 0; pg < 50; pg++) { const tl = await call("tools/list", cursor ? { cursor } : {}); tools.push(...((tl && tl.tools) || [])); cursor = tl && tl.nextCursor; if (!cursor) break; }
+        resolve({ name, cp, call, tools });
       } catch (e) { try { cp.kill(); } catch (_) {} resolve({ name, error: e.message }); }
     })();
   });
@@ -2268,7 +2286,7 @@ const { buildReviewPrompt, countBySeverity, SEVERITY } = require("./lib/nexus/re
 const { parseCommits, renderChangelog } = require("./lib/nexus/changelog"); // release-notes generator (lib/nexus/changelog.js)
 const { createBgJobs } = require("./lib/nexus/bgjobs"); // background command jobs (lib/bgjobs.js)
 const { makeLoopGuard } = require("./lib/nexus/loopguard"); // detect & break stuck repeat/oscillation loops (lib/nexus/loopguard.js)
-const { makeFileState } = require("./lib/nexus/filestate"); // stale-write guard: don't clobber on-disk changes (lib/nexus/filestate.js)
+const { makeFileState, unreadEditError } = require("./lib/nexus/filestate"); // stale-write guard: don't clobber on-disk changes (lib/nexus/filestate.js)
 const { diagnose, annotate: diagAnnotate } = require("./lib/nexus/diagnose"); // classify command/test failures into an actionable hint (lib/nexus/diagnose.js)
 const { describe: describeSettings } = require("./lib/cli/settings"); // /settings panel schema (lib/settings.js)
 // Extended device tools for the local agent: content search, file find, HTTP fetch,
@@ -2299,7 +2317,7 @@ async function deviceTool(name, a, cwd) {
     for (const t of items) {
       const content = typeof t === "string" ? t : (t.content || t.task || t.title || t.text || "");
       const st = typeof t === "object" ? String(t.status || t.state || "pending") : "pending";
-      if (content) AGENT_TODOS.push({ content: String(content).slice(0, 200), status: /done|complete|finish/i.test(st) ? "done" : /prog|doing|active|current/i.test(st) ? "in_progress" : "pending" });
+      if (content) AGENT_TODOS.push({ content: String(content).slice(0, 200), status: /\b(?:done|complete|completed|finish|finished)\b/i.test(st) ? "done" : /prog|doing|active|current/i.test(st) ? "in_progress" : "pending" });
     }
     try { fs.mkdirSync(rp(".nexus"), { recursive: true }); fs.writeFileSync(rp(".nexus/todos.json"), JSON.stringify(AGENT_TODOS)); } catch (_) {}
     const rendered = AGENT_TODOS.map((t) => (t.status === "done" ? "[x] " : t.status === "in_progress" ? "[~] " : "[ ] ") + t.content).join("\n");
@@ -2483,6 +2501,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
   const policy = loadPolicy(cwd); // enterprise guardrails (.nexus/policy.json) — enforced here too, not just the in-process loop
   const messages = [{ role: "system", content: "Nexus sub-agent. Complete ONLY the TASK using tools, one action/step, then final. Tools: read_file{path,offset?,limit?} search{pattern,path?} write_file{path,content} edit_file{path,find,replace} list_dir{path?} run_command{command,timeout_s?}. JSON: {\"thought\",\"action\":\"tool\",\"tool\",\"args\"} or {\"thought\",\"action\":\"final\",\"final\"}. Minimize calls; chain commands.\n" + ctx }, { role: "user", content: "TASK: " + task }];
   let didTool = false, log = ""; const protoSt = { bad: 0 };
+  const seenFiles = new Set(); // files this sub-agent has read or written: edits need one of these
   const loopGuard = makeLoopGuard();
   for (let step = 1; step <= 15; step++) {
     if (signal && signal.aborted) return { ok: false, output: log + "\n(interrupted)" };
@@ -2500,23 +2519,24 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     const _pa = isExecTool(name) ? { type: "run", command: execCommand(name, a) }
       : ["http_fetch", "web_fetch", "fetch_url", "http"].includes(name) ? { type: "fetch" }
       : name === "write_file" ? { type: "write", path: a && a.path }
+      : ["browser_screenshot", "browser_shot"].includes(name) ? { type: "write", path: a && (a.path || a.file) }
       : name === "edit_file" ? { type: "edit", path: a && a.path }
-      : ["delete", "delete_file", "rm"].includes(name) ? { type: "delete", path: a && a.path }
-      : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a && (a.to || a.dest || a.path), from: a && a.from }
+      : ["delete", "delete_file", "rm"].includes(name) ? { type: "delete", path: a && (a.path || a.file), cwd }
+      : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a && (a.to || a.dest || a.destination || a.path), from: a && (a.from || a.src || a.source) }
       : ["notebook_edit", "notebook", "ipynb"].includes(name) && a && !/^(read|view|show)$/i.test(String(a.op || a.action || "read")) ? { type: "edit", path: a.path || a.file || a.notebook }
       : null;
     let _pblk = null;
-    if (_pa) { let pc = policyCheck(policy, _pa); if (pc.allow && _pa.from) pc = policyCheck(policy, { type: "move", path: _pa.from }); if (!pc.allow) _pblk = pc.reason; }
+    if (_pa) { let pc = policyCheck(policy, _pa); if (pc.allow && _pa.from) pc = policyCheck(policy, { type: "move", path: _pa.from, cwd }); if (!pc.allow) _pblk = pc.reason; }
     if (!_pblk && isExecTool(name) && name !== "run_command") { const dg = classifyDanger(execCommand(name, a) || ""); if (dg.level === "block") _pblk = dg.why; } // run_command is checked in its branch below; bisect/shrink/verify run a command too
     if (!_pblk && name === "write_file" && policy.blockSecrets) { const _sec = scanSecrets(a && a.content == null ? "" : a.content); if (_sec.length) _pblk = "file contains " + _sec.join(", ") + " (policy.blockSecrets)"; }
     if (_pblk) { result = "blocked: policy — " + _pblk; console.log("    " + red("blocked: ") + _pblk); if (policy.audit) try { auditLog(cwd, { engine: "ollama", tool: name, path: _pa.path, cmd: _pa.command, status: "blocked", reason: _pblk }); } catch (_) {} }
     else try {
       // sandbox file tools to cwd (same invariant deviceTool/apply_patch enforce)
       if (/^(read_file|list_dir|write_file|edit_file)$/.test(name) && a && a.path != null) Jail.assertInJail(a.path, cwd);
-      if (name === "read_file" || name === "list_dir") { const dr = await deviceTool(name, a, cwd); result = dr && typeof dr === "object" ? (dr.error ? "error: " + dr.error : JSON.stringify(dr)) : String(dr); } // shared impl: line ranges, line-boundary cap with a note, folder sizes
-      else if (name === "write_file") { const fp = path.resolve(cwd, a.path); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = "ok"; log += "\nwrote " + a.path; console.log("    " + green("write ") + gray(a.path)); }
-      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const _rd = readEditable(fp, a.path); if (_rd.error) throw new Error(_rd.error); const t = _rd.text; const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]); const _sec = (r.ok && policy.blockSecrets) ? scanSecrets(String(a.replace == null ? "" : a.replace)) : []; if (!r.ok) result = "error: " + r.error; else if (_sec.length) result = "blocked: policy — edit would introduce " + _sec.join(", "); else if (r.content === t) result = "ok (no change — find and replace are identical)"; else { fs.writeFileSync(fp, r.content); const cr = changedRegion(t, r.content); result = "ok" + (cr ? " — line " + cr.lines + " now reads:\n" + cr.now : ""); log += "\nedited " + a.path; console.log("    " + green("edit ") + gray(a.path)); } } // same edit engine as the main loop: whitespace-tolerant match, miss hints, secret check on the new text
-      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = "blocked: " + dg.why; console.log("    " + red("blocked: ") + dg.why); } else { console.log("    " + mag("$ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd, { ctl: { get stopped() { return !!(signal && signal.aborted); } }, timeoutMs: a.timeout_s ? +a.timeout_s * 1000 : undefined }); const _rc = { output: compactOutput(r.output, 4000) }; collapseToolOutput(_rc); const _rout = _rc.output; const _rd = diagnose(_rout, r.code, a.command); result = (r.code ? "exit " + r.code + "\n" : "") + _rout + diagAnnotate(_rd); log += "\n$ " + a.command + "\n" + r.output.slice(0, 1200); } }
+      if (name === "read_file" || name === "list_dir") { const dr = await deviceTool(name, a, cwd); if (name === "read_file" && !(dr && dr.error)) seenFiles.add(path.resolve(cwd, a.path)); result = dr && typeof dr === "object" ? (dr.error ? "error: " + dr.error : JSON.stringify(dr)) : String(dr); } // shared impl: line ranges, line-boundary cap with a note, folder sizes
+      else if (name === "write_file") { const fp = path.resolve(cwd, a.path); seenFiles.add(fp); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, a.content == null ? "" : a.content); result = "ok"; log += "\nwrote " + a.path; console.log("    " + green("write ") + gray(a.path)); }
+      else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); if (fs.existsSync(fp) && !seenFiles.has(fp)) throw new Error(unreadEditError(a.path)); const _rd = readEditable(fp, a.path); if (_rd.error) throw new Error(_rd.error); const t = _rd.text; const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]); const _sec = (r.ok && policy.blockSecrets) ? scanSecrets(String(a.replace == null ? "" : a.replace)) : []; if (!r.ok) result = "error: " + r.error; else if (_sec.length) result = "blocked: policy — edit would introduce " + _sec.join(", "); else if (r.content === t) result = "ok (no change — find and replace are identical)"; else { fs.writeFileSync(fp, r.content); const cr = changedRegion(t, r.content); result = "ok" + (cr ? " — line " + cr.lines + " now reads:\n" + cr.now : ""); log += "\nedited " + a.path; console.log("    " + green("edit ") + gray(a.path)); } } // same edit engine as the main loop: whitespace-tolerant match, miss hints, secret check on the new text
+      else if (name === "run_command") { const dg = classifyDanger(a.command); if (dg.level === "block") { result = "blocked: " + dg.why; console.log("    " + red("blocked: ") + dg.why); } else { console.log("    " + mag("$ ") + a.command.slice(0, 100)); const r = await coderShell(a.command, cwd, { ctl: { get stopped() { return !!(signal && signal.aborted); } }, timeoutMs: (require("./lib/nexus/wait-for").parseSecs(a.timeout_s) * 1000) || undefined }); const _rc = { output: compactOutput(r.output, 4000) }; collapseToolOutput(_rc); const _rout = _rc.output; const _rd = diagnose(_rout, r.code, a.command); result = (r.code ? "exit " + r.code + "\n" : "") + _rout + diagAnnotate(_rd); log += "\n$ " + a.command + "\n" + r.output.slice(0, 1200); } }
       else { const dr = await deviceTool(name, a, cwd); if (dr && dr.__vision) delete dr.__vision; result = dr !== null ? (typeof dr === "object" ? JSON.stringify(dr) : String(dr)) : "error: unknown tool " + name; }
     } catch (e) { result = "error: " + e.message; }
     if (!(typeof result === "string" && result.startsWith("error: unknown tool"))) didTool = true;
@@ -2884,7 +2904,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     };
     const nexusLearn = (query, answer) => { if (learnMod) try { learnMod.learnFromInteraction(cwd, query, answer, {}); } catch (_) {} };
     // @path inlines a file's contents into the prompt sent to the engine (display keeps the @mention)
-    const inlineAts = (t) => t.replace(/(^|\s)@(?:"([^"]+)"|(\S+))/g, (m, pre, fq, fu) => { const f = fq || fu; try { const c = fs.readFileSync(path.resolve(cwd, f), "utf8"); return pre + "\n\n--- " + f + " ---\n" + c.slice(0, 6000) + "\n--- end " + f + " ---\n"; } catch (_) { return m; } });
+    const inlineAts = (t) => t.replace(/(^|\s)@(?:"([^"]+)"|(\S+))/g, (m, pre, fq, fu) => { const f = fq || fu; try { const c = fs.readFileSync(path.resolve(cwd, f), "utf8"); if (c.length <= 6000) fileGuard.recordRead(path.resolve(cwd, f), c); return pre + "\n\n--- " + f + " ---\n" + c.slice(0, 6000) + "\n--- end " + f + " ---\n"; } catch (_) { return m; } });
     // !cmd runs a shell command directly (Claude-Code-style passthrough); output shown inline
     // ! bash escape. Output is shown to the user AND buffered (bangLog) so the
     // next prompt carries it into the model's context — like Claude Code's bash
@@ -3263,7 +3283,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         }
         if (m.role === "diff") {
           const W = cols() - 3;
-          const raw = String(m.text).replace(/\r/g, "").split("\n");
+          const raw = sanitizeTerm(String(m.text).replace(/\r/g, ""), true).split("\n"); // repo file text: escapes would also throw off the width math
           let k = 0;
           while (k < raw.length) {
             const ln = raw[k];
@@ -3998,7 +4018,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           let base = {}; for (const f of ["opencode.json", "opencode.jsonc"]) { try { base = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, f), "utf8"))); break; } catch (_) {} }
           obj = toOpencodeConfig(servers, base); fname = "opencode.json";
         } else { // claude-style { mcpServers } (gemini's system-overrides settings file — gemini merges it, so only 'nexus' is added)
-          obj = { mcpServers: servers }; fname = ".gemini-settings.json";
+          obj = { mcpServers: toGeminiServers(servers) }; fname = ".gemini-settings.json";
         }
         const p = writeEngineConfigFile(path.join(cwd, ".nexus"), fname, obj);
         return (p && m.mcpEnvVar) ? { env: { [m.mcpEnvVar]: p } } : undefined;
@@ -4465,17 +4485,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               const act = isExecTool(name) ? { type: "run", command: execCommand(name, a) }
                 : ["http_fetch", "web_fetch", "fetch_url", "http"].includes(name) ? { type: "fetch" }
                 : name === "write_file" ? { type: "write", path: a.path }
+                : ["browser_screenshot", "browser_shot"].includes(name) ? { type: "write", path: a.path || a.file }
                 : (name === "edit_file" || name === "multi_edit" || name === "multiedit") ? { type: "edit", path: a.path }
                 : (name === "apply_patch" || name === "patch") ? { type: "edit" }
                 : name === "undo_edit" ? { type: "edit", path: a.path }
                 : ["notebook_edit", "notebook", "ipynb"].includes(name) && !/^(read|view|show)$/i.test(String(a.op || a.action || "read")) ? { type: "edit", path: a.path || a.file || a.notebook } // it writes the .ipynb: protected paths, file limit, audit and undo apply
                 : name === "replace_in_files" && !(a.dry_run === true || a.preview === true) ? { type: "edit" }
-                : ["delete", "delete_file", "rm"].includes(name) ? { type: "delete", path: a.path }
-                : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a.to || a.dest || a.path, from: a.from }
+                : ["delete", "delete_file", "rm"].includes(name) ? { type: "delete", path: a.path || a.file, cwd }
+                : ["move", "move_file", "rename", "copy", "copy_file"].includes(name) ? { type: "move", path: a.to || a.dest || a.destination || a.path, from: a.from || a.src || a.source }
                 : null;
               if (act) {
                 let pc = policyCheck(policy, act);
-                if (pc.allow && act.from) pc = policyCheck(policy, { type: "move", path: act.from }); // a protected file can't be moved/copied away either
+                if (pc.allow && act.from) pc = policyCheck(policy, { type: "move", path: act.from, cwd }); // a protected file can't be moved/copied away either
                 if (!pc.allow) { result = { error: "BLOCKED by policy: " + pc.reason + (pc.approval ? " — needs approval (edit .nexus/policy.json or run it yourself with !)" : "") }; blocked = true; card.status = "err"; transcript.push({ role: "system", text: "policy blocked " + name + " — " + pc.reason }); if (policy.audit) auditLog(cwd, { engine, tool: name, path: act.path, cmd: act.command, status: "blocked", reason: pc.reason }); }
                 else if ((act.type === "write" || act.type === "edit") && policy.maxFilesPerTurn > 0 && filesThisTurn >= policy.maxFilesPerTurn) { result = { error: "BLOCKED by policy: reached the " + policy.maxFilesPerTurn + "-file-per-turn limit" }; blocked = true; card.status = "err"; }
               }
@@ -4507,11 +4528,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               else if (name === "undo_edit") { const fp = path.resolve(cwd, a.path || ""); result = editUndo.undo(fp, { force: !!a.force }); if (result.ok) { try { fileGuard.recordWrite(fp, fs.readFileSync(fp, "utf8")); } catch (_) { fileGuard.forget(fp); } } } // the restored content is what the agent now knows, or its next write_file is refused as "changed on disk"
               else if (name === "list_dir") result = require("./lib/nexus/fs-tools").listDirTool(a, cwd, (p) => Jail.assertInJail(p == null ? "." : p, cwd));
               else if (name === "write_file") { const fp = path.resolve(cwd, a.path); let _disk = null; try { _disk = fs.readFileSync(fp, "utf8"); } catch (_) {} const _st = fileGuard.checkOverwrite(fp, _disk); if (_st.stale && !(a.force || a.overwrite)) { result = { error: _st.reason }; transcript.push({ role: "system", text: "stale-write blocked: " + a.path + " changed on disk since Nexus last read it" }); } else { const sec = scanSecrets(a.content); if (policy.blockSecrets && sec.length) { result = { error: "BLOCKED by policy: file contains " + sec.join(", ") + " — secret writes are disabled (policy.blockSecrets)" }; transcript.push({ role: "system", text: "policy blocked write to " + a.path + " — contains " + sec.join(", ") }); if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.path, status: "blocked", reason: "secret:" + sec.join("/") }); } else { fs.mkdirSync(path.dirname(fp), { recursive: true }); const _w = a.content == null ? "" : a.content; fs.writeFileSync(fp, _w); delete readCache[fp]; fileGuard.recordWrite(fp, _w); invalidateRepoMap(); result = sec.length ? { ok: true, warning: "Nexus flagged possible secret(s) in this file: " + sec.join(", ") + " — review before committing" } : { ok: true }; if (sec.length) transcript.push({ role: "system", text: "security warning: " + a.path + " may contain " + sec.join(", ") + " — Nexus wrote it but flagged it" }); } } }
-              else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); const _rd = readEditable(fp, a.path); if (_rd.error) throw new Error(_rd.error); const t = _rd.text; const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]); const _sec = (r.ok && policy.blockSecrets) ? scanSecrets(String(a.replace == null ? "" : a.replace)) : []; if (!r.ok) result = { error: r.error }; else if (_sec.length) { result = { error: "BLOCKED by policy: edit would introduce " + _sec.join(", ") }; blocked = true; } else if (r.content === t) { result = { ok: true, note: "no change — find and replace are identical, nothing was written" }; } else { fs.writeFileSync(fp, r.content); delete readCache[fp]; fileGuard.recordWrite(fp, r.content); invalidateRepoMap(); result = Object.assign({ ok: true }, changedRegion(t, r.content) || {}); if (r.applied[0] && r.applied[0].mode === "flexible") result.note = r.applied[0].fixed ? "matched after dropping the " + r.applied[0].fixed + " your find carried (the file has none) - check the lines above" : "matched ignoring whitespace/indentation — the change was re-indented to fit; check the lines above"; } }
-              else if (name === "multi_edit" || name === "multiedit") { const fp = path.resolve(cwd, a.path); const _rd = readEditable(fp, a.path), t = _rd.error ? null : _rd.text; if (t == null) result = { error: _rd.error }; else { const edits = (a.edits || a.changes || []).map((e) => ({ find: e.find || e.old || e.search, replace: e.replace == null ? (e.new == null ? "" : e.new) : e.replace, replaceAll: e.replace_all || e.replaceAll })); const r = applyEditsFlexible(t, edits); if (!r.ok) result = { error: r.error }; else { const sec = policy.blockSecrets ? scanSecrets(edits.map((e) => String(e.replace == null ? "" : e.replace)).join("\n")) : []; /* only the NEW text — a secret-shaped value already in the file is not introduced by this edit */ if (sec.length) { result = { error: "BLOCKED by policy: edit would introduce " + sec.join(", ") }; blocked = true; } else if (r.content === t) { result = { ok: true, note: "no change — every edit was a no-op, nothing was written" }; } else { fs.writeFileSync(fp, r.content); delete readCache[fp]; fileGuard.recordWrite(fp, r.content); invalidateRepoMap(); result = Object.assign({ ok: true, edits: r.applied.length, flexible: r.applied.filter((x) => x.mode === "flexible").length }, changedRegion(t, r.content, 16) || {}); } } } }
-              else if (name === "apply_patch" || name === "patch") { const diff = a.patch || a.diff || a.content || a.input || ""; const filesP = parsePatch(diff); if (!filesP.length) result = { error: "no hunks parsed from the patch (need a unified diff with @@ hunks, or a *** Begin Patch envelope)" }; else { let failed = null; const planW = []; for (const f of filesP) { if (!f.file) { failed = "a hunk had no target file (need --- a/path / +++ b/path headers)"; break; } const rp = path.resolve(cwd, f.file); const rel = path.relative(cwd, rp); if (rel.startsWith("..") || path.isAbsolute(rel) || !Jail.resolveInJail(f.file, cwd).inside) { failed = f.file + ": path escapes the workspace"; break; } const pc = policyCheck(policy, { type: "edit", path: f.file }); if (!pc.allow) { failed = f.file + ": blocked by policy — " + pc.reason; break; } if (f.op === "delete" || f.op === "move") { failed = f.file + ": the patch " + (f.op === "delete" ? "deletes this file" : "moves it to " + f.to) + " - apply_patch only edits and creates files; use " + (f.op === "delete" ? "delete{path}" : "move{from,to} first, then patch the new path") + " (nothing was applied)"; break; } let cont = ""; if (fs.existsSync(rp)) { const _rd = readEditable(rp, f.file); if (_rd.error) { failed = f.file + ": " + _rd.error; break; } cont = _rd.text; } const ap = f.op === "add" ? (cont ? { ok: false, error: "already exists, but the patch creates it as a new file (*** Add File or --- /dev/null) - send update hunks instead" } : { ok: true, content: f.hunks.length ? f.hunks[0].after.join("\n") + (f.hunks[0].noEol ? "" : "\n") : "" }) : applyHunks(cont, f.hunks); if (!ap.ok) { failed = f.file + ": " + ap.error; break; } if (policy.blockSecrets) { const added = f.hunks.map((h) => { const had = new Set(h.before); return h.after.filter((l) => !had.has(l)).join("\n"); }).join("\n"); const _ps = scanSecrets(added); if (_ps.length) { failed = f.file + ": patch would introduce " + _ps.join(", "); break; } } /* only ADDED lines — an existing secret-shaped value is not introduced by this patch */ planW.push({ rp, file: f.file, content: ap.content, before: cont }); } if (failed) { result = { error: failed }; if (/blocked by policy|secret/.test(failed)) { blocked = true; } } else { for (const p of planW) { fs.mkdirSync(path.dirname(p.rp), { recursive: true }); fs.writeFileSync(p.rp, p.content); delete readCache[p.rp]; fileGuard.recordWrite(p.rp, p.content); stat.files.add(base(p.file)); const rr = relOf(p.file); if (rr) stat.paths.add(rr); } invalidateRepoMap(); result = { ok: true, files: planW.map((p) => p.file) }; if (planW.length === 1) Object.assign(result, changedRegion(planW[0].before, planW[0].content, 16) || {}); else { result.changed = {}; for (const p of planW) { const cr = changedRegion(p.before, p.content); if (cr) result.changed[p.file] = "lines " + cr.lines; } } } } }
-              else if (name === "run_command") { const r = await coderShell(a.command, cwd, { ctl, timeoutMs: a.timeout_s ? +a.timeout_s * 1000 : undefined, onData: (d) => Tail.pushTail(card.live || Object.defineProperty(card, "live", { value: Tail.createTail(), configurable: true }).live, d) /* non-enumerable: never written to session.json */ }); delete card.live; const _out = compactOutput(r.output, lean ? 2000 : (trimOutput ? 4000 : 1e9)); const _d = diagnose(_out, r.code, a.command); result = { code: r.code, output: _out + diagAnnotate(_d) }; if (_d) result.diagnosis = _d.category; }
-              else if (name === "run_background") { if (!a.command || typeof a.command !== "string") { result = { error: "run_background needs a non-empty command string" }; } else { const p = _cp.spawn(process.platform === "win32" ? "cmd" : "sh", process.platform === "win32" ? ["/c", a.command] : ["-c", a.command], { cwd, env: process.env, detached: process.platform !== "win32" }); const id = bgJobs.start(a.command, p, Date.now()); /* own process group → stop kills the whole tree (npm → node), not just sh */ p.stdout && p.stdout.on("data", (d) => bgJobs.append(id, d)); p.stderr && p.stderr.on("data", (d) => bgJobs.append(id, d)); p.on("close", (code, sig) => bgJobs.finish(id, code, sig)); p.on("error", (e) => { bgJobs.append(id, "spawn error: " + e.message); bgJobs.finish(id, 1); }); result = { ok: true, jobId: id, status: "running", hint: "poll it with check_background{id:'" + id + "'}, stop it with stop_background{id:'" + id + "'}" }; } }
+              else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); if (fs.existsSync(fp) && !fileGuard.hasSeen(fp)) throw new Error(unreadEditError(a.path)); const _rd = readEditable(fp, a.path); if (_rd.error) throw new Error(_rd.error); const t = _rd.text; const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]); const _sec = (r.ok && policy.blockSecrets) ? scanSecrets(String(a.replace == null ? "" : a.replace)) : []; if (!r.ok) result = { error: r.error }; else if (_sec.length) { result = { error: "BLOCKED by policy: edit would introduce " + _sec.join(", ") }; blocked = true; } else if (r.content === t) { result = { ok: true, note: "no change — find and replace are identical, nothing was written" }; } else { fs.writeFileSync(fp, r.content); delete readCache[fp]; fileGuard.recordWrite(fp, r.content); invalidateRepoMap(); result = Object.assign({ ok: true }, changedRegion(t, r.content) || {}); if (r.applied[0] && r.applied[0].mode === "flexible") result.note = r.applied[0].fixed ? "matched after dropping the " + r.applied[0].fixed + " your find carried (the file has none) - check the lines above" : "matched ignoring whitespace/indentation — the change was re-indented to fit; check the lines above"; } }
+              else if (name === "multi_edit" || name === "multiedit") { const fp = path.resolve(cwd, a.path); if (fs.existsSync(fp) && !fileGuard.hasSeen(fp)) throw new Error(unreadEditError(a.path)); const _rd = readEditable(fp, a.path), t = _rd.error ? null : _rd.text; if (t == null) result = { error: _rd.error }; else { const edits = (a.edits || a.changes || []).map((e) => ({ find: e.find || e.old || e.search, replace: e.replace == null ? (e.new == null ? "" : e.new) : e.replace, replaceAll: e.replace_all || e.replaceAll })); const r = applyEditsFlexible(t, edits); if (!r.ok) result = { error: r.error }; else { const sec = policy.blockSecrets ? scanSecrets(edits.map((e) => String(e.replace == null ? "" : e.replace)).join("\n")) : []; /* only the NEW text — a secret-shaped value already in the file is not introduced by this edit */ if (sec.length) { result = { error: "BLOCKED by policy: edit would introduce " + sec.join(", ") }; blocked = true; } else if (r.content === t) { result = { ok: true, note: "no change — every edit was a no-op, nothing was written" }; } else { fs.writeFileSync(fp, r.content); delete readCache[fp]; fileGuard.recordWrite(fp, r.content); invalidateRepoMap(); result = Object.assign({ ok: true, edits: r.applied.length, flexible: r.applied.filter((x) => x.mode === "flexible").length }, changedRegion(t, r.content, 16) || {}); } } } }
+              else if (name === "apply_patch" || name === "patch") { const diff = a.patch || a.diff || a.content || a.input || ""; const filesP = parsePatch(diff); if (!filesP.length) result = { error: "no hunks parsed from the patch (need a unified diff with @@ hunks, or a *** Begin Patch envelope)" }; else { let failed = null; const planW = []; for (const f of filesP) { if (!f.file) { failed = "a hunk had no target file (need --- a/path / +++ b/path headers)"; break; } const rp = path.resolve(cwd, f.file); const rel = path.relative(cwd, rp); if (rel.startsWith("..") || path.isAbsolute(rel) || !Jail.resolveInJail(f.file, cwd).inside) { failed = f.file + ": path escapes the workspace"; break; } const pc = policyCheck(policy, { type: "edit", path: f.file }); if (!pc.allow) { failed = f.file + ": blocked by policy — " + pc.reason; break; } if (f.op === "delete" || f.op === "move") { failed = f.file + ": the patch " + (f.op === "delete" ? "deletes this file" : "moves it to " + f.to) + " - apply_patch only edits and creates files; use " + (f.op === "delete" ? "delete{path}" : "move{from,to} first, then patch the new path") + " (nothing was applied)"; break; } let cont = ""; if (fs.existsSync(rp)) { if (f.op !== "add" && !fileGuard.hasSeen(rp)) { failed = f.file + ": " + unreadEditError(f.file); break; } const _rd = readEditable(rp, f.file); if (_rd.error) { failed = f.file + ": " + _rd.error; break; } cont = _rd.text; } const ap = f.op === "add" ? (cont ? { ok: false, error: "already exists, but the patch creates it as a new file (*** Add File or --- /dev/null) - send update hunks instead" } : { ok: true, content: f.hunks.length ? f.hunks[0].after.join("\n") + (f.hunks[0].noEol ? "" : "\n") : "" }) : applyHunks(cont, f.hunks); if (!ap.ok) { failed = f.file + ": " + ap.error; break; } if (policy.blockSecrets) { const added = f.hunks.map((h) => { const had = new Set(h.before); return h.after.filter((l) => !had.has(l)).join("\n"); }).join("\n"); const _ps = scanSecrets(added); if (_ps.length) { failed = f.file + ": patch would introduce " + _ps.join(", "); break; } } /* only ADDED lines — an existing secret-shaped value is not introduced by this patch */ planW.push({ rp, file: f.file, content: ap.content, before: cont }); } if (failed) { result = { error: failed }; if (/blocked by policy|secret/.test(failed)) { blocked = true; } } else { for (const p of planW) { fs.mkdirSync(path.dirname(p.rp), { recursive: true }); fs.writeFileSync(p.rp, p.content); delete readCache[p.rp]; fileGuard.recordWrite(p.rp, p.content); stat.files.add(base(p.file)); const rr = relOf(p.file); if (rr) stat.paths.add(rr); } invalidateRepoMap(); result = { ok: true, files: planW.map((p) => p.file) }; if (planW.length === 1) Object.assign(result, changedRegion(planW[0].before, planW[0].content, 16) || {}); else { result.changed = {}; for (const p of planW) { const cr = changedRegion(p.before, p.content); if (cr) result.changed[p.file] = "lines " + cr.lines; } } } } }
+              else if (name === "run_command") { const r = await coderShell(a.command, cwd, { ctl, timeoutMs: (require("./lib/nexus/wait-for").parseSecs(a.timeout_s) * 1000) || undefined, onData: (d) => Tail.pushTail(card.live || Object.defineProperty(card, "live", { value: Tail.createTail(), configurable: true }).live, d) /* non-enumerable: never written to session.json */ }); delete card.live; const _out = compactOutput(r.output, lean ? 2000 : (trimOutput ? 4000 : 1e9)); const _d = diagnose(_out, r.code, a.command); result = { code: r.code, output: _out + diagAnnotate(_d) }; if (_d) result.diagnosis = _d.category; }
+              else if (name === "run_background") { if (!a.command || typeof a.command !== "string") { result = { error: "run_background needs a non-empty command string" }; } else { const p = _cp.spawn(process.platform === "win32" ? "cmd" : "sh", process.platform === "win32" ? ["/c", a.command] : ["-c", a.command], { cwd, env: process.env, detached: process.platform !== "win32" }); const id = bgJobs.start(a.command, p, Date.now()); /* own process group → stop kills the whole tree (npm → node), not just sh */ p.stdout && p.stdout.setEncoding("utf8"); p.stderr && p.stderr.setEncoding("utf8"); /* a multi-byte char split across chunks became two U+FFFD */ p.stdout && p.stdout.on("data", (d) => bgJobs.append(id, d)); p.stderr && p.stderr.on("data", (d) => bgJobs.append(id, d)); p.on("close", (code, sig) => bgJobs.finish(id, code, sig)); p.on("error", (e) => { bgJobs.append(id, "spawn error: " + e.message); bgJobs.finish(id, 1); }); result = { ok: true, jobId: id, status: "running", hint: "poll it with check_background{id:'" + id + "'}, stop it with stop_background{id:'" + id + "'}" }; } }
               else if (name === "check_background") { if (a.id || a.job) { a.id = a.id || a.job; const j = bgJobs.get(a.id); if (!j) result = { error: "no such job " + a.id + bgJobs.known() }; else if (a.full) { result = { id: j.id, status: j.status, code: j.code, output: compactOutput(collapseRepeats(bgJobs.tail(a.id, 6000)).text, 4000) }; bgJobs.readNew(a.id); } else {
                 // only what the agent hasn't seen yet — re-sending the same tail on every poll is pure waste
                 const nw = bgJobs.readNew(a.id); const txt = compactOutput(collapseRepeats(nw.text).text, 4000);
@@ -4533,7 +4554,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               }
               else if (name === "stop_background") { const _k = bgJobs.key(a.id || a.job); const _j = _k && bgJobs.get(_k); if (!_j) result = { error: (a.id || a.job ? "no such job " + (a.id || a.job) : "stop_background needs a job id") + bgJobs.known() }; else { const _was = _j.status; bgJobs.stop(_k); result = _was === "running" ? { ok: true, stopped: _k, note: "killed with its child processes" } : { ok: true, stopped: _k, note: "it had already " + (_was === "done" ? "exited (code " + _j.code + ")" : _was) }; } }
               else if (name === "spawn_agents") { const tasks = (a.tasks || []).map(String).filter(Boolean).slice(0, 8); const actls = tasks.map(() => makeCtl()); const regs = tasks.map((tk, i) => addAgent(tk, { native: engine !== "claude", engine, ctl: actls[i] })); render(); const outs = await runSubagents(engine, tasks, cwd, mdl, (i, phase, out) => { if (phase === "done" && regs[i].status === "run") finishAgent(regs[i], /^error:/.test(String(out || "")) ? "fail" : "ok", out); render(); }, ctl, undefined, actls); regs.forEach((rg, i) => { if (rg.status === "run") finishAgent(rg, "ok", outs[i]); }); result = { agents: outs.map((o2, i) => ({ task: tasks[i], result: (o2 || "").slice(0, 1500) })) }; }
-              else if (String(name).startsWith("mcp__")) { const srv = mcpServers.find((s) => !s.error && String(name).slice(5).startsWith(s.name + "__")); if (!srv) result = { error: "MCP tool not connected: " + name }; else { const tool = String(name).slice(5 + srv.name.length + 2); const r = await srv.call("tools/call", { name: tool, arguments: a }, 600000); /* 20 s is the handshake limit; a real tool (browser, query, build) can take minutes */ result = { content: resultText((r && r.content) || r) }; } }
+              else if (String(name).startsWith("mcp__")) { const srv = mcpServers.find((s) => !s.error && String(name).slice(5).startsWith(s.name + "__")); if (!srv) result = { error: "MCP tool not connected: " + name }; else { const tool = String(name).slice(5 + srv.name.length + 2); const r = await srv.call("tools/call", { name: tool, arguments: a }, 600000); /* 20 s is the handshake limit; a real tool (browser, query, build) can take minutes */ result = r && r.isError ? { error: resultText(r.content || "MCP tool failed") } : { content: resultText((r && r.content) || r) }; } } // isError: the tool ran and failed - the model must not read it as a success
               else if (name === "discover") { result = { tools: discoverTools(a.query || a.q || "", TOOL_CATALOG.concat(mcpToolList().map((m) => [m.full, m.desc]))) }; }
               else if (name === "repo_map" || name === "repomap" || name === "map") { const rm = getRepoMap({ fresh: !!a.fresh }); result = rm && rm.map ? { map: rm.text, files: rm.map.fileCount, symbols: rm.map.symbolCount } : { error: "could not build a repo map here" }; }
               else if (name === "find_symbol" || name === "symbol" || name === "goto") { const rm = getRepoMap(); const q = a.name || a.symbol || a.query || a.q || ""; const hits = rm && rm.map ? findSymbol(rm.map, q, { limit: 20 }) : []; result = hits.length ? { symbol: q, definitions: hits } : { symbol: q, definitions: [], note: "no definition found in the repo map — try search{pattern} for usages" }; }
@@ -4883,7 +4904,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         for (let att = 1; att <= 5 && !(ctl && ctl.stopped); att++) {
           attempts = att;
           const rc = { type: "tool", id: "wr" + att, name: "Bash", label: "Bash(" + oneline(command, 40) + ")", status: "run", start: Date.now() }; block.items.push(rc); render();
-          const r = await coderShell(command, cwd); rc.status = r.code === 0 ? "ok" : "err"; rc.end = Date.now(); rc.detail = oneline(r.output, 260); render();
+          const r = await coderShell(command, cwd, { ctl }); rc.status = r.code === 0 ? "ok" : "err"; // ctl: Esc stops a hung attempt now, not after the 120s timeout rc.end = Date.now(); rc.detail = oneline(r.output, 260); render();
+          if (ctl && ctl.stopped) break;
           if (r.code === 0) { const t = ensureText(block); t.full += (t.full ? "\n" : "") + "command passed on attempt " + att + "."; passed = true; break; }
           if (att === 5) break;
           const t = ensureText(block); t.full += (t.full ? "\n" : "") + "attempt " + att + " failed — asking " + engine + " to fix…"; render();
