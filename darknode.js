@@ -4322,7 +4322,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const outById = new Map(); let estOut = 0, shownLive = 0, anyDelta = false, anonUse = 0;
       const setLive = () => { let c = 0; for (const v of outById.values()) c += v; shownLive = Math.max(shownLive, c + estOut); sess.liveOut = shownLive; };
       const bumpLive = (t) => { estOut += Math.ceil(t.length / 4); setLive(); };
-      const _resumeSid = (engine === "claude" && oneShotRan && claudeSid) ? claudeSid : undefined; // recover the tracked session if a one-shot (/btw, /dream…) ran since the last turn
+      const _resumeSid = (engine === "claude" && claudeSid) ? claudeSid : undefined; // always resume OUR session by id: bare --continue takes the folder's newest Claude session (a one-shot, or the user's own `claude` run)
       oneShotRan = false;
       if (engine === "claude") {
         runClaudeStream(promptText, cwd, cont, {
@@ -5258,7 +5258,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const rwPaths = [...new Set(checkpoints.slice(idx).flatMap((c) => c.paths || []))]; /* every file a turn from here on changed, not just this turn's: otherwise later turns' files stay at their newest version */ const ok = nexusRestore(cwd, ck.tree, rwPaths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + (rwPaths.length ? rwPaths.length + " file(s) Nexus changed since" : "nothing (no file Nexus tracked changed since)") + keptNote()) : "rewind failed (git error)" }); } } }
       else if (cmd === "/clear" || cmd === "/new") {
         const hasContent = oMsgs.length > 1 || transcript.some((m) => m.role === "user" || m.role === "nexus");
-        const doClear = () => { clearPending = false; transcript.length = 0; transcript.push({ role: "art" }); cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; cacheWarm.lastAt = 0; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); render(); };
+        const doClear = () => { clearPending = false; transcript.length = 0; transcript.push({ role: "art" }); cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; cacheWarm.lastAt = 0; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); saveSession(); /* else quitting now restores the cleared chat on next launch */ render(); };
         if (!hasContent) doClear(); // nothing to lose — just reset
         else askUser("Clear the whole conversation? This wipes the chat and the model's memory of it.", ["Keep it", "Clear everything"]).then((ans) => {
           if (!ans.cancelled && ans.index === 1) doClear();
@@ -6078,7 +6078,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         locals = locals || [];
         const opts = [];
         // switching AI starts a fresh conversation + resets the cost/context meters (like /engine)
-        const reset = () => { sess.userModel = false; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; oMsgs.length = 1; };
+        const reset = () => { sess.userModel = false; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; oMsgs.length = 1; saveSession(); };
         locals.forEach((m) => opts.push({ name: m, note: "local · free", paid: false, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = CTXW.ollama || 32768; reset(); } }));
         if (hasAnthropic()) ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"].forEach((m) => opts.push({ name: m, note: "Claude · API — BILLED to your Anthropic key", paid: true, apply: () => { delete process.env.DARKNODE_API_BASE; engine = "ollama"; sess.model = m; sess.ctxWindow = 200000; reset(); } }));
         if (API_BASE()) opts.push({ name: (sess.model && sess.model !== engine && !/^claude/i.test(sess.model) ? sess.model : "api-model"), note: API_BASE() + " · likely billed", paid: true, apply: () => { engine = "ollama"; if (!sess.model || /^claude/i.test(sess.model) || sess.model === engine) sess.model = ""; reset(); } });
@@ -6101,7 +6101,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         else if (offline && ENGINES[arg].kind !== "local") transcript.push({ role: "system", text: "offline lock is ON — cloud engines are blocked. Turn it off with /offline first." });
         else if (!engineAvail(arg)) transcript.push({ role: "system", text: "'" + arg + "' (" + ENGINES[arg].label + ") isn't installed — install its CLI, then /engine " + arg });
         else if (arg === engine) transcript.push({ role: "system", text: "already on " + arg + " (" + ENGINES[arg].label + ") — /clear starts a fresh conversation" });
-        else { engine = arg; sess.model = arg; sess.userModel = false; sess.ctxWindow = CTXW[arg] || 200000; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; oMsgs.length = 1; transcript.push({ role: "system", text: "engine switched to " + arg + " (" + ENGINES[arg].label + ") — cost meter now tracks " + (PAID[arg] ? arg + " (billed)" : arg + " (local · free)") + "; fresh conversation" }); }
+        else { engine = arg; sess.model = arg; sess.userModel = false; sess.ctxWindow = CTXW[arg] || 200000; sess.inTok = 0; sess.outTok = 0; sess.cost = 0; sess.ctxUsed = 0; warned50 = false; cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; oMsgs.length = 1; saveSession(); transcript.push({ role: "system", text: "engine switched to " + arg + " (" + ENGINES[arg].label + ") — cost meter now tracks " + (PAID[arg] ? arg + " (billed)" : arg + " (local · free)") + "; fresh conversation" }); }
       }
       else if (documentedVerbs().has(cmd.slice(1)) && !NEXUS_NO_BRIDGE.has(cmd.slice(1))) {
         // Bridge: run any documented `darknode <verb>` as an in-Nexus /command, so
