@@ -561,7 +561,7 @@ function labOne(id) {
 // Docker targets bind to 127.0.0.1 only (never exposed to the LAN). Metasploitable
 // is a VM, guided into a host-only, no-internet network. The sandbox is an air-
 // gapped detonation recipe for samples YOU supply — nothing malicious ships here.
-const LAB_TARGETS = {
+const LAB_TARGETS = { __proto__: null,
   "metasploitable": { kind: "vm", name: "Metasploitable 2", note: "the classic deliberately-vulnerable Linux VM (Rapid7)",
     url: "https://sourceforge.net/projects/metasploitable/files/Metasploitable2/" },
   "juice-shop": { kind: "docker", name: "OWASP Juice Shop", image: "bkimminich/juice-shop", port: 3000, hostPort: 3000, note: "modern vulnerable web app" },
@@ -1499,7 +1499,7 @@ function isChitchat(s) {
 }
 const { coderShell } = require("./lib/nexus/shell-run");
 // ---------- Nexus documentation (shared by `darknode docs` and the TUI /docs browser) ----------
-const NEXUS_DOCS = {
+const NEXUS_DOCS = { __proto__: null,
   overview: { title: "Overview", body:
     "Nexus is a terminal AI coding agent built into the Darknode CLI. It drives one of six\nengines from a single dependency-free binary:\n  claude    — the Claude Code CLI in the cloud (strongest; needs `claude` installed + logged in)\n  gemini · codex · opencode · aider — those vendors' CLIs, same interface\n  ollama    — a free, private, local model on your machine (needs Ollama)\n\nIt reads & writes files, runs commands, checkpoints every change, shows real token cost\nlive, saves tokens by delegating cheap work to a weaker/local model, and keeps secrets off\nthe cloud. Launch it with `darknode nexus --tui`. Type / inside for the command menu." },
   quickstart: { title: "Quick start", body:
