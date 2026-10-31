@@ -41,6 +41,11 @@ ok("emoji ZWJ sequence stays one 2-cell glyph", F.ansiWrap("\u{1F468}\u200d\u{1F
 const C = { underline: (x) => "<" + x + ">", gray: (x) => "{" + x + "}" };
 ok("link text after a stray [ is the inner text", M.linkify("x[b [t](https://a.b)", C) === "x[b <t>{ (https://a.b)}");
 
+// TODO scanning reads every file in a (possibly cloned) repo: a "#####..." banner line restarted #+ at each "#".
+const TD = require("../lib/nexus/todos.js");
+for (const ch of ["#", "/", ";"]) ok("todo scan on a 200k " + ch + " line", timed(() => TD.scanText(ch.repeat(200000) + "x", "a.js")) < 1000);
+ok("todo scan still reads ## and // markers", TD.scanText("## TODO: a\nx // FIXME b\n;; NOTE c", "a.py").map((t) => t.tag).join() === "TODO,FIXME,NOTE");
+
 require("fs").rmSync(tmp, { recursive: true, force: true });
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (hot-path speed)");
 process.exit(fail ? 1 : 0);
