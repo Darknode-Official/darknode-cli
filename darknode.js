@@ -58,6 +58,7 @@ const { renderMd } = require("./lib/cli/md-render");
 const { findLinks, openLink } = require("./lib/cli/links");
 const Tail = require("./lib/cli/tool-tail"); // live tail of a running command under its tool card
 const Pager = require("./lib/cli/pager");
+const { expandAts } = require("./lib/cli/at-mentions"); // @path → inlined file contents (TUI + line mode)
 const Branches = require("./lib/cli/branches"); // /branch files: what is saved, what a switch restores
 const { conversationText, exportMarkdown } = require("./lib/cli/convo-text"); // /find: the whole conversation (with tool output) as searchable text // /pager: read a whole tool output in-place (less-style keys + search) // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
 const { asText, sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
@@ -1714,7 +1715,7 @@ async function aiCoder(argv) {
       task = t;
     }
     // @path attaches a file's contents to the prompt (e.g. "fix the bug in @src/app.js")
-    const userMsg = task.replace(/(^|\s)@(\S+)/g, (m, pre, p) => { try { const c = fs.readFileSync(path.resolve(cwd, p), "utf8"); if (c.length <= (lean ? 3000 : 6000)) seenFiles.add(path.resolve(cwd, p)); return pre + "\n\n--- " + p + " ---\n" + c.slice(0, lean ? 3000 : 6000) + "\n--- end " + p + " ---\n"; } catch (_) { return m; } });
+    const userMsg = expandAts(task, { cwd, max: lean ? 3000 : 6000, onRead: (abs) => seenFiles.add(abs) });
     messages.push({ role: "user", content: userMsg }); task = "";
     if (!printMode) console.log(cyan("  ▎ ") + bold("nexus") + gray("  " + engine) + "\n");
     if (engine !== "ollama") {
@@ -2931,7 +2932,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     };
     const nexusLearn = (query, answer) => { if (learnMod) try { learnMod.learnFromInteraction(cwd, query, answer, {}); } catch (_) {} };
     // @path inlines a file's contents into the prompt sent to the engine (display keeps the @mention)
-    const inlineAts = (t) => t.replace(/(^|\s)@(?:"([^"]+)"|(\S+))/g, (m, pre, fq, fu) => { const f = fq || fu; try { const c = fs.readFileSync(path.resolve(cwd, f), "utf8"); if (c.length <= 6000) fileGuard.recordRead(path.resolve(cwd, f), c); return pre + "\n\n--- " + f + " ---\n" + c.slice(0, 6000) + "\n--- end " + f + " ---\n"; } catch (_) { return m; } });
+    const inlineAts = (t) => expandAts(t, { cwd, max: 6000, onRead: (abs, c) => fileGuard.recordRead(abs, c) }); // regular text files only; a cut file says so; "@a.js." still attaches
     // !cmd runs a shell command directly (Claude-Code-style passthrough); output shown inline
     // ! bash escape. Output is shown to the user AND buffered (bangLog) so the
     // next prompt carries it into the model's context — like Claude Code's bash
