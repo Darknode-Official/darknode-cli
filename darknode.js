@@ -130,18 +130,21 @@ function banner() {
   console.log("  " + gray("╰─ ") + dim("only what you own or are authorized to test.") + "\n");
 }
 const rl = () => readline.createInterface({ input: process.stdin, output: process.stdout });
-function ask(q) { return new Promise((res) => { const r = rl(); r.question(cyan("  " + q + " "), (a) => { r.close(); res(a.trim()); }); }); }
+let _piped = null; // stdin is a pipe or file: one shared reader, so queued lines are not lost between questions
+const pipedLine = () => { if (!_piped) _piped = require("./lib/cli/line-reader").makeLineReader(process.stdin); return _piped.next(); };
+function ask(q) {
+  if (!process.stdin.isTTY) { process.stdout.write(cyan("  " + q + " ")); return pipedLine().then((a) => { process.stdout.write("\n"); return a == null ? "" : a.trim(); }); }
+  return new Promise((res) => { const r = rl(); r.question(cyan("  " + q + " "), (a) => { r.close(); res(a.trim()); }); });
+}
 // Claude-Code-style bordered chat input box.
 function chatInput() {
   return new Promise((res) => {
     const W = 58;
     process.stdout.write(cyan("  ╭─ ") + gray("you") + cyan(" " + "─".repeat(W - 6) + "╮") + "\n");
+    const done = (a) => { process.stdout.write(cyan("  ╰" + "─".repeat(W) + "╯") + "\n\n"); res(a.trim()); };
+    if (!process.stdin.isTTY) { process.stdout.write(cyan("  │ ") + mag("› ")); pipedLine().then((a) => { if (a != null) process.stdout.write(a); process.stdout.write("\n"); done(a == null ? "/exit" : a); }); return; } // end of input ends the session
     const r = rl();
-    r.question(cyan("  │ ") + mag("› "), (a) => {
-      r.close();
-      process.stdout.write(cyan("  ╰" + "─".repeat(W) + "╯") + "\n\n");
-      res(a.trim());
-    });
+    r.question(cyan("  │ ") + mag("› "), (a) => { r.close(); done(a); });
   });
 }
 function h1(t) { console.log("\n  " + bold(cyan("▌ " + t)) + "\n"); }
