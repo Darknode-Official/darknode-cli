@@ -846,9 +846,9 @@ async function cli(args) {
       const portArg = rest.indexOf("--port"); const apiPort = portArg >= 0 ? parseInt(rest[portArg + 1], 10) || 8080 : 8080;
       const apiToken = process.env.SENTINEL_API_TOKEN || null;
       const { srv, port: p, token: t } = createAPIServer({ port: apiPort, token: apiToken });
-      srv.listen(apiPort, "0.0.0.0", () => {
-        h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://0.0.0.0:" + apiPort));
-        if (t) console.log("  token     " + bold(t)); else console.log("  " + yellow("no API key required (set DARKNODE_API_TOKEN to require one)"));
+      srv.listen(apiPort, "127.0.0.1", () => {
+        h1("Darknode API Server"); console.log("  " + green("listening ") + cyan("http://127.0.0.1:" + apiPort));
+        console.log("  token     " + bold(t) + gray("   (send as: X-API-Key: <token>)"));
         console.log("\n  " + gray("health  ") + "curl http://localhost:" + apiPort + "/health");
         console.log("  " + gray("scan    ") + "curl -s http://localhost:" + apiPort + "/api/v1/scan/url -H 'Content-Type: application/json' -d '{\"url\":\"https://target.com\"}'");
         console.log("\n  " + gray("Ctrl-C to stop"));
