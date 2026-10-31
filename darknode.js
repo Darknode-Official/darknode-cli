@@ -58,7 +58,8 @@ const { renderMd } = require("./lib/cli/md-render");
 const { findLinks, openLink } = require("./lib/cli/links");
 const Tail = require("./lib/cli/tool-tail"); // live tail of a running command under its tool card
 const Pager = require("./lib/cli/pager");
-const { noteText, addNote } = require("./lib/cli/notes"); // "#note" detection + ## Notes insertion
+const { noteText, addNote } = require("./lib/cli/notes");
+const { getSnippet, saveBody, expandSnippet } = require("./lib/cli/snippets"); // "#note" detection + ## Notes insertion
 const { expandAts } = require("./lib/cli/at-mentions"); // @path → inlined file contents (TUI + line mode)
 const Branches = require("./lib/cli/branches"); // /branch files: what is saved, what a switch restores
 const { conversationText, exportMarkdown } = require("./lib/cli/convo-text"); // /find: the whole conversation (with tool output) as searchable text // /pager: read a whole tool output in-place (less-style keys + search) // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
@@ -5810,10 +5811,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       else if (cmd === "/verify") { const cmds = detectVerify(); const kind = (arg || "").trim().toLowerCase(); const chosen = (kind && cmds[kind]) ? { kind, cmd: cmds[kind] } : pickVerify(cmds); if (!chosen) { transcript.push({ role: "system", text: "no test/build command detected here. Detected: " + (Object.keys(cmds).filter((k) => k !== "source" && k !== "pm").join(", ") || "none") }); } else { transcript.push({ role: "system", text: "verifying: " + chosen.cmd + "  (" + chosen.kind + ")…" }); render(); coderShell(chosen.cmd, cwd).then((r) => { transcript.push({ role: "system", text: (r.code === 0 ? green("✓ verify passed") : red("✗ verify failed (exit " + r.code + ")")) + "  " + chosen.cmd + "\n" + compactOutput(r.output, 4000) }); render(); }); } }
       else if (cmd === "/map") { const a2 = (arg || "").trim().toLowerCase(); if (a2 === "off") { repoMapOn = false; saveSetting("map", false); transcript.push({ role: "system", text: "repo map off — new sessions/turns won't be auto-oriented (turn back on with /map on). (saved)" }); } else if (a2 === "on") { repoMapOn = true; repoMapSent = false; saveSetting("map", true); transcript.push({ role: "system", text: "repo map on — the next turn will orient the agent with a ranked file+symbol map. (saved)" }); } else if (argstr) { const rm = rankedRepoMap(argstr, { fresh: true }); transcript.push({ role: "system", text: rm ? rm.text : "no source files found to map here." }); } else { const rm = getRepoMap({ fresh: true }); transcript.push({ role: "system", text: rm && rm.map && rm.map.fileCount ? rm.text : "no source files found to map here." }); } }
       else if (cmd === "/snippet" || cmd === "/snip") {
-        const sub = arg, name = argstr.split(/\s+/)[1], body = argstr.split(/\s+/).slice(2).join(" ");
-        if (sub === "save" && name && body) { snippets[name] = body; saveSnippets(); transcript.push({ role: "system", text: "saved snippet '" + name + "' — use it with /snippet " + name + " (or /snip)" }); }
-        else if ((sub === "del" || sub === "rm") && name) { if (snippets[name]) { delete snippets[name]; saveSnippets(); transcript.push({ role: "system", text: "deleted snippet '" + name + "'" }); } else transcript.push({ role: "system", text: "no snippet '" + name + "'" }); }
-        else if (sub && snippets[sub]) { const rest = argstr.split(/\s+/).slice(1).join(" "); submit(snippets[sub].replace(/\$ARGUMENTS/g, rest).replace(/\$(\d+)/g, (_, n) => rest.split(/\s+/)[+n - 1] || "")); }
+        const sub = arg, name = argstr.split(/\s+/)[1], body = saveBody(argstr);
+        if (sub === "save" && /^(save|del|rm|__proto__)$/.test(name || "")) transcript.push({ role: "system", text: "'" + name + "' is reserved — pick another snippet name" });
+        else if (sub === "save" && name && body) { snippets[name] = body; saveSnippets(); transcript.push({ role: "system", text: "saved snippet '" + name + "' — use it with /snippet " + name + " (or /snip)" }); }
+        else if ((sub === "del" || sub === "rm") && name) { if (getSnippet(snippets, name) !== null) { delete snippets[name]; saveSnippets(); transcript.push({ role: "system", text: "deleted snippet '" + name + "'" }); } else transcript.push({ role: "system", text: "no snippet '" + name + "'" }); }
+        else if (getSnippet(snippets, sub) !== null) { submit(expandSnippet(getSnippet(snippets, sub), argstr.replace(/^\s*\S+/, ""))); }
         else transcript.push({ role: "system", text: "usage:  /snippet save <name> <text…>   ·   /snippet <name> [args]   ·   /snippet del <name>   ·   /snippets to list" }); }
       else if (cmd === "/snippets") { const ks = Object.keys(snippets); transcript.push({ role: "system", text: ks.length ? ("saved snippets:\n" + ks.map((k) => "  " + k + "  " + gray(oneline(snippets[k], 50))).join("\n")) : "no snippets yet — /snippet save <name> <text>" }); }
       else if (cmd === "/codereview" || cmd === "/code-review") codeReview(argstr);
