@@ -2028,6 +2028,7 @@ function nexusRestore(cwd, tree, paths) {
   try {
     const path = require("path"), fs = require("fs");
     if (!paths || !paths.length) return true; // never full-clobber the tree — only restore files Nexus recorded changing
+    if (!tree) return false; // no snapshot: every path would read as "created" and be deleted
     const commit = tree; // files come straight from the snapshot tree: no commit, so it works without a git user.name/email
     const present = [], created = [];
     for (const p of paths) { try { _cp.execFileSync("git", ["cat-file", "-e", commit + ":./" + p], { cwd, stdio: "ignore" }); present.push(p); } catch (_) { created.push(p); } }
@@ -2038,13 +2039,29 @@ function nexusRestore(cwd, tree, paths) {
     // A git-ignored file is never in a snapshot (git add -A skips it), so its absence does not mean the turn
     // created it: a pre-existing .env.local or config the turn edited would be deleted. Keep those and report them.
     const kept = [];
-    if (created.length) { const r = _cp.spawnSync("git", ["check-ignore", "--"].concat(created), { cwd, encoding: "utf8" }); for (const l of String(r.stdout || "").split("\n")) if (l) kept.push(l); }
+    // A file outside the repo (../x, ~/.bashrc) or inside a nested repo is never in the snapshot either, and
+    // check-ignore errors on the first one, so nothing kept them: /undo deleted a file the turn had only edited.
+    const outside = created.filter((p) => !inSnapshotScope(cwd, p)); kept.push(...outside);
+    const inScope = created.filter((p) => !outside.includes(p));
+    if (inScope.length) { const r = _cp.spawnSync("git", ["check-ignore", "--"].concat(inScope), { cwd, encoding: "utf8" }); for (const l of String(r.stdout || "").split("\n")) if (l) kept.push(l); }
     for (const p of created) { if (kept.includes(p)) continue; try { fs.rmSync(path.resolve(cwd, p), { force: true }); } catch (_) {} } // files the turn created → remove them on undo
     nexusRestore.kept = kept;
     return true;
   } catch (_) { return false; }
 }
-const keptNote = () => { const k = nexusRestore.kept || []; return k.length ? " — left " + k.slice(0, 3).join(", ") + (k.length > 3 ? " +" + (k.length - 3) + " more" : "") + " as is: git-ignored, so there is no earlier copy to restore" : ""; };
+// Would `git add -A` in cwd have snapshotted this (cwd-relative) path? Only if it is inside the repo's work
+// tree and no folder between it and the repo root is a nested repository (those are added as a gitlink, not files).
+function inSnapshotScope(cwd, p) {
+  const path = require("path"), fs = require("fs");
+  let top; try { top = _cp.execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch (_) { return false; }
+  try { top = fs.realpathSync(top); } catch (_) {}
+  let abs = path.resolve(cwd, p), dir = path.dirname(abs);
+  try { dir = fs.realpathSync(dir); abs = path.join(dir, path.basename(abs)); } catch (_) {}
+  if (!(abs + path.sep).startsWith(top + path.sep) || abs === top) return false;
+  for (let d = dir; d.length > top.length; d = path.dirname(d)) { if (fs.existsSync(path.join(d, ".git"))) return false; }
+  return true;
+}
+const keptNote = () => { const k = nexusRestore.kept || []; return k.length ? " — left " + k.slice(0, 3).join(", ") + (k.length > 3 ? " +" + (k.length - 3) + " more" : "") + " as is: git-ignored, outside the repo or in a nested repo, so there is no earlier copy to restore" : ""; };
 // ---------- Workspace trust ----------
 // A repo's .nexus/mcp.json (MCP servers) and hooks.json BOTH run commands, so merely
 // launching Nexus inside an untrusted clone could execute arbitrary code. We only honor

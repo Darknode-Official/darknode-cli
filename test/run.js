@@ -1636,7 +1636,7 @@ group("help reference (single source of truth)");
     ok("redo re-adds the checkpoint at the state before the turn, so /undo after /redo reverts again", /redoStack\.push\(\{ tree: nowTree, before: ck\.tree,/.test(src) && /checkpoints\.push\(\{ tree: r\.before \|\| r\.tree,/.test(src) && /if \(ok\) \{ redoStack\.pop\(\);/.test(src));
     {
       // functional: a turn that edits a pre-existing git-ignored file must not delete it on /undo
-      const fns = new Function("_cp", "require", src.match(/function nexusCheckpoint\(cwd\) \{[\s\S]*?\n\}\n/)[0] + src.match(/function nexusRestore\(cwd, tree, paths\) \{[\s\S]*?\n\}\n/)[0] + "return { nexusCheckpoint, nexusRestore };")(require("child_process"), require);
+      const fns = new Function("_cp", "require", src.match(/function nexusCheckpoint\(cwd\) \{[\s\S]*?\n\}\n/)[0] + src.match(/function nexusRestore\(cwd, tree, paths\) \{[\s\S]*?\n\}\n/)[0] + src.match(/function inSnapshotScope\(cwd, p\) \{[\s\S]*?\n\}\n/)[0] + "return { nexusCheckpoint, nexusRestore };")(require("child_process"), require);
       const fsx = require("fs"), px = require("path"), d = fsx.mkdtempSync(px.join(require("os").tmpdir(), "nx-undo-"));
       const g = (...a) => require("child_process").execFileSync("git", a, { cwd: d, stdio: "ignore" });
       g("init", "-q"); fsx.writeFileSync(px.join(d, ".gitignore"), "local.cfg\n"); fsx.writeFileSync(px.join(d, "a.txt"), "a\n");
