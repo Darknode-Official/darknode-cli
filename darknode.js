@@ -2955,7 +2955,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // ---- NEXUS logo (gradient) + slash-command menu ----
     // Each theme = a 6-stop logo/boot gradient + an accent hue that recolors the
     // whole UI (prompt, borders, highlights) by rebinding A.cyan, the de-facto accent.
-    const THEMES = {
+    const THEMES = { __proto__: null, // null prototypes: "/theme toString" must not find a theme
       aurora: { grad: ["38;5;51", "38;5;45", "38;5;81", "38;5;75", "38;5;135", "38;5;171"], accent: "38;5;51" },
       matrix: { grad: ["38;5;46", "38;5;40", "38;5;34", "38;5;28", "38;5;40", "38;5;46"], accent: "38;5;46" },
       sunset: { grad: ["38;5;226", "38;5;220", "38;5;214", "38;5;208", "38;5;202", "38;5;196"], accent: "38;5;208" },
@@ -2976,7 +2976,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // (independent of a full /theme). colorCode() also accepts a 0-255 code or
     // #rrggbb (truecolor). Both overrides persist to state.json and are restored
     // AFTER the theme below, so they win over the theme's own accent/gradient.
-    const COLORS = { red: "38;5;196", orange: "38;5;208", amber: "38;5;214", yellow: "38;5;226", gold: "38;5;220", lime: "38;5;118", green: "38;5;46", teal: "38;5;44", cyan: "38;5;51", sky: "38;5;117", blue: "38;5;39", indigo: "38;5;63", violet: "38;5;135", purple: "38;5;129", magenta: "38;5;201", pink: "38;5;213", rose: "38;5;211", white: "38;5;252", gray: "38;5;245" };
+    const COLORS = { __proto__: null, red: "38;5;196", orange: "38;5;208", amber: "38;5;214", yellow: "38;5;226", gold: "38;5;220", lime: "38;5;118", green: "38;5;46", teal: "38;5;44", cyan: "38;5;51", sky: "38;5;117", blue: "38;5;39", indigo: "38;5;63", violet: "38;5;135", purple: "38;5;129", magenta: "38;5;201", pink: "38;5;213", rose: "38;5;211", white: "38;5;252", gray: "38;5;245" };
     const colorCode = (v) => { if (!v) return null; if (COLORS[v]) return COLORS[v]; if (/^\d{1,3}$/.test(v) && +v <= 255) return "38;5;" + v; const h = v.replace(/^#/, ""); if (/^[0-9a-fA-F]{6}$/.test(h)) return "38;2;" + parseInt(h.slice(0, 2), 16) + ";" + parseInt(h.slice(2, 4), 16) + ";" + parseInt(h.slice(4, 6), 16); return null; };
     const setAccent = (code) => { A.cyan = "\x1b[" + code + "m"; };
     try { const st = readGlobal("state.json", {}) || {}; if (st.accent) setAccent(st.accent); if (Array.isArray(st.gradient) && st.gradient.length) GRAD = st.gradient; } catch (_) {}
@@ -5674,7 +5674,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       else if (cmd === "/mode") {
         const a2 = (arg || "").trim().toLowerCase();
         const effOk = engineCap(engine, "effort");
-        const PRESETS = {
+        const PRESETS = { __proto__: null,
           power: { desc: "maximum capability — most powerful settings this model supports", eff: effOk ? "max" : null, lean: false, minimizeCalls: false, stepCap: false, trimOutput: false, map: true, autoCompact: false },
           cost:  { desc: "lowest spend — trims tokens hard", eff: effOk ? "low" : null, lean: true, minimizeCalls: true, stepCap: true, trimOutput: true, map: false, autoCompact: true },
           speed: { desc: "fastest turns — less thinking, fewer tool round-trips", eff: effOk ? "low" : null, lean: true, minimizeCalls: true, stepCap: true, trimOutput: false, map: true, autoCompact: false },
