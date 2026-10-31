@@ -5,6 +5,7 @@
 // 12s per call (cubic) and a log with 30k blank lines hung the turn.
 const S = require("../lib/governance/security.js"), R = require("../lib/nexus/redact.js");
 let pass = 0, fail = 0;
+const tmp = require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "nx-sg-"));
 const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log("  \x1b[31mFAIL\x1b[0m " + name); } };
 const timed = (fn) => { const t = Date.now(); fn(); return Date.now() - t; };
 
@@ -23,5 +24,12 @@ const r = R.redact(doc, "k").text;
 ok("redact keeps blank lines and CRLF", /kv-secret:0000\]\n\n\nnext: 1\r\n/.test(r) && !r.includes("s3cr3t!9x"));
 ok("indented YAML list item still caught", S.scanSecrets("items:\n  - api_key: q9w8e7r6t5\n").length > 0);
 
+// The syntax gate runs on every JS file the agent writes; its ESM sniff had the same ^\s* (6s on
+// 100k blank lines) plus a lazy import...from scan that restarted at every "import" line.
+const G = require("../lib/nexus/syntax-gate.js");
+for (const [k, s] of Object.entries({ newlines: "\n".repeat(200000) + "x;", importLines: "import x\n".repeat(50000) }))
+  ok("syntax gate " + k, timed(() => G.check(require("path").join(tmp, "a.js"), s)) < 3000);
+
+require("fs").rmSync(tmp, { recursive: true, force: true });
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (redaction speed)");
 process.exit(fail ? 1 : 0);
