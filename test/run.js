@@ -858,6 +858,8 @@ group("render helpers (frameDiff + wordHi) — the trickiest pure algorithms");
   let wrapParity = true; for (let w = 4; w <= 60; w += 3) if (JSON.stringify(ansiWrap(prose, w)) !== JSON.stringify(oldWrap(prose, w))) wrapParity = false;
   ok("ansiWrap matches the plain wrapper on prose at every width", wrapParity);
   ok("sanitizeTerm keeps SGR colour", sanitizeTerm("a\x1b[31mb\x1b[0m") === "a\x1b[31mb\x1b[0m");
+  ok("sanitizeTerm drops SGR 8 conceal so untrusted text cannot hide a line", sanitizeTerm("a\x1b[8mhid\x1b[0m") === "ahid\x1b[0m" && sanitizeTerm("\x1b[1;8;31mx") === "\x1b[1;31mx" && sanitizeTerm("\x1b[38;5;8;8mx") === "\x1b[38;5;8mx");
+  ok("sanitizeTerm keeps an 8 that is a colour argument", sanitizeTerm("\x1b[38;5;8mx") === "\x1b[38;5;8mx" && sanitizeTerm("\x1b[48;2;8;8;8mx") === "\x1b[48;2;8;8;8mx");
   ok("sanitizeTerm drops clears, cursor moves, OSC title/hyperlinks, C0/C1", sanitizeTerm("x\x1b[2J\x1b[5;1H\x1b]0;t\x07\x1b]8;;u\x1b\\y\r\b\x07\x9bz") === "xyz");
   ok("sanitizeTerm keepNl keeps newlines/tabs, otherwise flattens them", sanitizeTerm("a\nb\tc", true) === "a\nb\tc" && sanitizeTerm("a\nb\tc") === "a b  c");
   { const fam = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u{1F1FA}\u{1F1F8}"; const rows = ansiWrap(fam.repeat(12), 20); ok("ansiWrap keeps ZWJ emoji + flag pairs whole and charges their real width", rows.join("") === fam.repeat(12) && rows.every((r) => !/\u200D$/.test(r) && visLen(r) <= 20) && visLen(rows[0]) === 20); }
