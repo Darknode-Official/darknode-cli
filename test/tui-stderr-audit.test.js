@@ -11,7 +11,7 @@ const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
 const leaks = [];
 const files = ["darknode.js", "lib/nexus/invariants.js", "lib/nexus/code-diff-explain.js", "lib/nexus/code-review-auto.js"]; // TUI-run helpers too
 for (const f of files) fs.readFileSync(path.join(__dirname, "..", f), "utf8").split("\n").forEach((line, i) => {
-  for (const m of line.matchAll(/execSync\(/g)) {
+  for (const m of line.matchAll(/exec(?:File)?Sync\(/g)) {
     const seg = line.slice(m.index, m.index + 400);
     const call = seg.slice(0, (seg.indexOf("})") + 2) || seg.length);
     if (!/stdio/.test(call) && !/2>\/dev\/null/.test(call)) leaks.push(f + ":" + (i + 1) + ": " + call.slice(0, 90));

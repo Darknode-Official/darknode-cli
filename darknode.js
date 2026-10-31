@@ -4985,7 +4985,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       let branch = "", diff = "", base = "main";
       try { branch = _cp.execSync("git rev-parse --abbrev-ref HEAD", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch (_) { transcript.push({ role: "system", text: "/pr needs a git repo" }); render(); return; }
       try { base = (_cp.execSync("git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p'", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()) || "main"; } catch (_) {}
-      try { diff = _cp.execFileSync("git", ["-c", "color.ui=never", "diff", base + "...HEAD"], { cwd, encoding: "utf8" }); } catch (_) {}
+      try { diff = _cp.execFileSync("git", ["-c", "color.ui=never", "diff", base + "...HEAD"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); } catch (_) {}
       if (!diff.trim()) { try { diff = _cp.execSync("git -c color.ui=never diff HEAD", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); } catch (_) {} }
       if (!diff.trim()) { transcript.push({ role: "system", text: "no changes to open a PR for — commit or make changes first" }); render(); return; }
       transcript.push({ role: "user", text: "/pr" });
