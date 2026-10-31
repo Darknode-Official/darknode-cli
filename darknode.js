@@ -86,6 +86,7 @@ const { totp, secondsRemaining } = require("./lib/toolkit/totp"); // TOTP 2FA co
 const { SERVICES } = require("./lib/toolkit/ports"); // port<->service map, used by scan (lib/ports.js)
 const { digests, genPass } = require("./lib/toolkit/hashing"); // hash digests + password gen (lib/hashing.js)
 const { COMMAND_GROUPS, renderCommands, documentedVerbs, nearestCommands, nearestFlag } = require("./lib/cli/reference"); // help catalog = single source of truth (lib/reference.js)
+const CmdHelp = require("./lib/cli/command-help"); // per-command usage + examples: `/help <cmd>` cards + shared usage lines
 // Documented darknode verbs NOT bridged into the Nexus TUI as /commands: they
 // block (server/listener), prompt for input, or already have a richer in-TUI
 // handler. Everything else documented becomes a slash command automatically.
@@ -5153,13 +5154,20 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const clearWasPending = clearPending; if (cmd !== "/clear" && cmd !== "/new") clearPending = false;
       if (aliases[cmd] && !builtinNames().has(cmd)) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") { if (_aliasDepth >= 5) { transcript.push({ role: "system", text: "alias " + cmd + " loops back on itself (aliases calling aliases more than 5 deep) — fix it with /alias" }); return; } _aliasDepth++; try { handleSlash(body.trim()); } finally { _aliasDepth--; } } else submit(body.trim()); return; }
       if (customCmds[cmd]) { let body = customCmds[cmd].body.replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); submit(body); return; }
-      if (cmd === "/help" && argstr.trim()) { // /help <word>: every command, key and guide line that mentions it (same search as /docs)
-        const q = argstr.trim(), hits = NexusDocs.search(nexusRef(), q);
-        transcript.push({ role: "system", dismissable: true, text: hits.length ? bold("help — \"" + q + "\"") + "\n\n" + hits.map((h) => /^## /.test(h) ? cyan(h.slice(3)) : "  " + h.replace(/^- /, "").replace(/`([^`]+)`/g, (_, c) => cyan(c))).join("\n") : "no help mentions \"" + q + "\" — /help lists every command, / searches them by name" });
+      if (cmd === "/help" && argstr.trim()) { // /help <word>: an exact command → its usage card; otherwise search every command, key & guide line (same search as /docs)
+        const q = argstr.trim();
+        const hit = CmdHelp.resolve(q.split(/\s+/)[0], builtinNames());
+        if (hit) {
+          const row = allCmds().find((c) => c[0] === hit);
+          transcript.push({ role: "system", dismissable: true, text: CmdHelp.card(hit, row ? row[1] : "", { name: (t) => bold(cyan(t)), head: (t) => gray(t), dim: gray, flag: cyan }) });
+        } else {
+          const hits = NexusDocs.search(nexusRef(), q);
+          transcript.push({ role: "system", dismissable: true, text: hits.length ? bold("help — \"" + q + "\"") + "\n\n" + hits.map((h) => /^## /.test(h) ? cyan(h.slice(3)) : "  " + h.replace(/^- /, "").replace(/`([^`]+)`/g, (_, c) => cyan(c))).join("\n") : "no command or help text matches \"" + q + "\" — /help lists every command, / searches them by name" });
+        }
       }
       else if (cmd === "/help") {
         const HS = HELP_SECTIONS;
-        transcript.push({ role: "system", dismissable: true, lines: helpLines(HS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }).concat(["", gray("  " + allCmds().length + " commands in total — type / to search them, or /keys for shortcuts."), gray("  (Esc closes this)")]) });
+        transcript.push({ role: "system", dismissable: true, lines: helpLines(HS, cols() - 4, { heading: (t) => bold(cyan(t)), name: (t) => cyan(t), desc: gray }).concat(["", gray("  " + allCmds().length + " commands in total — type / to search them, " + cyan("/help <command>") + gray(" for its usage & examples, or /keys for shortcuts.")), gray("  (Esc closes this)")]) });
       }
 
       else if (cmd === "/commands") { const ks = Object.keys(customCmds); transcript.push({ role: "system", text: ks.length ? ("custom commands (from .nexus/commands or .claude/commands):\n" + ks.map((k) => "  " + k + "  " + customCmds[k].desc.replace(/ \(custom\)$/, "")).join("\n")) : "no custom commands yet — add a file like .nexus/commands/review.md, then use /review" }); }
@@ -6192,7 +6200,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           child.on("error", (e) => { blk.text = "failed to run `darknode " + verb + "`: " + (e && e.message || e); render(); });
         } catch (e) { blk.text = "failed: " + (e && e.message || e); render(); }
       }
-      else { const near = (fuzzyCmds(cmd) || []).slice(0, 3).map((c) => c[0]); transcript.push({ role: "system", text: "unknown command '" + cmd + "'" + (near.length ? " — did you mean " + near.map((n) => cyan(n)).join(gray(", ")) + "?" : "") + gray("   (/help lists them all)") }); }
+      else { const near = (fuzzyCmds(cmd) || []).slice(0, 3).map((c) => c[0]); transcript.push({ role: "system", text: "unknown command '" + cmd + "'" + (near.length ? " — did you mean " + near.map((n) => cyan(n)).join(gray(", ")) + "?" + gray("  (/help " + near[0].replace(/^\//, "") + " for its usage)") : gray("   (/help lists them all)")) }); }
     };
     // ---- input / keys ----
     const setMouse = (on) => { mouseOn = on; try { out.write(on ? ESC + "[?1000h" + ESC + "[?1006h" : ESC + "[?1000l" + ESC + "[?1006l"); } catch (_) {} };
