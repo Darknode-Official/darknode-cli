@@ -1468,13 +1468,16 @@ function normalizeToolCall(o) {
     let parsed = null;
     if (raw.startsWith("{")) { try { parsed = JSON.parse(raw); } catch (_) {} }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { name, a: parsed };
+    if (raw.startsWith("[")) { try { parsed = JSON.parse(raw); } catch (_) {} } // a JSON-encoded list (todo_write / spawn_agents) — same mapping as a real array
+    if (Array.isArray(parsed)) return { name, a: { [name === "spawn_agents" ? "tasks" : name === "todo_write" ? "todos" : "items"]: parsed } };
+    const unq = (v) => /^(["'])(?:(?!\1)[\s\S])*\1$/.test(v) ? v.slice(1, -1) : v; // strip ONE matching pair around the whole value — not a lone closing quote that belongs to the command (echo "a")
     const kv = raw.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*([\s\S]+)$/);
     const key1 = kv ? kv[1].toLowerCase() : "";
     // only treat "word: value" as a key/value pair when the key is THIS tool's arg key
     // (or the tool has no fixed key) — otherwise a command like "find: /etc" for
     // run_command would wrongly land under `find` instead of `command`.
-    if (kv && (key1 === TOOL_ARGKEY[name] || (!TOOL_ARGKEY[name] && KNOWN_ARGKEYS.has(key1)))) a[key1] = kv[2].trim().replace(/^["']|["']$/g, "");
-    else a[TOOL_ARGKEY[name] || "value"] = raw.replace(/^["']|["']$/g, "");
+    if (kv && (key1 === TOOL_ARGKEY[name] || (!TOOL_ARGKEY[name] && KNOWN_ARGKEYS.has(key1)))) a[key1] = unq(kv[2].trim());
+    else a[TOOL_ARGKEY[name] || "value"] = unq(raw);
   }
   return { name, a };
 }
@@ -2281,6 +2284,7 @@ const { explainDiff } = require("./lib/nexus/code-diff-explain"); // semantic di
 const { generateTests } = require("./lib/nexus/smart-test"); // structure-aware test scaffolder
 const { MCP_CATALOG, catalogGet, isBundled, bundledSpecs, addServerToConfig, removeServerFromConfig } = require("./lib/nexus/mcp-catalog"); // one-command + bundled MCP servers (lib/mcp-catalog.js)
 const { fitWindow, squeezeContext, cacheKey, cacheGet, cachePut, cacheClear, cacheStats, supersedeReread, collapseToolOutput, createToolMemo, collapseRepeats } = require("./lib/nexus/costsave"); // extra cost savers (lib/costsave.js)
+const LocalLoop = require("./lib/nexus/local-loop"); // observation cap + /compact keep-tail for the local loop
 const CACHE_TTL = 24 * 3600 * 1000; // response-cache entries expire after 24h
 const { TAGS: TODO_TAGS, scanTree: scanTodos, summarizeTodos, rankTodos } = require("./lib/nexus/todos"); // tech-debt marker scanner (lib/nexus/todos.js)
 const { summarizeStats, rankedLangs, scanStats } = require("./lib/nexus/codestats"); // codebase overview (lib/nexus/codestats.js)
@@ -2485,7 +2489,7 @@ function formatToolLines(name, res) {
 const { priceOf, costOf, usageBuckets, pricingTable, PRICING_SOURCE, PRICING_CHECKED, isMechanical, shouldDelegate } = require("./lib/nexus/pricing"); // cost model (lib/pricing.js)
 // Darknode preflight — classify a shell command's destructive intent (inspired by common
 // Darknode guard: names the matched rule, covers pipe-to-shell + fork bombs, 3 levels).
-const { oneline, extractJson, completePath } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
+const { oneline, extractJson, completePath, parseUsd, isIsoSince } = require("./lib/cli/text"); // pure text helpers (lib/text.js)
 async function planGoal(engine, model, goal, memory) {
   const prompt = "Break the GOAL into 5-15 concrete verifiable tasks. Return ONLY a JSON array of short task strings.\n\nGOAL: " + goal + (memory ? "\nCONTEXT:\n" + memory : "");
   let text;
@@ -4080,11 +4084,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); // reads older than the kept tail are gone from context — reset the dedup cache + file-snapshot index so they never reference pruned (re-indexed) messages
         if (engine === "ollama") {
           // keep the system message + the last few exchanges, with the summary in front of them
-          const sys = oMsgs[0]; const tail = oMsgs.length > (lean ? 5 : 7) ? oMsgs.slice(lean ? -4 : -6) : oMsgs.slice(1);
-          oMsgs.length = 0; oMsgs.push(sys);
-          if (summary) oMsgs.push({ role: "user", content: "[Earlier conversation was compacted. Summary of what happened so far:]\n" + summary }, { role: "assistant", content: "Understood — continuing from that summary." });
-          oMsgs.push(...tail);
-          sess.ctxUsed = oMsgs.reduce((n, m) => n + Math.ceil((typeof m.content === "string" ? m.content.length : JSON.stringify(m.content || "").length) / 4), 0);
+          // (after /resume the history is still queued in localReplay, not in oMsgs — compact that instead)
+          const src = localReplay.length ? [oMsgs[0]].concat(localReplay) : oMsgs;
+          const sys = oMsgs[0]; const tail = LocalLoop.compactTail(src, lean ? 4 : 6); // never starts on a tool result whose call was dropped
+          const head = summary ? [{ role: "user", content: "[Earlier conversation was compacted. Summary of what happened so far:]\n" + summary }, { role: "assistant", content: "Understood — continuing from that summary." }] : [];
+          if (localReplay.length) localReplay = head.concat(tail);
+          else { oMsgs.length = 0; oMsgs.push(sys, ...head, ...tail); }
+          sess.ctxUsed = oMsgs.concat(localReplay).reduce((n, m) => n + Math.ceil((typeof m.content === "string" ? m.content.length : JSON.stringify(m.content || "").length) / 4), 0);
         } else if (PAID[engine]) {
           // Claude keeps its context server-side, so drop --continue and seed the
           // next turn with the summary — that is what makes the compaction real.
@@ -4103,9 +4109,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             const r = await runClaudeStream(COMPACT_PROMPT, cwd, cont, { onText: (t) => { compact.tok += Math.ceil(t.length / 4); } }, c.ctl, { resume: claudeSid || undefined, readonly: true, disallow: READONLY_TOOLS, maxTurns: 1 });
             oneShotRan = true;
             if (r && r.ok && (r.output || "").trim()) summary = r.output.trim();
-          } else if (engine === "ollama" && oMsgs.length > 2) {
+          } else if (engine === "ollama" && (oMsgs.length > 2 || localReplay.length)) {
             const mdl = (sess.model && sess.model !== engine) ? sess.model : pickCoderModel(await ollamaTags());
-            const msgs = oMsgs.map((m) => ({ role: m.role === "tool" ? "user" : m.role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") }));
+            const msgs = (localReplay.length ? [oMsgs[0]].concat(localReplay) : oMsgs).map((m) => ({ role: m.role === "tool" ? "user" : m.role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") }));
             summary = String(await ollamaChat(mdl, msgs.concat([{ role: "user", content: COMPACT_PROMPT }]), undefined, aSignal(c.ctl)) || "").trim();
             compact.tok = Math.ceil(summary.length / 4);
           }
@@ -4461,7 +4467,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             const _ctx = { action: o.action }; if (o.tool) _ctx.tool = o.tool; if (o.args) _ctx.args = o.args; if (o.final) _ctx.final = o.final;
             oMsgs.push({ role: "assistant", content: JSON.stringify(_ctx) });
             if (o.thought) { const t = textItem(); t.full += (t.full ? "\n" : "") + o.thought; renderSoon(); }
-            if (o.action === "final") { if (!didTool && !isChitchat(promptText) && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = textItem(); t.full += (t.full ? "\n\n" : "") + o.final; } break; }
+            if (o.action === "final") { if (!didTool && !isChitchat(promptText) && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = textItem(); t.full += (t.full ? "\n\n" : "") + (typeof o.final === "string" ? o.final : JSON.stringify(o.final, null, 2)); } break; }
             const { name, a } = normalizeToolCall(o);
             if (!name) { if (PR.missingTool(o, oMsgs, protoSt).stop) { textItem().full += (textItem().full ? "\n" : "") + PR.GAVE_UP; break; } continue; } // action "tool" with no tool name
             protoSt.bad = 0;
@@ -4622,7 +4628,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             if (a.__act && !blocked) { if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.__act.path, cmd: a.__act.command, status: result && result.error ? "error" : "ok" }); if ((a.__act.type === "write" || a.__act.type === "edit") && result && !result.error) filesThisTurn++; }
             let _obsRes = result; // what the MODEL gets; the card keeps the full output for you
             if (!blocked && result && typeof result === "object") { const _c = Object.assign({}, result), _sv = collapseToolOutput(_c); if (_sv) { impact.repeatTok += _sv; _obsRes = _c; } } // identical lines → 1 + count, counting runs → first/last + exact step, node-internal frames → count (costsave.js)
-            let obs = JSON.stringify(_obsRes).slice(0, 14000);
+            let obs = LocalLoop.capObservation(_obsRes, 14000); // cut inside the longest field and say so (a bare slice dropped read_file's continue-offset note silently)
             { const ptr = toolMemo.lookup(name, a, obs, oMsgs); if (ptr) { impact.memoTok += Math.ceil((obs.length - ptr.length) / 4); obs = ptr; } } // same read-only call, nothing changed → point at the earlier copy
             oMsgs.push({ role: "tool", content: obs }); sess.inTok += Math.ceil(obs.length / 4);
             // Lossless context compression: a FRESH full read of a file makes any
@@ -5382,14 +5388,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         out.push(gray("  Batch API: 50% off input and output. US-only inference (inference_geo: \"us\"): 1.1x on every category."));
         transcript.push({ role: "system", text: out.join("\n") });
       }
-      else if (cmd === "/budget") { const v = parseFloat(arg); if (arg && !isNaN(v) && v > 0) { costCap = v; saveSetting("budgetCap", v); transcript.push({ role: "system", text: "budget cap set to $" + v.toFixed(2) + " — turns pause when session cost reaches it (saved)" }); } else if (arg === "off" || arg === "0") { costCap = 0; saveSetting("budgetCap", 0); transcript.push({ role: "system", text: "budget cap removed (unlimited) — no --max-budget-usd is sent (saved)" }); } else transcript.push({ role: "system", text: (arg ? "" : (costCap > 0 ? "budget cap: $" + costCap.toFixed(2) + " per session\n" : "budget cap: off (unlimited)\n")) + "usage: /budget <usd>  (e.g. /budget 5.00, or /budget off)" }); }
-      else if (cmd === "/report") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet" + (since ? " since " + since : "") + " (.nexus/usage.jsonl fills up as you run turns)" }); } else { const s = summarize(recs); if (parts[0] === "json") transcript.push({ role: "system", text: JSON.stringify(s, null, 2) }); else { const rep = renderReport(s, { project: path.basename(cwd) }); if (parts[0] === "save") { try { const f = path.join(cwd, ".nexus", "usage-report.md"); fs.writeFileSync(f, "```\n" + rep + "\n```\n"); transcript.push({ role: "system", text: "saved usage report to " + f }); } catch (e) { transcript.push({ role: "system", text: "could not save report: " + (e && e.message || e) }); } } else transcript.push({ role: "system", text: rep + "\n\n  /report json · /report save · /report since 2026-08-01 · headless: darknode report" }); } } }
+      else if (cmd === "/budget") { const v = parseUsd(arg); if (arg && !isNaN(v) && v > 0) { costCap = v; saveSetting("budgetCap", v); transcript.push({ role: "system", text: "budget cap set to $" + v.toFixed(2) + " — turns pause when session cost reaches it (saved)" }); } else if (arg === "off" || v === 0) { costCap = 0; saveSetting("budgetCap", 0); transcript.push({ role: "system", text: "budget cap removed (unlimited) — no --max-budget-usd is sent (saved)" }); } else transcript.push({ role: "system", text: (arg ? "" : (costCap > 0 ? "budget cap: $" + costCap.toFixed(2) + " per session\n" : "budget cap: off (unlimited)\n")) + "usage: /budget <usd>  (e.g. /budget 5.00, or /budget off)" }); }
+      else if (cmd === "/report") { const parts = argstr.split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; if (si >= 0 && !isIsoSince(since)) { transcript.push({ role: "system", text: "usage: /report since <date>  — an ISO date like 2026-08-01 (or 2026-08)" }); render(); return; } const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet" + (since ? " since " + since : "") + " (.nexus/usage.jsonl fills up as you run turns)" }); } else { const s = summarize(recs); if (parts[0] === "json") transcript.push({ role: "system", text: JSON.stringify(s, null, 2) }); else { const rep = renderReport(s, { project: path.basename(cwd) }); if (parts[0] === "save") { try { const f = path.join(cwd, ".nexus", "usage-report.md"); fs.writeFileSync(f, "```\n" + rep + "\n```\n"); transcript.push({ role: "system", text: "saved usage report to " + f }); } catch (e) { transcript.push({ role: "system", text: "could not save report: " + (e && e.message || e) }); } } else transcript.push({ role: "system", text: rep + "\n\n  /report json · /report save · /report since 2026-08-01 · headless: darknode report" }); } } }
       else if (cmd === "/docs") {
         let txt = nexusDocsText(argstr);
         if (argstr && /^no doc topic/.test(stripA(txt))) { const hits = NexusDocs.search(nexusRef(), argstr); txt = hits.length ? bold("Nexus docs — \"" + argstr + "\"") + "\n\n" + hits.map((h) => /^## /.test(h) ? cyan(h.slice(3)) : "  " + h).join("\n") : txt; } // not a topic → search every command, key and guide
         transcript.push({ role: "system", text: txt });
       }
-      else if (cmd === "/savings" || cmd === "/impact") { const parts = (arg || "").trim().split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet — the savings analysis needs some Nexus turns in .nexus/usage.jsonl first" }); } else { const a = analyzeSavings(recs); transcript.push({ role: "system", text: (parts[0] === "json" ? JSON.stringify(a, null, 2) : renderSavings(a, { project: path.basename(cwd) }) + "\n\n  headless: darknode savings") }); } }
+      else if (cmd === "/savings" || cmd === "/impact") { const parts = argstr.split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; if (si >= 0 && !isIsoSince(since)) { transcript.push({ role: "system", text: "usage: " + cmd + " since <date>  — an ISO date like 2026-08-01 (or 2026-08)" }); render(); return; } const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet — the savings analysis needs some Nexus turns in .nexus/usage.jsonl first" }); } else { const a = analyzeSavings(recs); transcript.push({ role: "system", text: (parts[0] === "json" ? JSON.stringify(a, null, 2) : renderSavings(a, { project: path.basename(cwd) }) + "\n\n  headless: darknode savings") }); } }
       else if (cmd === "/compliance") { try { const key = process.env.DARKNODE_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (DARKNODE_SIGNING_KEY)" : "\n  tip: set DARKNODE_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: darknode compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
       else if (cmd === "/undo") { if (!checkpoints.length) transcript.push({ role: "system", text: "nothing to undo (no checkpoints this session, or not a git repo)" }); else { const ck = checkpoints[checkpoints.length - 1]; const nowTree = nexusCheckpoint(cwd); const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.pop(); if (ok && nowTree) redoStack.push({ tree: nowTree, before: ck.tree, label: ck.label, paths: ck.paths }); transcript.push({ role: "system", text: ok ? ("undid \"" + ck.label + "\" — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed this turn (unrelated edits untouched)" : "nothing (that turn changed no file Nexus tracked)") + keptNote() + (nowTree ? " (/redo to reapply)" : " (no redo: the current state could not be snapshotted)")) : "undo failed (git error) — nothing changed; the checkpoint is kept, so /undo can be retried" }); } }
       else if (cmd === "/redo") { const r = redoStack[redoStack.length - 1]; if (!r) transcript.push({ role: "system", text: "nothing to redo" }); else { const ok = nexusRestore(cwd, r.tree, r.paths); if (ok) { redoStack.pop(); checkpoints.push({ tree: r.before || r.tree, label: r.label, ts: Date.now(), paths: r.paths }); } /* the checkpoint holds the state BEFORE the turn, so a later /undo reverts it again */ transcript.push({ role: "system", text: ok ? ("redid — reapplied the changes from \"" + r.label + "\"") : "redo failed (git error)" }); } }
@@ -5525,10 +5531,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         if (parts.length) {
           const key = GOV[parts[0].toLowerCase()];
           if (!key) transcript.push({ role: "system", text: "unknown setting '" + parts[0] + "'. Governed (off by default): budget · autoCompact · minimizeCalls · stepCap · trimOutput · cache · map · lean. Usage: /settings <key> on|off  (budget takes a number)" });
-          else if (parts[1] && (key === "budgetCap" ? !(/^off$/i.test(parts[1]) || parseFloat(parts[1]) >= 0) : !/^(on|off)$/i.test(parts[1]))) transcript.push({ role: "system", text: "invalid value '" + parts[1] + "' for " + key + " — nothing changed. Usage: " + (key === "budgetCap" ? "/settings budget <usd>|off" : "/settings " + key + " [on|off]  (no value toggles)") });
+          else if (parts[1] && (key === "budgetCap" ? !(/^off$/i.test(parts[1]) || parseUsd(parts[1]) >= 0) : !/^(on|off)$/i.test(parts[1]))) transcript.push({ role: "system", text: "invalid value '" + parts[1] + "' for " + key + " — nothing changed. Usage: " + (key === "budgetCap" ? "/settings budget <usd>|off" : "/settings " + key + " [on|off]  (no value toggles)") });
           else {
             let nv; const raw = (parts[1] || "").toLowerCase();
-            if (key === "budgetCap") { const n = parseFloat(parts[1]); nv = (raw === "off" || n === 0 || isNaN(n)) ? 0 : n; costCap = nv; }
+            if (key === "budgetCap") { const n = parseUsd(parts[1]); nv = (raw === "off" || n === 0 || isNaN(n)) ? 0 : n; costCap = nv; }
             else { nv = raw === "on" ? true : raw === "off" ? false : key === "recap" ? !autoRecap : !settingsStore.get(key); }
             if (key === "recap") autoRecap = nv; else if (key === "autoCompact") autoCompact = nv; else if (key === "minimizeCalls") minimizeCalls = nv; else if (key === "stepCap") stepCap = nv; else if (key === "trimOutput") trimOutput = nv; else if (key === "cache") cacheOn = nv; else if (key === "map") { repoMapOn = nv; if (nv) repoMapSent = false; } else if (key === "lean") lean = nv;
             saveSetting(key, nv);
