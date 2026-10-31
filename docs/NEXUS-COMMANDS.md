@@ -77,7 +77,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/context` — show token / context usage (opens in the side panel)
 - `/cost` — session cost at exact list prices (opens in the side panel)
 - `/turns` — per-turn cost ledger for this session (opens in the side panel)
-- `/cheaper` — lossless ways to spend fewer tokens (opens in the side panel)
+- `/cheaper` — tips only: how this session could cost less, changes nothing (opens in the side panel)
 - `/warm` — prompt-cache countdown + warm-vs-cold follow-up cost (opens in the side panel)
 - `/tokens` — estimate what @-attaching a file/dir costs (opens in the side panel)
 - `/alias` — make a shortcut: /alias name = text|/cmd
@@ -151,7 +151,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/git` — branch, status & recent commits
 - `/blame` — who last changed a file's lines
 - `/cowork` — strong model codes, weak model does cheap work
-- `/cheap` — max token savings with ZERO quality loss (status · off)
+- `/cheap` — turn on every lossless token saver · /cheap status · /cheap off
 - `/tight` — surgical edits — change only what differs (lossless)
 - `/lean` — ask for minimal output (saves output tokens) · /lean on|off
 - `/style` — output style: concise·explanatory·review·tdd·secure·teacher
