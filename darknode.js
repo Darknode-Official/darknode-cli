@@ -1834,7 +1834,9 @@ function copyToClipboard(text, out) {
   if (process.env.SSH_TTY || process.env.SSH_CONNECTION) return "clipboard (terminal OSC-52)";
   const cands = process.platform === "darwin" ? [["pbcopy", []]]
     : process.platform === "win32" ? [["clip", []]]
-    : [["wl-copy", []], ["xclip", ["-selection", "clipboard"]], ["xsel", ["--clipboard", "--input"]]];
+    // wl-copy needs a Wayland session and xclip/xsel an X display (as the Ctrl+V reader already checks): one
+    // run outside its session exits with an error after spawn succeeded, so "copied" was reported, nothing copied
+    : [process.env.WAYLAND_DISPLAY && ["wl-copy", []], process.env.DISPLAY && ["xclip", ["-selection", "clipboard"]], process.env.DISPLAY && ["xsel", ["--clipboard", "--input"]]].filter(Boolean);
   for (const [bin, args] of cands) {
     if (!hasBin(bin)) continue;
     try { const p = _cp.spawn(bin, args, { stdio: ["pipe", "ignore", "ignore"] }); p.on("error", () => {}); p.stdin.end(text); return "clipboard"; } catch (_) {}
