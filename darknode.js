@@ -727,7 +727,7 @@ async function ipInfo(ip) {
     const d = await r.json();
     if (d.status !== "success") { console.log(red(d.message || "lookup failed")); return; }
     h1("IP " + d.query);
-    [["Location", [d.city, d.regionName, d.country].filter(Boolean).join(", ")], ["ISP", d.isp], ["Org", d.org], ["AS", d.as], ["Coords", d.lat + "," + d.lon], ["Timezone", d.timezone]].forEach(([k, v]) => v && console.log("  " + k.padEnd(10) + cyan(v)));
+    [["Location", [d.city, d.regionName, d.country].filter(Boolean).join(", ")], ["ISP", d.isp], ["Org", d.org], ["AS", d.as], ["Coords", d.lat + "," + d.lon], ["Timezone", d.timezone]].forEach(([k, v]) => v && console.log("  " + k.padEnd(10) + cyan(sanitizeTerm(String(v)))));
   } catch (e) { console.log(red("error: " + (e.name === "AbortError" ? "timed out" : e.message))); }
   finally { clearTimeout(t); }
 }
@@ -910,11 +910,11 @@ async function cliRun(args, gate) {
   if (Object.prototype.hasOwnProperty.call(CMD_MAP, cmd)) { console.log(CMD_MAP[cmd].run({ rest, c: { red, green, yellow, cyan, gray, bold } })); }
   else if (cmd === "pentest") { await require("./lib/nexus/pentest-engine").startPentest(rest[0] || null, { reportDir: process.cwd() }); process.exit(0); } // HYDRA; the TUI's /pentest runs this in its own process
   else if (cmd === "scan") { const host = rest[0]; if (!host) return usage(); await scan(host, parsePorts(rest[1])); }
-  else if (cmd === "dns") { const recs = await dnsLookup(rest[0] || ""); recs.forEach(([k, v]) => console.log(k.padEnd(6) + v)); }
-  else if (cmd === "whois") { console.log(await whois(rest[0] || "")); }
-  else if (cmd === "headers") { const r = await headers(rest[0] || ""); if (r.err) { console.log(r.err); return; } console.log(r.status + " server:" + r.server); SEC.forEach(([k, label]) => console.log((r.h[k] !== undefined ? "[+] " : "[-] ") + label)); }
+  else if (cmd === "dns") { const recs = await dnsLookup(rest[0] || ""); recs.forEach(([k, v]) => console.log(k.padEnd(6) + sanitizeTerm(String(v)))); }
+  else if (cmd === "whois") { console.log(sanitizeTerm(await whois(rest[0] || ""), true)); }
+  else if (cmd === "headers") { const r = await headers(rest[0] || ""); if (r.err) { console.log(r.err); return; } console.log(r.status + " server:" + sanitizeTerm(String(r.server))); SEC.forEach(([k, label]) => console.log((r.h[k] !== undefined ? "[+] " : "[-] ") + label)); }
   else if (cmd === "cert") { const c = await certInspect(rest[0] || ""); if (!c.ok) { console.log(c.error); return; } console.log("Protocol " + c.protocol + " " + c.cipher); console.log("Subject  " + c.subject); console.log("Issuer   " + c.issuer); console.log("Valid    " + c.valid_from + " -> " + c.valid_to + (c.daysLeft != null ? " (" + c.daysLeft + "d left)" : "")); console.log("SAN      " + c.san); console.log("SHA-256  " + c.fp); }
-  else if (cmd === "subs") { const r = await subs(rest[0] || ""); if (r.err) { console.log(r.err); return; } r.forEach((s) => console.log(s)); }
+  else if (cmd === "subs") { const r = await subs(rest[0] || ""); if (r.err) { console.log(r.err); return; } r.forEach((s) => console.log(sanitizeTerm(String(s)))); }
   else if (cmd === "nmap") { const host = rest[0]; if (!host) return usage(); if (hasBin("nmap")) await runTool("nmap", rest.length > 1 ? rest : ["-T4", "-F", host]); else { console.log(yellow("nmap not installed — using Darknode's native scanner instead.")); await scan(host, parsePorts(rest[1])); } }
   else if (cmd === "nuclei") { const t = rest[0]; if (!t) return usage(); if (!hasBin("nuclei")) { console.log(red("nuclei not installed — get it: https://github.com/projectdiscovery/nuclei  (go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest)")); return; } await runTool("nuclei", ["-u", t, ...rest.slice(1)]); }
   else if (cmd === "hashcat") { if (!hasBin("hashcat")) { console.log(red("hashcat not installed — apt install hashcat  /  brew install hashcat")); return; } const hf = rest[0], mode = rest[1]; if (!hf || !mode) { console.log("usage: darknode hashcat <hashfile> <mode> [wordlist]\n  common modes:  0 MD5 · 100 SHA1 · 1400 SHA256 · 1700 SHA512 · 1800 sha512crypt · 3200 bcrypt · 1000 NTLM · 5600 NetNTLMv2 · 22000 WPA\n  straight/dictionary attack against the wordlist (rockyou by default)"); return; } await runTool("hashcat", ["-m", mode, "-a", "0", hf, rest[2] || "/usr/share/wordlists/rockyou.txt"]); }
@@ -1033,7 +1033,7 @@ async function cliRun(args, gate) {
     if (lg.err) { console.log("  " + red("git log failed" + (rng ? " for " + rng : "") + ": " + String(lg.stderr || lg.err.message).trim().split("\n")[0])); return; }
     const commits = parseCommits(lg.stdout || "");
     if (rest.includes("--json")) console.log(JSON.stringify({ range: rng || "recent", commits }, null, 2));
-    else console.log(renderChangelog(commits, { title: "Changelog", range: rng || "recent" }));
+    else console.log(sanitizeTerm(renderChangelog(commits, { title: "Changelog", range: rng || "recent" }), true)); // commit text is repo-controlled
   }
   else if (cmd === "env") {
     // Headless env-var hygiene. --strict is a config gate: exit 1 if any env var is
@@ -1128,7 +1128,7 @@ async function cliRun(args, gate) {
     const list = tag ? items.filter((it) => it.tag === tag) : items;
     if (rest.includes("--json")) { console.log(JSON.stringify({ summary: summarizeTodos(list), items: rankTodos(list) }, null, 2)); }
     else if (!list.length) { console.log("  " + green("clean") + gray(" — no " + (tag || "TODO/FIXME/HACK") + " markers in " + files + " files")); }
-    else { const s = summarizeTodos(list); console.log("  " + bold(String(s.total)) + " marker(s) in " + s.files + " file(s)   " + TODO_TAGS.filter((t) => s.byTag[t]).map((t) => yellow(t) + " " + s.byTag[t]).join(gray(" · "))); rankTodos(list).slice(0, 100).forEach((it) => console.log("  " + cyan(it.file + ":" + it.line) + "  " + yellow(it.tag) + (it.text ? "  " + it.text : ""))); }
+    else { const s = summarizeTodos(list); console.log("  " + bold(String(s.total)) + " marker(s) in " + s.files + " file(s)   " + TODO_TAGS.filter((t) => s.byTag[t]).map((t) => yellow(t) + " " + s.byTag[t]).join(gray(" · "))); rankTodos(list).slice(0, 100).forEach((it) => console.log("  " + cyan(sanitizeTerm(it.file + ":" + it.line)) + "  " + yellow(it.tag) + (it.text ? "  " + sanitizeTerm(it.text) : ""))); }
     if (!isNaN(max)) { const n = list.length; if (n > max) { console.log(red("  tech-debt gate: " + n + " > " + max + " allowed")); process.exit(1); } }
   }
   else if (cmd === "compliance") {
