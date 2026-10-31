@@ -58,6 +58,7 @@ const { renderMd } = require("./lib/cli/md-render");
 const { findLinks, openLink } = require("./lib/cli/links");
 const Tail = require("./lib/cli/tool-tail"); // live tail of a running command under its tool card
 const Pager = require("./lib/cli/pager");
+const { noteText, addNote } = require("./lib/cli/notes"); // "#note" detection + ## Notes insertion
 const { expandAts } = require("./lib/cli/at-mentions"); // @path → inlined file contents (TUI + line mode)
 const Branches = require("./lib/cli/branches"); // /branch files: what is saved, what a switch restores
 const { conversationText, exportMarkdown } = require("./lib/cli/convo-text"); // /find: the whole conversation (with tool output) as searchable text // /pager: read a whole tool output in-place (less-style keys + search) // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
@@ -2942,7 +2943,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     let bangLog = [];
     const runBang = (c) => { const dg = classifyDanger(c); if (dg.level !== "ok" && guard !== "off") transcript.push({ role: "system", text: "Darknode: this looks destructive (" + dg.why + ") — running it because you typed it directly" }); const blk = { role: "system", text: "$ " + c + "\nrunning…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); const lt = Tail.createTail(); coderShell(c, cwd, { ctl, onData: (d) => { Tail.pushTail(lt, d); blk.text = "$ " + c + "\n" + (Tail.tailLines(lt, 6).join("\n") || "running…"); renderSoon(); } }).then((r) => { const o = (r.output || "").replace(/[ \t\r\n]+$/, "").split("\n").map((l) => { l = l.replace(/\r+$/, ""); const k = l.lastIndexOf("\r"); return k >= 0 ? l.slice(k + 1) : l; }).join("\n"); /* a \r progress bar keeps its last frame */ blk.text = "$ " + c + "\n" + (o || "(no output)") + (r.code ? "\n[exit " + r.code + "]" : ""); bangLog.push({ cmd: c, output: o.length > 2000 ? o.slice(0, 2000) + "\n…[truncated]" : o, code: r.code }); if (bangLog.length > 10) bangLog.splice(0, bangLog.length - 10); busy = false; ctl = null; render(); }).catch((e) => { const msg = "error: " + (e && e.message || e); blk.text = "$ " + c + "\n" + msg; bangLog.push({ cmd: c, output: msg, code: 1 }); if (bangLog.length > 10) bangLog.splice(0, bangLog.length - 10); busy = false; ctl = null; render(); }); };
     // #note appends a durable memory to .nexus/NEXUS.md
-    const addMemory = (line) => { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; c += "- " + line + "\n"; fs.writeFileSync(md, c); transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + line }); } catch (e) { transcript.push({ role: "system", text: "could not save note: " + e.message }); } };
+    const addMemory = (line) => { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} fs.writeFileSync(md, addNote(c, line)); /* into the ## Notes section, wherever it sits */ transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + line }); } catch (e) { transcript.push({ role: "system", text: "could not save note: " + e.message }); } };
     // ---- ansi-aware width helpers ----
     const stripA = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, "");
     const clip = (s, n) => { if (n <= 0) return ""; let o = "", v = 0, hasColor = false; for (const part of String(s).split(/(\x1b\[[0-9;]*m)/)) { if (/^\x1b/.test(part)) { o += part; hasColor = true; continue; } for (const ch of part) { const cw = charWidth(ch); if (v + cw > n) return o + (hasColor ? "\x1b[0m" : ""); o += ch; v += cw; } } return o; };
@@ -3629,7 +3630,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         return (valid ? cyan(text.slice(0, tsp)) : red(text.slice(0, tsp))) + text.slice(tsp);
       }
       if (clean[0] === "!") return yellow(text);
-      if (clean[0] === "#") return green(text);
+      if (clean[0] === "#" && noteText(input) !== null) return green(text); // green only when Enter will really save a note
       return text.replace(/(^|\s)(@\S+)/g, (_, pre, at) => pre + blue(at));
     };
     let lastLines = null; // previous frame's rows, for line-level diffing
@@ -4153,7 +4154,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const nxt = nextQueue.shift();
       if (nxt.startsWith("/")) { let cmd = nxt; if (!/\s/.test(nxt)) { const mm = fuzzyCmds(nxt); if (mm.length) cmd = mm[0][0]; } handleSlash(cmd); render(); }
       else if (nxt[0] === "!" && nxt.length > 1) { runBang(nxt.slice(1).trim()); render(); }
-      else if (nxt[0] === "#" && nxt.length > 1) { addMemory(nxt.slice(1).trim()); render(); }
+      else if (noteText(nxt) !== null) { addMemory(noteText(nxt)); render(); }
       else { _nextFromQueue = true; submit(nxt); return; }
       // A command, ! or # entry finishes without a turn, so nothing else would
       // wake the queue: keep draining (drainNext itself waits if the command
@@ -6728,7 +6729,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; }
           if (t.startsWith("/")) { let cmd = t; if (!/\s/.test(t)) { const mm = fuzzyCmds(t); if (mm.length) cmd = (mm[pick] || mm[0])[0]; } handleSlash(cmd); render(); return; }
           if (t[0] === "!" && t.length > 1) { runBang(t.slice(1).trim()); render(); return; }
-          if (t[0] === "#" && t.length > 1) { addMemory(t.slice(1).trim()); render(); return; }
+          { const nt = noteText(t); if (nt !== null) { addMemory(nt); render(); return; } } // one "#" line is a note; a pasted "# Title" doc or #include goes to the model
           if (t) { submit(t); return; }
           render(); return;
         }
