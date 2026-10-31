@@ -9,14 +9,15 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log("  \x1
 
 const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
 const leaks = [];
-src.split("\n").forEach((line, i) => {
+const files = ["darknode.js", "lib/nexus/invariants.js", "lib/nexus/code-diff-explain.js", "lib/nexus/code-review-auto.js"]; // TUI-run helpers too
+for (const f of files) fs.readFileSync(path.join(__dirname, "..", f), "utf8").split("\n").forEach((line, i) => {
   for (const m of line.matchAll(/execSync\(/g)) {
     const seg = line.slice(m.index, m.index + 400);
     const call = seg.slice(0, (seg.indexOf("})") + 2) || seg.length);
-    if (!/stdio/.test(call) && !/2>\/dev\/null/.test(call)) leaks.push((i + 1) + ": " + call.slice(0, 90));
+    if (!/stdio/.test(call) && !/2>\/dev\/null/.test(call)) leaks.push(f + ":" + (i + 1) + ": " + call.slice(0, 90));
   }
 });
-ok("no execSync in darknode.js inherits stderr" + (leaks.length ? "\n    " + leaks.join("\n    ") : ""), leaks.length === 0);
+ok("no execSync in darknode.js or its TUI helpers inherits stderr" + (leaks.length ? "\n    " + leaks.join("\n    ") : ""), leaks.length === 0);
 ok("/git shows an empty history instead of 'not a git repo'", /log = "\(no commits yet\)"/.test(src));
 ok("/recent falls back to uncommitted files when there are no commits", /const fromLog = list\.length > 0/.test(src) && /fromLog \? "last commits" : "uncommitted"/.test(src));
 
