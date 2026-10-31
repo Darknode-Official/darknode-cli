@@ -610,5 +610,28 @@ group("graphemes — backspace/arrows treat emoji clusters as one character");
   eq("strWidth: CJK = 2 cells each", TF.strWidth("\u4e2d\u6587"), 4);
 }
 
+{
+  // Arrow keys cross a whole tag in one press (never step into it letter by letter), and
+  // word jumps / word-delete treat a tag with spaces inside as one unit.
+  const txt = "see [attached image: shots/a b.png] and [Image#2] [Pasted text #1 +40 lines]!";
+  const m = new C.ComposerModel({ text: txt });
+  const t1 = txt.indexOf("["), t1e = txt.indexOf("]") + 1, t2 = txt.indexOf("[Image"), t2e = t2 + "[Image#2]".length;
+  m.cursor = t1; m.right(); eq("Right crosses [attached image: ...] in one press", m.cursor, t1e);
+  m.left(); eq("Left crosses it back in one press", m.cursor, t1);
+  m.cursor = t2; C.feed(m, "\x1b[C", {}); eq("Right arrow key crosses [Image#2]", m.cursor, t2e);
+  C.feed(m, "\x1b[D", {}); eq("Left arrow key crosses [Image#2] back", m.cursor, t2);
+  const p = txt.indexOf("[Pasted"); m.cursor = p; m.right(); eq("Right crosses [Pasted text ...]", m.cursor, txt.length - 1);
+  m.cursor = 0; m.wordRight(); m.wordRight(); eq("word-right skips a tag containing spaces", m.cursor, t1e);
+  m.wordLeft(); eq("word-left lands at the start of the tag", m.cursor, t1);
+  m.cursor = 2; m.right(); eq("ordinary text still moves one character", m.cursor, 3);
+  const d = new C.ComposerModel({ text: "a [attached image: x.png]b" }); d.cursor = d.text.length - 1; d.backspace();
+  eq("Backspace removes [attached image: ...] whole", d.text, "a b");
+  const f = new C.ComposerModel({ text: "a [attached image: x.png]b" }); f.cursor = 2; f.deleteForward();
+  eq("Delete removes [attached image: ...] whole", f.text, "a b");
+  const w = new C.ComposerModel({ text: "x [attached image: a b.png]" }); w.cursor = w.text.length; w.deleteWordLeft();
+  eq("Ctrl+W removes the whole tag", w.text, "x ");
+  const n = new C.ComposerModel({ text: "[not a tag] ok" }); n.cursor = 0; n.right(); eq("plain brackets are not tags", n.cursor, 1);
+}
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (composer + settings)");
 process.exit(fail ? 1 : 0);
