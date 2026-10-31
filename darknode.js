@@ -68,7 +68,7 @@ const Composer = require("./lib/cli/composer"); // pure composer model + key dis
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
 const CompactAnim = require("./lib/cli/compact-anim");
 const Ledger = require("./lib/cli/ledger");
-const TokCount = require("./lib/cli/tokcount"); // pure /tokens estimator — price files before @-attaching them (lib/cli/tokcount.js) // pure per-session cost ledger (/turns) + lossless cost advisor (/cheaper) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
+const TokCount = require("./lib/cli/tokcount"); // pure /tokens estimator — price files before @-attaching them (lib/cli/tokcount.js) // pure per-session cost ledger (/turns) + lossless cost advisor (/costtips) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
 const CacheWarm = require("./lib/cli/cachewarm"); // pure prompt-cache TTL countdown for the status chip + /warm (lib/cli/cachewarm.js)
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
 const { idleWatchdog, engineWaits } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based, paused while the user answers a popup
@@ -2800,7 +2800,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // keyboard (-1 = composer has focus); `agentView` is the open transcript
     // overlay { i, scroll } or null. addAgent/finishAgent feed the registry.
     let agents = [], agentSel = -1, agentView = null;
-    let turnLog = []; // one entry per finished paid/local turn this session — feeds /turns + /cheaper (never persisted, no prompt text beyond a short label)
+    let turnLog = []; // one entry per finished paid/local turn this session — feeds /turns + /costtips (never persisted, no prompt text beyond a short label)
     const cacheWarm = { lastAt: 0, ttl: 0 }; // when a claude call last touched the prompt cache + which TTL it wrote (status chip + /warm)
     let bypassCacheOnce = false; // /retry sets this so the next send skips the exact-repeat cache and really re-runs
     let aliases = {}; // loaded from ~/.nexus/settings.json once the settings store exists (below)
@@ -2987,7 +2987,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/help", "commands, input prefixes & keys · /help <word> searches them"], ["/clear", "start a fresh chat"], ["/chat-clear", "clear the screen, keep the conversation memory"], ["/compact", "summarize & shrink the context"],
       ["/trust", "trust this workspace's .nexus MCP servers, hooks + allow rules"],
       ["/connect", "connect an AI: local model · Claude (API) · any provider"],
-      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/cheaper", "tips only: how this session could cost less, changes nothing"], ["/warm", "prompt-cache countdown + warm-vs-cold follow-up cost"], ["/tokens", "estimate what @-attaching a file/dir costs"], ["/alias", "make a shortcut: /alias name = text|/cmd"], ["/retry", "re-run your last prompt (fresh, no cache)"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
+      ["/context", "show token / context usage"], ["/cost", "session cost at exact list prices"], ["/turns", "per-turn cost ledger for this session"], ["/costtips", "tips only: how this session could cost less, changes nothing"], ["/warm", "prompt-cache countdown + warm-vs-cold follow-up cost"], ["/tokens", "estimate what @-attaching a file/dir costs"], ["/alias", "make a shortcut: /alias name = text|/cmd"], ["/retry", "re-run your last prompt (fresh, no cache)"], ["/pricing", "exact per-model prices (USD per million tokens)"], ["/budget", "set a spend cap in USD"],
       ["/report", "cost & usage report for chargeback (/report json|save|since <date>)"],
       ["/compliance", "write a signed audit+usage compliance bundle (SOC2/review)"],
       ["/undo", "revert the last turn's file changes"], ["/rewind", "restore a specific checkpoint (/rewind N)"], ["/checkpoints", "list undo checkpoints"],
@@ -3570,7 +3570,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const fuzzyCmds = (q) => {
       q = q.toLowerCase(); const cmds = allCmds();
       const pre = cmds.filter((c) => c[0].startsWith(q));
-      if (pre.length) return pre.sort((a, b) => (b[0] === q) - (a[0] === q)); // an exact name always wins (typing /cheap must not run /cheaper)
+      if (pre.length) return pre.sort((a, b) => (b[0] === q) - (a[0] === q)); // an exact name always wins (typing /cheap must not run /cheaper, the old /costtips alias)
       const needle = q.replace(/^\//, ""); if (!needle) return [];
       const scored = [];
       for (const c of cmds) {
@@ -5123,7 +5123,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // open in the /btw side panel instead of the chat, and run INSTANTLY even mid-
     // turn (everything else typed during a turn is queued). Each is synchronous and
     // only reads state, so it is safe to run while the agent is working.
-    const SIDE_CMDS = new Set(["/cost", "/status", "/context", "/turns", "/ledger", "/cheaper", "/tokens", "/warm", "/savings", "/impact", "/session", "/activity", "/keys", "/compat", "/estimate", "/recent", "/tree", "/stats", "/pins", "/help", "/docs"]);
+    const SIDE_CMDS = new Set(["/cost", "/status", "/context", "/turns", "/ledger", "/costtips", "/cheaper", "/tokens", "/warm", "/savings", "/impact", "/session", "/activity", "/keys", "/compat", "/estimate", "/recent", "/tree", "/stats", "/pins", "/help", "/docs"]);
     const sideName = (t) => { const m = /^\/[^\s]+/.exec(String(t || "").trim()); return m ? m[0].toLowerCase() : ""; };
     const isInstant = (t) => { const c = sideName(t); if (aliases[c] || customCmds[c]) return false; return c === "/btw" || c === "/pager" || c === "/less" || c === "/find" || SIDE_CMDS.has(c); }; // your alias/custom command of the same name wins (it may start a turn)
     let _inSide = false;
@@ -5386,7 +5386,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         if (busy) transcript.push({ role: "system", text: "a turn is still running — wait for it to finish, then /retry" });
         else { let last = null; for (let i = transcript.length - 1; i >= 0; i--) if (transcript[i].role === "user") { last = transcript[i].text; break; } if (last == null) transcript.push({ role: "system", text: "nothing to retry yet" }); else if (/^\//.test(last)) transcript.push({ role: "system", text: "the last thing you ran was the command " + last.split(/\s+/)[0] + " — run it again directly (↑ recalls it); /retry re-sends a prompt to the model" }); else { bypassCacheOnce = true; transcript.push({ role: "system", text: gray("re-running your last prompt (fresh, skipping the exact-repeat cache)…") }); submit(last); } }
       }
-      else if (cmd === "/cheaper") {
+      else if (cmd === "/costtips" || cmd === "/cheaper") { // /cheaper = old name, kept as a hidden alias
         transcript.push({ role: "system", lines: Ledger.renderAdvice(turnLog, { paid: !!PAID[engine], cacheOn, effort, engine, autoCompact, ctxPct: (sess.ctxUsed / (sess.ctxWindow || 200000)) * 100 }, { cyan, gray, bold, dim, green, yellow, mag }) });
       }
       else if (cmd === "/compact") doCompact(false);

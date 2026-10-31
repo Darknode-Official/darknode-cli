@@ -38,7 +38,7 @@ Pasting an image path or attaching one with @ shows 'attached N image(s)' and se
 
 In the card: type a follow-up and press Enter to ask it · Enter or Esc on an empty field closes · Esc clears a typed follow-up · Left/Right step through earlier side answers · Up/Down, PgUp/PgDn and the mouse wheel scroll · Ctrl+Y copies the answer · Ctrl+X forgets all side questions. /btw with no question reopens the last one.
 
-Read-only lookups open in the same card instantly, even mid-turn, without touching the chat: /activity /cheaper /compat /context /cost /docs /estimate /help /impact /keys /ledger /pins /recent /savings /session /stats /status /tokens /tree /turns /warm.
+Read-only lookups open in the same card instantly, even mid-turn, without touching the chat: /activity /compat /context /cost /costtips /docs /estimate /help /impact /keys /ledger /pins /recent /savings /session /stats /status /tokens /tree /turns /warm.
 
 ### Agents panel and agent conversations
 
@@ -52,7 +52,7 @@ A Claude sub-agent's messages appear only in its own view, not in the main reply
 
 ### Cost and tokens
 
-The status bar shows context use and, on the claude engine, the prompt-cache countdown ('cache 4m'). /cost is exact list-price cost, /turns the per-turn ledger, /tokens the breakdown, /warm the cache countdown with warm-vs-cold follow-up cost, /cheaper lossless ways to spend less.
+The status bar shows context use and, on the claude engine, the prompt-cache countdown ('cache 4m'). /cost is exact list-price cost, /turns the per-turn ledger, /tokens the breakdown, /warm the cache countdown with warm-vs-cold follow-up cost, /costtips tips on spending less (changes nothing).
 
 /cheap turns on lossless savings only (no quality loss). Limiting features (budget cap, auto-compact) are OFF by default; toggles you set are remembered in ~/.nexus/settings.json.
 
@@ -77,7 +77,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/context` — show token / context usage (opens in the side panel)
 - `/cost` — session cost at exact list prices (opens in the side panel)
 - `/turns` — per-turn cost ledger for this session (opens in the side panel)
-- `/cheaper` — tips only: how this session could cost less, changes nothing (opens in the side panel)
+- `/costtips` — tips only: how this session could cost less, changes nothing (opens in the side panel)
 - `/warm` — prompt-cache countdown + warm-vs-cold follow-up cost (opens in the side panel)
 - `/tokens` — estimate what @-attaching a file/dir costs (opens in the side panel)
 - `/alias` — make a shortcut: /alias name = text|/cmd
