@@ -30,6 +30,17 @@ const G = require("../lib/nexus/syntax-gate.js");
 for (const [k, s] of Object.entries({ newlines: "\n".repeat(200000) + "x;", importLines: "import x\n".repeat(50000) }))
   ok("syntax gate " + k, timed(() => G.check(require("path").join(tmp, "a.js"), s)) < 3000);
 
+// The transcript renderer: every message passes through ansiWrap and renderMd. A run of zero-width
+// marks re-measured an ever-growing cluster (30k: 12s); a run of "[" rescanned to the end of the line
+// from each one (300k: 53s); a long blank YAML line split its indent every way.
+const F = require("../lib/cli/tui-format.js"), M = require("../lib/cli/md-render.js");
+for (const [k, s] of Object.entries({ zeroWidth: "\u200b".repeat(100000), zwj: " \u200d".repeat(50000), brackets: "[".repeat(200000), yamlIndent: "```yaml\n" + " ".repeat(200000) + "!\n```" }))
+  ok("render " + k, timed(() => { F.ansiWrap(s, 80); M.renderMd(s, 80); }) < 2500);
+ok("a space at a wrap never takes merged text with it", F.ansiWrap("ab \u200dq cd", 3).join("").replace(/\s/g, "").includes("q"));
+ok("emoji ZWJ sequence stays one 2-cell glyph", F.ansiWrap("\u{1F468}\u200d\u{1F469}\u200d\u{1F467}", 80)[0].length > 4 && F.strWidth(F.ansiWrap("\u{1F468}\u200d\u{1F469}\u200d\u{1F467}", 80)[0]) === 2);
+const C = { underline: (x) => "<" + x + ">", gray: (x) => "{" + x + "}" };
+ok("link text after a stray [ is the inner text", M.linkify("x[b [t](https://a.b)", C) === "x[b <t>{ (https://a.b)}");
+
 require("fs").rmSync(tmp, { recursive: true, force: true });
-console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (redaction speed)");
+console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (hot-path speed)");
 process.exit(fail ? 1 : 0);
