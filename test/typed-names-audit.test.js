@@ -18,5 +18,7 @@ ok("CHEATS and STYLES have null prototypes", Object.getPrototypeOf(CHEATS) === n
 ok("allStyles (the /style table) has no prototype members", allStyles("/nonexistent").toString === undefined);
 for (const t of ["THEMES", "COLORS", "PRESETS", "LAB_TARGETS", "NEXUS_DOCS"]) ok(t + " is declared with a null prototype", new RegExp("const " + t + " = \\{ __proto__: null").test(src));
 
+ok("an unknown saved style falls back to default at startup", /if \(style !== "default" && styleMap\[style\] === undefined\) style = "default";/.test(src));
+
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (typed names)");
 process.exit(fail ? 1 : 0);
