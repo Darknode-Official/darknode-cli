@@ -3416,7 +3416,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("long paths are truncated keeping the end", (() => { const r = T.renderTokens([{ path: "a/very/deeply/nested/" + "x".repeat(90) + "/file.js", chars: 400 }], { price: { in: 5 }, paid: true, width: 60 }); return r.every((x) => x.replace(/\x1b\[[0-9;]*m/g, "").length <= 60) && r.some((x) => /file\.js/.test(x)); })());
   }
 
-  group("cost ledger + advisor (/turns, /cheaper)");
+  group("cost ledger + advisor (/turns, /costtips)");
   {
     const L = require("../lib/cli/ledger");
     const turns = [
