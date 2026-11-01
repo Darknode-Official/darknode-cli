@@ -5023,7 +5023,32 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // Redact secrets out of every transcript block's string fields before the
     // session is written to disk (NSAFE-060). The in-memory transcript keeps the
     // real text for this session; only the durable session.json copy is redacted.
-    const redactBlock = (b) => { if (!b || typeof b !== "object") return b; let c = null; for (const k of Object.keys(b)) { if (k !== "role" && typeof b[k] === "string" && b[k]) { const r = Redact.emit("transcript", b[k]); if (r !== b[k]) { c = c || Object.assign({}, b); c[k] = r; } } } return c || b; };
+    // session.json size control: tool output dominates a long session (one 16MB result was
+    // seen), and every save re-serializes + re-redacts all of it. Saved copies keep the
+    // head and tail of an oversized result; the live transcript keeps the full text.
+    const SAVE_CAP = 8000, OLD_CAP = 1500, RECENT = 40; // blocks older than the last RECENT get the tighter cap
+    const capText = (t, cap = SAVE_CAP) => t.length <= cap ? t : t.slice(0, Math.round(cap * 0.7)) + "\n[... " + (t.length - Math.round(cap * 0.95)) + " chars trimmed when the session was saved ...]\n" + t.slice(-Math.round(cap * 0.25));
+    const capResult = (v, cap = SAVE_CAP) => { if (v == null) return v; if (typeof v === "string") return capText(v, cap); let j = ""; try { j = JSON.stringify(v) || ""; } catch (_) {} return j.length > cap ? capText(asText(v), cap) : v; };
+    const saveRedact = (s) => Redact.emit("transcript", s);
+    // Nested items (tool result/input/diff, text/thinking) were never redacted. Each saved
+    // item copy is cached until the item changes, so a save only re-processes new output.
+    const _saveCache = new WeakMap();
+    const saveItem = (it, cap) => {
+      if (!it || typeof it !== "object") return it;
+      const h = _saveCache.get(it), fl = typeof it.full === "string" ? it.full.length : -1;
+      if (h && h.cap === cap && h.status === it.status && h.fl === fl && h.result === it.result && h.input === it.input && h.diff === it.diff && h.detail === it.detail && h.label === it.label) return h.out;
+      let c = null; const set = (k, v) => { if (v !== it[k]) { c = c || Object.assign({}, it); c[k] = v; } };
+      for (const k of Object.keys(it)) {
+        const v = it[k];
+        if (k === "result") { let r = capResult(v, cap); if (typeof r === "string") r = saveRedact(r); else if (r != null) { const t = asText(r), rt = saveRedact(t); if (rt !== t) r = rt; } set(k, r); }
+        else if (k === "input" && v && typeof v === "object" && !Array.isArray(v)) { let o = null; for (const ik of Object.keys(v)) if (typeof v[ik] === "string" && v[ik]) { const r = saveRedact(capText(v[ik], cap)); if (r !== v[ik]) { o = o || Object.assign({}, v); o[ik] = r; } } if (o) set(k, o); }
+        else if (typeof v === "string" && v && k !== "type" && k !== "id" && k !== "name" && k !== "status") set(k, saveRedact(k === "diff" || k === "input" ? capText(v, cap) : v));
+      }
+      const out = c || it;
+      if (it.status !== "run") _saveCache.set(it, { cap, status: it.status, fl, result: it.result, input: it.input, diff: it.diff, detail: it.detail, label: it.label, out });
+      return out;
+    };
+    const redactBlock = (b, i, arr) => { if (!b || typeof b !== "object") return b; let c = null; for (const k of Object.keys(b)) { if (k !== "role" && typeof b[k] === "string" && b[k]) { const r = saveRedact(b[k]); if (r !== b[k]) { c = c || Object.assign({}, b); c[k] = r; } } } if (Array.isArray(b.items)) { const cap = arr && i < arr.length - RECENT ? OLD_CAP : SAVE_CAP, ni = b.items.map((it) => saveItem(it, cap)); if (ni.some((x, i) => x !== b.items[i])) { c = c || Object.assign({}, b); c.items = ni; } } return c || b; };
     const restoreSession = (s) => {
       transcript.length = 0;
       for (const b of s.transcript || []) {
@@ -5033,7 +5058,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         // render frozen/truncated forever since no turn is driving it. Make history final.
         if (b && Array.isArray(b.items)) for (const it of b.items) {
           if (it.type === "text") it.shown = (it.full || "").length;
-          else if (it.type === "tool" && it.status === "run") { it.status = "ok"; if (!it.end) it.end = it.start || Date.now(); }
+          else if (it.type === "tool") { if (it.status === "run") { it.status = "ok"; if (!it.end) it.end = it.start || Date.now(); } if (it.result != null) it.result = capResult(it.result); } // older saves hold untrimmed output
         }
         transcript.push(b);
       }
