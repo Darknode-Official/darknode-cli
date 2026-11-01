@@ -5032,11 +5032,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const saveRedact = (s) => Redact.emit("transcript", s);
     // Nested items (tool result/input/diff, text/thinking) were never redacted. Each saved
     // item copy is cached until the item changes, so a save only re-processes new output.
-    const _saveCache = new WeakMap();
+    const _saveCache = new WeakMap(), _blockCache = new WeakMap();
+    let _fullSave = true, _ver = 0; // a full rewrite re-applies the age-based caps; a delta save keeps each cached copy as written, so an aging block is not re-appended
+    const sameShallow = (snap, o) => { const ks = Object.keys(o); if (ks.length !== snap.n) return false; for (const k of ks) if (o[k] !== snap.v[k]) return false; return true; };
+    const snapOf = (o) => ({ n: Object.keys(o).length, v: Object.assign({}, o) });
     const saveItem = (it, cap) => {
       if (!it || typeof it !== "object") return it;
-      const h = _saveCache.get(it), fl = typeof it.full === "string" ? it.full.length : -1;
-      if (h && h.cap === cap && h.status === it.status && h.fl === fl && h.result === it.result && h.input === it.input && h.diff === it.diff && h.detail === it.detail && h.label === it.label) return h.out;
+      const h = _saveCache.get(it);
+      if (h && (h.cap === cap || !_fullSave) && sameShallow(h.snap, it)) { saveItem.ver = h.ver; return h.out; }
       let c = null; const set = (k, v) => { if (v !== it[k]) { c = c || Object.assign({}, it); c[k] = v; } };
       for (const k of Object.keys(it)) {
         const v = it[k];
@@ -5044,13 +5047,25 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         else if (k === "input" && v && typeof v === "object" && !Array.isArray(v)) { let o = null; for (const ik of Object.keys(v)) if (typeof v[ik] === "string" && v[ik]) { const r = saveRedact(capText(v[ik], cap)); if (r !== v[ik]) { o = o || Object.assign({}, v); o[ik] = r; } } if (o) set(k, o); }
         else if (typeof v === "string" && v && k !== "type" && k !== "id" && k !== "name" && k !== "status") set(k, saveRedact(k === "diff" || k === "input" ? capText(v, cap) : v));
       }
-      const out = c || it;
-      if (it.status !== "run") _saveCache.set(it, { cap, status: it.status, fl, result: it.result, input: it.input, diff: it.diff, detail: it.detail, label: it.label, out });
+      const out = c || it; saveItem.ver = ++_ver; // the version, not the object, tells blockJson an item changed (out can be the item itself)
+      if (it.status !== "run") _saveCache.set(it, { cap, snap: snapOf(it), out, ver: _ver });
       return out;
     };
-    const redactBlock = (b, i, arr) => { if (!b || typeof b !== "object") return b; let c = null; for (const k of Object.keys(b)) { if (k !== "role" && typeof b[k] === "string" && b[k]) { const r = saveRedact(b[k]); if (r !== b[k]) { c = c || Object.assign({}, b); c[k] = r; } } } if (Array.isArray(b.items)) { const cap = arr && i < arr.length - RECENT ? OLD_CAP : SAVE_CAP, ni = b.items.map((it) => saveItem(it, cap)); if (ni.some((x, i) => x !== b.items[i])) { c = c || Object.assign({}, b); c.items = ni; } } return c || b; };
+    const capFor = (i, arr) => arr && i < arr.length - RECENT ? OLD_CAP : SAVE_CAP;
+    const redactBlock = (b, i, arr, items) => { if (!b || typeof b !== "object") return b; let c = null; for (const k of Object.keys(b)) { if (k !== "role" && typeof b[k] === "string" && b[k]) { const r = saveRedact(b[k]); if (r !== b[k]) { c = c || Object.assign({}, b); c[k] = r; } } } if (Array.isArray(b.items)) { const cap = capFor(i, arr), ni = items || b.items.map((it) => saveItem(it, cap)); if (ni.some((x, j) => x !== b.items[j])) { c = c || Object.assign({}, b); c.items = ni; } } return c || b; };
+    // One block's saved JSON, cached until the block or any of its items changes. Unchanged
+    // blocks return the SAME string, which is what lets saveSession find the changed tail.
+    const blockJson = (b, i, arr) => {
+      if (!b || typeof b !== "object") return JSON.stringify(b === undefined ? null : b);
+      const cap = capFor(i, arr), vers = [], items = Array.isArray(b.items) ? b.items.map((it) => { const o = saveItem(it, cap); vers.push(it && typeof it === "object" ? saveItem.ver : -1); return o; }) : null;
+      const h = _blockCache.get(b);
+      if (h && (h.cap === cap || !_fullSave) && sameShallow(h.snap, b) && h.vers.length === vers.length && vers.every((v, j) => v === h.vers[j])) return h.str;
+      const str = JSON.stringify(redactBlock(b, i, arr, items));
+      _blockCache.set(b, { cap, snap: snapOf(b), vers, str });
+      return str;
+    };
     const restoreSession = (s) => {
-      transcript.length = 0;
+      transcript.length = 0; _disk.written = null; // next save rewrites the snapshot from what is now loaded
       for (const b of s.transcript || []) {
         if (b && b.role === "system" && /^(restarted with latest code|previous session restored)/.test(b.text || "")) continue; // drop restore notes saved before they were made ephemeral, so they stop piling up
         // Sanitize each restored block: a save taken mid-turn (periodic autosave, or a
@@ -5076,7 +5091,55 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         }
       } // cli engines replay the transcript every turn — nothing to restore
     };
-    const saveSession = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); const { readCache: _rc, fileSnap: _fs, ...persistSess } = sess; const sp = path.join(cwd, ".nexus", "session.json"), tmp = sp + ".tmp-" + process.pid; /* write then rename: a kill or full disk mid-write must not truncate the saved conversation */ fs.writeFileSync(tmp, JSON.stringify({ engine, model: sess.model, transcript: transcript.filter((b) => !(b && b.ephemeral)).map(redactBlock), sess: persistSess, claudeSid, ts: Date.now() }), { mode: 0o600 }); fs.renameSync(tmp, sp); secureNexus(cwd); } catch (_) { try { fs.unlinkSync(path.join(cwd, ".nexus", "session.json.tmp-" + process.pid)); } catch (__) {} } };
+    // Saves are incremental: session.json is a full snapshot tagged with a generation id, and
+    // each later save appends only the changed tail (first changed block onward) to
+    // session.log. The log is folded back into a fresh snapshot once it outgrows half the
+    // snapshot, when most of the snapshot is dead (/clear), or on the first save of a process.
+    const _disk = { written: null, gen: "", baseBytes: 0, logBytes: 0, meta: "", stamp: "" };
+    const sessPaths = () => { const sp = path.join(cwd, ".nexus", "session.json"); return { sp, lp: path.join(cwd, ".nexus", "session.log"), tmp: sp + ".tmp-" + process.pid }; };
+    const statStamp = (f) => { try { const st = fs.statSync(f); return st.size + ":" + st.mtimeMs; } catch (_) { return ""; } };
+    const saveSession = () => { const { sp, lp, tmp } = sessPaths(); try {
+      fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true });
+      const { readCache: _rc, fileSnap: _fs, ...persistSess } = sess;
+      const metaStr = JSON.stringify({ engine, model: sess.model, sess: persistSess, claudeSid });
+      const list = transcript.filter((b) => !(b && b.ephemeral));
+      // another Nexus in this folder rewrote the snapshot: our log lines would no longer apply
+      if (_disk.written && statStamp(sp) !== _disk.stamp) _disk.written = null;
+      const w = _disk.written; _fullSave = !w;
+      let strs = list.map(blockJson), k = 0, tailLen = 0, liveLen = 0;
+      if (w) { const n = Math.min(w.length, strs.length); while (k < n && w[k] === strs[k]) k++; }
+      for (let j = 0; j < strs.length; j++) { liveLen += strs[j].length + 1; if (j >= k) tailLen += strs[j].length + 1; }
+      if (!w || _disk.logBytes + tailLen > Math.max(1e6, _disk.baseBytes / 2) || liveLen < _disk.baseBytes / 2) {
+        if (w) { _fullSave = true; strs = list.map(blockJson); } // re-apply the age-based caps on a rewrite
+        const gen = Date.now().toString(36) + "-" + process.pid;
+        const body = metaStr.slice(0, -1) + ',"gen":"' + gen + '","ts":' + Date.now() + ',"transcript":[' + strs.join(",") + "]}";
+        /* write then rename: a kill or full disk mid-write must not truncate the saved conversation */
+        fs.writeFileSync(tmp, body, { mode: 0o600 }); fs.renameSync(tmp, sp);
+        try { fs.unlinkSync(lp); } catch (_) {} // stale lines carry the old gen, so a crash before this unlink is harmless
+        Object.assign(_disk, { written: strs, gen, baseBytes: body.length, logBytes: 0, meta: metaStr, stamp: statStamp(sp) });
+      } else if (k < strs.length || k < w.length || metaStr !== _disk.meta) {
+        const line = '{"gen":"' + _disk.gen + '","from":' + k + ',"ts":' + Date.now() + ',"meta":' + metaStr + ',"blocks":[' + strs.slice(k).join(",") + "]}\n";
+        fs.appendFileSync(lp, line, { mode: 0o600 });
+        Object.assign(_disk, { written: strs, logBytes: _disk.logBytes + line.length, meta: metaStr });
+      }
+      secureNexus(cwd);
+    } catch (_) { _disk.written = null; try { fs.unlinkSync(tmp); } catch (__) {} } finally { _fullSave = true; } };
+    // Read the snapshot and replay its log. A torn last line (killed mid-append) ends the
+    // replay; lines from another generation are skipped.
+    const loadSessionFile = () => {
+      const { sp, lp } = sessPaths(); const s = JSON.parse(stripBom(fs.readFileSync(sp, "utf8")));
+      if (s && s.gen && Array.isArray(s.transcript)) {
+        let log = ""; try { log = fs.readFileSync(lp, "utf8"); } catch (_) {}
+        for (const line of log.split("\n")) {
+          if (!line.trim()) continue; let d; try { d = JSON.parse(line); } catch (_) { break; }
+          if (!d || d.gen !== s.gen) continue;
+          if (!Array.isArray(d.blocks) || !(d.from >= 0) || d.from > s.transcript.length) break;
+          s.transcript.length = d.from; for (const x of d.blocks) s.transcript.push(x);
+          if (d.meta) Object.assign(s, d.meta); if (d.ts) s.ts = d.ts;
+        }
+      }
+      return s;
+    };
 
     // ---- localhost dashboard (/dashboard, /open) — live web view of this agent session ----
     let dashServer = null;              // { url, port, close } once started
@@ -5357,7 +5420,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         }
         transcript.push({ role: "system", text: L.join("\n") });
       }
-      else if (cmd === "/resume") { try { const s = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8"))); restoreSession(s); scroll = 0; transcript.push({ role: "system", text: "resumed the saved session from " + new Date(s.ts).toLocaleString() + " (" + engine + ")" }); } catch (e) { transcript.push({ role: "system", text: e && e.code === "ENOENT" ? "no saved session to resume (sessions are saved to .nexus/session.json after each turn)" : "the saved session (.nexus/session.json) could not be read: " + String((e && e.message) || e).split("\n")[0] }); } }
+      else if (cmd === "/resume") { try { const s = loadSessionFile(); restoreSession(s); scroll = 0; transcript.push({ role: "system", text: "resumed the saved session from " + new Date(s.ts).toLocaleString() + " (" + engine + ")" }); } catch (e) { transcript.push({ role: "system", text: e && e.code === "ENOENT" ? "no saved session to resume (sessions are saved to .nexus/session.json after each turn)" : "the saved session (.nexus/session.json) could not be read: " + String((e && e.message) || e).split("\n")[0] }); } }
       else if (cmd === "/export") { try { const md = exportMarkdown(transcript, { date: new Date().toLocaleString(), engine, cwd }); const dir = path.join(cwd, ".nexus"); try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {} const fp = argstr ? path.resolve(cwd, argstr.replace(/^~(?=\/|$)/, require("os").homedir())) : path.join(dir, "export-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, md); /* argstr, not arg: a path with spaces is one path */ /* /export <file> writes there (its folder must exist) */ transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) + " (" + fp + ")" }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
       else if (cmd === "/copy") { let last = ""; for (let i = transcript.length - 1; i >= 0; i--) { const m = transcript[i]; if (m.role === "nexus") { last = (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join("\n").trim(); if (last) break; } } if (last) { const via = copyToClipboard(last, out); transcript.push({ role: "system", text: "copied Nexus's last reply to the " + via }); } else transcript.push({ role: "system", text: "nothing to copy yet" }); }
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const rwPaths = [...new Set(checkpoints.slice(idx).flatMap((c) => c.paths || []))]; /* every file a turn from here on changed, not just this turn's: otherwise later turns' files stay at their newest version */ const ok = nexusRestore(cwd, ck.tree, rwPaths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + (rwPaths.length ? rwPaths.length + " file(s) Nexus changed since" : "nothing (no file Nexus tracked changed since)") + keptNote()) : "rewind failed (git error)" }); } } }
@@ -6362,7 +6425,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     let loading = true;
     // Boot animation control: any key skips it; DARKNODE_FAST / NO_MOTION goes straight to the chat.
     let bootTimer = null, bootDone = false;
-    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); if (autoResume) { try { const s = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "session.json"), "utf8"))); const hadConvo = (s.transcript || []).some((b) => b.role === "user" && b.text && String(b.text).trim()); if (hadConvo) { restoreSession(s); transcript.push({ role: "system", ephemeral: true, text: autoResume === "restart" ? "restarted with latest code — session restored" : "previous session restored (" + new Date(s.ts).toLocaleString() + ") · /clear for a fresh chat · `nexus --new` to launch blank" }); } else { transcript.length = 0; transcript.push({ role: "art" }); } } catch (_) {} autoResume = false; } render(); };
+    const finishBoot = () => { if (bootDone) return; bootDone = true; if (bootTimer) { clearInterval(bootTimer); bootTimer = null; } loading = false; lastLines = null; out.write(ESC + "[2J"); if (autoResume) { try { const s = loadSessionFile(); const hadConvo = (s.transcript || []).some((b) => b.role === "user" && b.text && String(b.text).trim()); if (hadConvo) { restoreSession(s); transcript.push({ role: "system", ephemeral: true, text: autoResume === "restart" ? "restarted with latest code — session restored" : "previous session restored (" + new Date(s.ts).toLocaleString() + ") · /clear for a fresh chat · `nexus --new` to launch blank" }); } else { transcript.length = 0; transcript.push({ role: "art" }); } } catch (_) {} autoResume = false; } render(); };
     const fastBoot = !!(process.env.DARKNODE_FAST || process.env.NO_MOTION);
     // auto-connect MCP servers (non-blocking): the workspace's .nexus/mcp.json PLUS the
     // no-key servers that ship bundled with Nexus (fetch, memory, sequential-thinking,
@@ -6803,7 +6866,7 @@ function secureNexus(cwd) {
     const dir = path.join(cwd, ".nexus");
     if (!fs.existsSync(dir)) return;
     try { fs.chmodSync(dir, 0o700); } catch (_) {}
-    const sensitive = ["config.json", "session.json", "usage.jsonl", "mcp.json", "permissions.json", "todos.json", "plan.json", "index.json", "snippets.json"];
+    const sensitive = ["config.json", "session.json", "session.log", "usage.jsonl", "mcp.json", "permissions.json", "todos.json", "plan.json", "index.json", "snippets.json"];
     for (const f of sensitive) {
       const p = path.join(dir, f);
       try { if (fs.existsSync(p)) fs.chmodSync(p, 0o600); } catch (_) {}
