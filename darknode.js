@@ -2019,12 +2019,15 @@ function nexusCheckpoint(cwd) {
     _cp.execSync("git rev-parse --is-inside-work-tree", { cwd, stdio: "ignore" });
     const idx = path.join(cwd, ".nexus", "ckpt.index");
     fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true });
-    try { fs.unlinkSync(idx); } catch (_) {}
+    // This runs synchronously on every message, so it must be cheap. The temp index is
+    // KEPT between turns (seeded once from the repo's own index) so git's stat cache
+    // skips unchanged files, and .nexus is excluded up front so a large session.json is
+    // never hashed. Recreating the index each time rehashed the whole tree: ~1s per Enter.
+    if (!fs.existsSync(idx)) { try { const real = _cp.execSync("git rev-parse --git-path index", { cwd, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); fs.copyFileSync(path.resolve(cwd, real), idx); } catch (_) {} }
     const env = Object.assign({}, process.env, { GIT_INDEX_FILE: idx });
-    _cp.execSync("git add -A", { cwd, env, stdio: "ignore" });
+    _cp.execSync("git add -A -- :/ \":(exclude).nexus\"", { cwd, env, stdio: "ignore" });
     try { _cp.execSync("git rm -r --cached --ignore-unmatch --quiet .nexus", { cwd, env, stdio: "ignore" }); } catch (_) {} // never snapshot/restore Nexus's own state dir
     const tree = _cp.execSync("git write-tree", { cwd, env, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
-    try { fs.unlinkSync(idx); } catch (_) {}
     return tree || null;
   } catch (_) { return null; }
 }
