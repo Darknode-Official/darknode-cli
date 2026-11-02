@@ -3529,7 +3529,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const mLabel = modelLabel(shownModel()) || engine;
       parts.push(mLabel + (mLabel && ENGINES[engine] && ENGINES[engine].kind === "stream" && effort ? gray(" · ") + effortLabel(effort) : ""));
       parts.push(pc(pct + "% context"));
-      { const _ca = compactAt(); if (_ca > 0 && sess.ctxUsed != null) { const _u = Math.max(0, Math.min(100, Math.round((1 - sess.ctxUsed / _ca) * 100))); parts.push((_u <= 15 ? yellow : gray)(_u + "% until auto-compact")); } }
+      { const _ca = compactAt(); if (_ca > 0 && sess.ctxUsed != null) { const _u = Math.max(0, Math.min(100, Math.round((1 - sess.ctxUsed / _ca) * 100))); if (_u < 100) parts.push((_u <= 15 ? yellow : gray)(_u + "% until auto-compact")); } } // hide the redundant "100% until auto-compact" chip on a fresh/near-empty session (it duplicates "N% context")
       if (PAID[engine]) { const isSubscription = engine === "codex" && CODEX_LOCAL.authMode ? onPlan(engine) : (onPlan(engine) || (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY)); if (isSubscription) { /* subscription: nothing to show */ } else { const c = costCap && sess.cost >= costCap ? red : green; const est = !ENGINES[engine] || ENGINES[engine].kind !== "stream"; parts.push(sess.cost ? c((est ? "~$" : "$") + sess.cost.toFixed(4)) + (costCap ? gray("/" + costCap.toFixed(2)) : "") : gray("subscription")); } }
       
       if (gitBranch) parts.push(gray(gitBranch));
