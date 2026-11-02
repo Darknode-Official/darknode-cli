@@ -803,10 +803,11 @@ function serveDir(port, dir) {
     if (_rp !== _root && !_rp.startsWith(_root + path.sep)) { res.writeHead(403); return res.end("forbidden"); }
     fs.stat(p, (e, st) => {
       if (e) { res.writeHead(404); return res.end("not found"); }
-      if (st.isDirectory()) { const items = fs.readdirSync(p); res.writeHead(200, { "Content-Type": "text/html" }); const h = (x) => String(x).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";"), base = rel.replace(/\/$/, "").split("/").map(encodeURIComponent).join("/");
+      if (st.isDirectory()) { let items; try { items = fs.readdirSync(p); } catch (_) { res.writeHead(403); return res.end("forbidden"); } res.writeHead(200, { "Content-Type": "text/html" }); const h = (x) => String(x).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";"), base = rel.replace(/\/$/, "").split("/").map(encodeURIComponent).join("/");
         return res.end(items.map((i) => `<a href="${h(base + "/" + encodeURIComponent(i))}">${h(i)}</a>`).join("<br>")); } // names are text, not markup, and #/?/space in a name stay part of the link
       console.log("  " + green("GET ") + req.url + gray("  " + (req.socket.remoteAddress || "")));
-      res.writeHead(200); fs.createReadStream(p).pipe(res);
+      const rs = fs.createReadStream(p); // an unreadable file errored with no handler and took the server down
+      rs.on("open", () => { res.writeHead(200); rs.pipe(res); }); rs.on("error", () => { if (!res.headersSent) res.writeHead(403); res.end(); });
     });
   });
   srv.listen(port, () => { h1("HTTP file server"); console.log("  serving " + bold(path.resolve(dir)) + " on " + cyan("http://0.0.0.0:" + port)); console.log("  " + gray("Ctrl-C to stop") + "\n"); });
@@ -836,7 +837,9 @@ function nexusUpdate(opts) {
   const hush = (msg) => (silent ? "" : msg);
   const cp = require("child_process"), fs = require("fs"), path = require("path");
   const dir = __dirname;
-  const run = (c, a) => cp.spawnSync(c, a, { cwd: dir, encoding: "utf8", timeout: 120000 });
+  // Windows npm is npm.cmd, which spawn can only run through a shell (args here are fixed or semver-checked).
+  const W = process.platform === "win32", sp = (c, a, o) => cp.spawnSync(W && c === "npm" ? "npm.cmd" : c, a, W && c === "npm" ? { ...o, shell: true } : o);
+  const run = (c, a) => sp(c, a, { cwd: dir, encoding: "utf8", timeout: 120000 });
   if (!fs.existsSync(path.join(dir, ".git"))) {
     // installed from npm (global) — compare against the registry and, on apply, reinstall.
     if (!hasBin("npm")) return hush("installed at " + dir + "\nnot a git checkout and npm not found — reinstall to update.");
@@ -846,7 +849,7 @@ function nexusUpdate(opts) {
     if (!semverGt(latest, VERSION)) return hush("up to date — v" + VERSION + " is the latest (npm).");
     const L = ["update available: v" + VERSION + " → v" + latest + " (npm)"];
     if (!apply) { L.push("run  " + cyan("darknode update") + "  to install (npm i -g darknode-cli@latest)."); return L.join("\n"); }
-    const ni = cp.spawnSync("npm", ["install", "-g", "darknode-cli@" + latest, "--no-audit", "--no-fund"], { encoding: "utf8", timeout: 600000 });
+    const ni = sp("npm", ["install", "-g", "darknode-cli@" + latest, "--no-audit", "--no-fund"], { encoding: "utf8", timeout: 600000 });
     if (ni.status !== 0) { L.push("auto-update failed (a global npm install may need elevated permissions): " + (((ni.stderr || "") + (ni.error ? ni.error.message : "")).trim().split("\n").slice(-2).join(" ") || "npm error") + "\n  install manually:  npm install -g darknode-cli@latest"); return L.join("\n"); }
     L.push(green("updated") + " to v" + latest + " — restart Nexus to load it."); return L.join("\n");
   }
@@ -872,7 +875,7 @@ function nexusUpdate(opts) {
   const pull = run("git", ["merge", "--ff-only", "--quiet", remote]); // the commit just compared: `git pull` re-resolved @{u}, which is missing when we fell back to origin/main
   if (pull.status !== 0) { L.push("update failed: " + (((pull.stderr || "") + (pull.error ? pull.error.message : "")).trim() || "git pull error")); return L.join("\n"); }
   const changed = (run("git", ["diff", "--name-only", local, "HEAD"]).stdout) || "";
-  if (/package(-lock)?\.json/.test(changed) && hasBin("npm")) { const ni = cp.spawnSync("npm", ["install", "--silent", "--no-audit", "--no-fund", "--no-package-lock"], { cwd: dir, encoding: "utf8", timeout: 600000 }); if (ni.status !== 0) L.push("note: npm install after update reported an issue — run `npm install` in " + dir); }
+  if (/package(-lock)?\.json/.test(changed) && hasBin("npm")) { const ni = sp("npm", ["install", "--silent", "--no-audit", "--no-fund", "--no-package-lock"], { cwd: dir, encoding: "utf8", timeout: 600000 }); if (ni.status !== 0) L.push("note: npm install after update reported an issue — run `npm install` in " + dir); }
   let newV = VERSION; try { newV = JSON.parse(stripBom(fs.readFileSync(path.join(dir, "package.json"), "utf8"))).version || newV; } catch (_) {}
   L.push(green("updated") + " v" + VERSION + " → v" + newV + " — restart Nexus (" + cyan("/exit") + ", then " + cyan("darknode nexus") + ") to load it.");
   return L.join("\n");
@@ -1302,25 +1305,30 @@ async function githubDeviceFlow(clientId, log) {
   throw new Error("GitHub device login timed out");
 }
 async function googleLoopbackFlow(clientId, clientSecret, log) {
-  const http = require("http");
+  const http = require("http"), crypto = require("crypto");
+  // state + PKCE: without them any local process or web page could hand this listener its
+  // own auth code and sign the user in as someone else (login CSRF).
+  const state = crypto.randomBytes(16).toString("hex"), verifier = crypto.randomBytes(32).toString("base64url");
+  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
   return await new Promise((resolve, reject) => {
     let done = false;
     const server = http.createServer(async (req, res) => {
       try {
         const u = new URL(req.url, "http://127.0.0.1"); const code = u.searchParams.get("code"), err = u.searchParams.get("error");
-        if (err) { res.end("Login failed: " + err); done = true; server.close(); return reject(new Error("Google: " + err)); }
+        if ((code || err) && u.searchParams.get("state") !== state) { res.writeHead(400, { "Content-Type": "text/plain" }); return res.end("Login request did not come from this sign-in."); }
+        if (err) { res.writeHead(200, { "Content-Type": "text/plain" }); res.end("Login failed: " + err); done = true; server.close(); return reject(new Error("Google: " + err)); }
         if (!code) { res.end("Waiting…"); return; }
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end("<!doctype html><meta charset=utf-8><body style='font-family:-apple-system,sans-serif;background:#0b1220;color:#eaf0fb;display:flex;height:100vh;margin:0;align-items:center;justify-content:center'><div style='text-align:center'><h2 style='margin:0 0 8px'>Nexus — signed in</h2><p style='color:#8ca0c4'>You can close this tab and return to the terminal.</p></div>");
         const port = server.address().port; done = true; server.close();
-        const tk = await httpReq({ url: "https://oauth2.googleapis.com/token", method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "code=" + encodeURIComponent(code) + "&client_id=" + encodeURIComponent(clientId) + "&client_secret=" + encodeURIComponent(clientSecret) + "&redirect_uri=" + encodeURIComponent("http://127.0.0.1:" + port) + "&grant_type=authorization_code" });
+        const tk = await httpReq({ url: "https://oauth2.googleapis.com/token", method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "code=" + encodeURIComponent(code) + "&client_id=" + encodeURIComponent(clientId) + "&client_secret=" + encodeURIComponent(clientSecret) + "&redirect_uri=" + encodeURIComponent("http://127.0.0.1:" + port) + "&grant_type=authorization_code&code_verifier=" + encodeURIComponent(verifier) });
         if (!tk.json || !tk.json.id_token) return reject(new Error("Google token exchange failed" + (tk.json && tk.json.error ? ": " + (tk.json.error_description || tk.json.error) : "")));
         resolve(tk.json.id_token);
       } catch (e) { reject(e); }
     });
     server.listen(0, "127.0.0.1", () => {
       const port = server.address().port, redirect = "http://127.0.0.1:" + port;
-      const url = "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=" + encodeURIComponent(clientId) + "&redirect_uri=" + encodeURIComponent(redirect) + "&scope=" + encodeURIComponent("openid email profile") + "&access_type=offline&prompt=select_account";
+      const url = "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=" + encodeURIComponent(clientId) + "&redirect_uri=" + encodeURIComponent(redirect) + "&scope=" + encodeURIComponent("openid email profile") + "&access_type=offline&prompt=select_account&state=" + state + "&code_challenge=" + challenge + "&code_challenge_method=S256";
       log("opening browser to sign in with Google…"); openBrowser(url);
     });
     setTimeout(() => { if (done) return; try { server.close(); } catch (_) {} reject(new Error("Google login timed out")); }, 180000);
@@ -2342,7 +2350,7 @@ async function deviceTool(name, a, cwd) {
   if (name === "find" || name === "find_files" || name === "glob") return require("./lib/nexus/search").findTool(a, cwd, rp);
   if (name === "http_fetch" || name === "web_fetch" || name === "fetch_url" || name === "http") return await require("./lib/nexus/http-fetch").httpFetchTool(a, { isLocal: _ssrfLocal }); // redirects re-checked by the SSRF guard on every hop
   if (name === "sysinfo" || name === "system_info") {
-    let disk = ""; try { disk = _cp.execSync("df -h " + JSON.stringify(cwd) + " 2>/dev/null", { encoding: "utf8" }).trim().split("\n").slice(-1)[0]; } catch (_) {}
+    let disk = ""; try { disk = _cp.execFileSync("df", ["-h", cwd], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n").slice(-1)[0]; } catch (_) {}
     const c = os.cpus()[0] || {};
     return { platform: os.platform(), arch: os.arch(), release: os.release(), hostname: os.hostname(), cpus: os.cpus().length + " x " + (c.model || "?"), memory: (os.totalmem() / 1e9).toFixed(1) + "GB total, " + (os.freemem() / 1e9).toFixed(1) + "GB free", loadavg: os.loadavg().map((n) => n.toFixed(2)).join(" "), uptime: (os.uptime() / 3600).toFixed(1) + "h", cwd, node: process.version, disk };
   }
