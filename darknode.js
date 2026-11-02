@@ -3557,7 +3557,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       if (composer.searchMode) return yellow("reverse search: ") + bold(composer.searchQuery) + gray("   ctrl+r older · enter accept · esc cancel");
       if (pasteNotice) return yellow("paste: ") + pasteNotice;
       if (linkNotice) return (linkNotice.ok ? green : yellow)(linkNotice.text);
-      if (slashMatches().length || argMatches().length) return gray("↑↓ select · tab complete · enter run · esc dismiss");
+      if (slashMatches().length || argMatches().length) { const full = "↑↓ select · tab complete · enter run · esc dismiss"; return gray(room != null && strWidth(full) > room ? "↑↓ select · enter run · esc" : full); }
       // persistent vim-mode tag whenever /vim is on (NORMAL is attention-grabbing)
       const vtag = composer.vim ? (composer.vimMode === "normal" ? bold(yellow("-- NORMAL --")) : green("-- INSERT --")) + gray(" · ") : "";
       if (scroll > 0) return vtag + yellow(scroll + " line" + (scroll > 1 ? "s" : "") + " below") + gray("  ·  pgup/pgdn scroll · end jump to latest");
@@ -5707,9 +5707,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           if (!(row.key in liveGov)) continue;
           const val = liveGov[row.key];
           const shown = row.key === "budgetCap" ? (val ? "$" + Number(val).toFixed(2) : "off") : (val ? "on" : "off");
-          const srcTxt = Ssrc[row.key] === "env" ? " env" : Ssrc[row.key] === "saved" ? " saved" : " default", src = gray(srcTxt) + " ".repeat(Math.max(2, 20 - shown.length - srcTxt.length));
+          const srcTxt = Ssrc[row.key] === "env" ? " env" : Ssrc[row.key] === "saved" ? " saved" : " default", src = gray(srcTxt) + " ".repeat(Math.max(2, 14 - shown.length - srcTxt.length));
           const envName = nexusSettings.ENV_NAME[row.key];
-          text += "\n  " + row.key.padEnd(26) + bold(onOff(shown)) + src + gray("/settings " + row.key + (row.key === "budgetCap" ? " <usd>|off" : " on|off") + (envName ? "  " + envName : ""));
+          text += "\n  " + row.key.padEnd(16) + bold(onOff(shown)) + src + gray("/settings " + row.key + (row.key === "budgetCap" ? " <usd>|off" : " on|off") + (envName ? "  " + envName : ""));
         }
         text += "\n  " + gray("colour: NO_COLOR=1 disables, FORCE_COLOR=1 forces (NO_COLOR wins).");
         transcript.push({ role: "system", text });
@@ -6293,7 +6293,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         });
       }
       else if (cmd === "/engine") {
-        if (!arg) transcript.push({ role: "system", text: "engines (● installed):\n" + ENGINE_ORDER.map((e) => "  " + (engineAvail(e) ? green("●") : gray("○")) + " " + e + gray("  " + ENGINES[e].label + (ENGINES[e].paid ? "" : " · free")) + (e === engine ? "  " + cyan("(current)") : "")).join("\n") + "\nswitch with /engine <name>" });
+        if (!arg) transcript.push({ role: "system", text: "engines (● installed):\n" + ENGINE_ORDER.map((e) => "  " + (engineAvail(e) ? green("●") : gray("○")) + " " + e.padEnd(9) + gray(ENGINES[e].label + (ENGINES[e].paid ? "" : " · free")) + (e === engine ? "  " + cyan("(current)") : "")).join("\n") + "\nswitch with /engine <name>" });
         else if (!ENGINES[arg]) transcript.push({ role: "system", text: "unknown engine '" + arg + "' — options: " + ENGINE_ORDER.join(", ") });
         else if (offline && ENGINES[arg].kind !== "local") transcript.push({ role: "system", text: "offline lock is ON — cloud engines are blocked. Turn it off with /offline first." });
         else if (!engineAvail(arg)) transcript.push({ role: "system", text: "'" + arg + "' (" + ENGINES[arg].label + ") isn't installed — install its CLI, then /engine " + arg });
