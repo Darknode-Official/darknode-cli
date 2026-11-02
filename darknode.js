@@ -863,14 +863,16 @@ function nexusUpdate(opts) {
   const L = [behind + " update(s) available for v" + VERSION + ":"];
   if (log) L.push(log.split("\n").map((l) => "  " + l).join("\n"));
   if (!apply) { L.push("run  " + cyan("darknode update") + "  (or  /update apply  in the TUI) to install."); return L.join("\n"); }
-  const dirty = run("git", ["status", "--porcelain"]).stdout.trim();
+  // Untracked files (logs, a package-lock.json from an earlier update) cannot break a
+  // fast-forward, so only tracked edits block it.
+  const dirty = run("git", ["status", "--porcelain", "--untracked-files=no"]).stdout.trim();
   // in silent/background mode, a dirty checkout is the user's own WIP — surface that an update
   // exists (so /update still works) but never nag every launch about their local changes.
   if (dirty) { L.push(silent ? "(local changes in the install dir block auto-apply; run /update after committing)" : "can't auto-update — you have local changes in " + dir + ". Commit or stash them first."); return L.join("\n"); }
   const pull = run("git", ["merge", "--ff-only", "--quiet", remote]); // the commit just compared: `git pull` re-resolved @{u}, which is missing when we fell back to origin/main
   if (pull.status !== 0) { L.push("update failed: " + (((pull.stderr || "") + (pull.error ? pull.error.message : "")).trim() || "git pull error")); return L.join("\n"); }
   const changed = (run("git", ["diff", "--name-only", local, "HEAD"]).stdout) || "";
-  if (/package(-lock)?\.json/.test(changed) && hasBin("npm")) { const ni = cp.spawnSync("npm", ["install", "--silent", "--no-audit", "--no-fund"], { cwd: dir, encoding: "utf8", timeout: 600000 }); if (ni.status !== 0) L.push("note: npm install after update reported an issue — run `npm install` in " + dir); }
+  if (/package(-lock)?\.json/.test(changed) && hasBin("npm")) { const ni = cp.spawnSync("npm", ["install", "--silent", "--no-audit", "--no-fund", "--no-package-lock"], { cwd: dir, encoding: "utf8", timeout: 600000 }); if (ni.status !== 0) L.push("note: npm install after update reported an issue — run `npm install` in " + dir); }
   let newV = VERSION; try { newV = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version || newV; } catch (_) {}
   L.push(green("updated") + " v" + VERSION + " → v" + newV + " — restart Nexus (" + cyan("/exit") + ", then " + cyan("darknode nexus") + ") to load it.");
   return L.join("\n");
