@@ -871,7 +871,7 @@ function nexusUpdate(opts) {
   if (pull.status !== 0) { L.push("update failed: " + (((pull.stderr || "") + (pull.error ? pull.error.message : "")).trim() || "git pull error")); return L.join("\n"); }
   const changed = (run("git", ["diff", "--name-only", local, "HEAD"]).stdout) || "";
   if (/package(-lock)?\.json/.test(changed) && hasBin("npm")) { const ni = cp.spawnSync("npm", ["install", "--silent", "--no-audit", "--no-fund"], { cwd: dir, encoding: "utf8", timeout: 600000 }); if (ni.status !== 0) L.push("note: npm install after update reported an issue — run `npm install` in " + dir); }
-  let newV = VERSION; try { const m = fs.readFileSync(path.join(dir, "darknode.js"), "utf8").match(/const VERSION = "([^"]+)"/); if (m) newV = m[1]; } catch (_) {}
+  let newV = VERSION; try { newV = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version || newV; } catch (_) {}
   L.push(green("updated") + " v" + VERSION + " → v" + newV + " — restart Nexus (" + cyan("/exit") + ", then " + cyan("darknode nexus") + ") to load it.");
   return L.join("\n");
 }
