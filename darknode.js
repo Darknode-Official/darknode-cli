@@ -3965,12 +3965,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           case "/tight": return tightEdits;
           case "/title": return autoTitle;
           case "/redact": return redact;
+          case "/cheap": return !!(cacheOn && tightEdits && cheapSide);
+          case "/hack": return hack;
+          case "/cowork": return !!cowork.on;
+          case "/fallback": return !!fallback;
+          case "/autocompact": return autoCompact;
+          case "/guard": return guard !== "off";
           default: return null;
         }
       };
       for (let i = 0; i < menuReserve; i++) {
         if (i >= menuRows) { frame.push(""); continue; }
-        const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const tstate = incompat ? null : (menu.length && nm[0] === "/") ? toggleState(nm) : null; const _nmPad = padRightV(nm, nmW); const nmShown = sel ? bold(cyan(_nmPad)) : incompat ? dim(_nmPad) : tstate === true ? green(_nmPad) : tstate === false ? red(_nmPad) : _nmPad; const stateTag = tstate == null ? "" : (tstate ? green(" on") : red(" off")); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); const head = (sel ? cyan(" › ") : "   ") + nmShown + stateTag, room = C - 2 - strWidth(stripA(head)) - strWidth(stripA(pos)); frame.push(clip(head + (strWidth(stripA(tail)) > room ? clip(tail, Math.max(0, room - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : tail) + pos, C - 2)); /* a long description ends in … (and the n/N position stays visible) */
+        const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const tstate = incompat ? null : (menu.length && nm[0] === "/") ? toggleState(nm) : null; const _nmPad = padRightV(nm, nmW); const nmShown = sel ? bold(tstate === true ? green(_nmPad) : tstate === false ? red(_nmPad) : cyan(_nmPad)) : incompat ? dim(_nmPad) : tstate === true ? green(_nmPad) : tstate === false ? red(_nmPad) : _nmPad; const stateTag = tstate == null ? "" : (tstate ? green(" on") : red(" off")); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); const head = (sel ? cyan(" › ") : "   ") + nmShown + stateTag, room = C - 2 - strWidth(stripA(head)) - strWidth(stripA(pos)); frame.push(clip(head + (strWidth(stripA(tail)) > room ? clip(tail, Math.max(0, room - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : tail) + pos, C - 2)); /* a long description ends in … (and the n/N position stays visible) */
       }
       }
       for (const r of agentPanelRows) frame.push(clip(r, C)); // the Agents panel, under the prompt bar
