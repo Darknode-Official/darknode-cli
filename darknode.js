@@ -3949,9 +3949,28 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       // never moves as the list filters; the drawn options fill the top of the
       // region and the remainder is padded blank up to the footer.
       const _curM = modelLabel(shownModel()) || engine;
+      // On/off slash commands: the menu tints the name green when the feature is
+      // currently ON and red when OFF, with a matching on/off tag, so state is
+      // visible before you run it. Returns true/false for a toggle, null otherwise.
+      const toggleState = (nm) => {
+        switch (nm) {
+          case "/notify": return notify;
+          case "/map": return repoMapOn;
+          case "/lean": return lean;
+          case "/cache": return cacheOn;
+          case "/offline": return offline;
+          case "/recap": return autoRecap;
+          case "/vim": return !!composer.vim;
+          case "/mouse": return mouseOn;
+          case "/tight": return tightEdits;
+          case "/title": return autoTitle;
+          case "/redact": return redact;
+          default: return null;
+        }
+      };
       for (let i = 0; i < menuReserve; i++) {
         if (i >= menuRows) { frame.push(""); continue; }
-        const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const nmShown = sel ? bold(cyan(padRightV(nm, nmW))) : (incompat ? dim(padRightV(nm, nmW)) : padRightV(nm, nmW)); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); const head = (sel ? cyan(" › ") : "   ") + nmShown, room = C - 2 - strWidth(stripA(head)) - strWidth(stripA(pos)); frame.push(clip(head + (strWidth(stripA(tail)) > room ? clip(tail, Math.max(0, room - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : tail) + pos, C - 2)); /* a long description ends in … (and the n/N position stays visible) */
+        const idx = menuStart + i; const [nm, ds] = combined[idx]; const sel = idx === menuSel; const pos = (sel && combined.length > menuRows) ? gray("  (" + (menuSel + 1) + "/" + combined.length + ")") : ""; const nmW = Math.min(18, Math.max(10, Math.floor(C / 4))); const incompat = menu.length && nm[0] === "/" && !cmdOkFor(nm); const tstate = incompat ? null : (menu.length && nm[0] === "/") ? toggleState(nm) : null; const _nmPad = padRightV(nm, nmW); const nmShown = sel ? bold(cyan(_nmPad)) : incompat ? dim(_nmPad) : tstate === true ? green(_nmPad) : tstate === false ? red(_nmPad) : _nmPad; const stateTag = tstate == null ? "" : (tstate ? green(" on") : red(" off")); const tail = incompat ? red("  not compatible with " + _curM) : gray(" " + (ds || "")); const head = (sel ? cyan(" › ") : "   ") + nmShown + stateTag, room = C - 2 - strWidth(stripA(head)) - strWidth(stripA(pos)); frame.push(clip(head + (strWidth(stripA(tail)) > room ? clip(tail, Math.max(0, room - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : tail) + pos, C - 2)); /* a long description ends in … (and the n/N position stays visible) */
       }
       }
       for (const r of agentPanelRows) frame.push(clip(r, C)); // the Agents panel, under the prompt bar
