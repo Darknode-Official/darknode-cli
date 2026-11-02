@@ -5696,18 +5696,20 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           render(); return;
         }
         const v = { engine, model: (sess.model && sess.model !== engine ? sess.model : ""), effort, fallback, style, lean, cowork, costCap, cost: sess.cost, mode: (MODES[mode] && MODES[mode].k) || "auto-accept", guard, policyOrg: policy.org, audit: policy.audit, redact, offline, notify, ctxPct: sess.ctxWindow ? Math.min(100, Math.round((sess.ctxUsed / sess.ctxWindow) * 100)) : null, pins: pinned.size, bgRunning: bgJobs.running() };
+        // on/off values read green/red at a glance, matching the slash-menu toggle colours
+        const onOff = (x) => /^on\b/i.test(x) ? green(x) : /^off$/i.test(x) ? red(x) : x;
         let text = bold("Settings") + gray("   change any option with the command shown");
-        for (const s of describeSettings(v)) { text += "\n\n" + bold(cyan(s.group)); for (const r of s.rows) { const gap = " ".repeat(Math.max(2, 20 - r.value.length)); text += "\n  " + r.label.padEnd(24) + bold(r.value) + gap + gray(r.cmd); } }
+        for (const s of describeSettings(v)) { text += "\n\n" + bold(cyan(s.group)); for (const r of s.rows) { const gap = " ".repeat(Math.max(2, 20 - r.value.length)); text += "\n  " + r.label.padEnd(26) + bold(onOff(r.value)) + gap + gray(r.cmd); } }
         // Governed limits — all OFF by default; each shows its live value and where it came from.
         const liveGov = { budgetCap: costCap, autoCompact, minimizeCalls, stepCap, trimOutput, cache: cacheOn, map: repoMapOn, lean };
-        text += "\n\n" + bold(cyan("Limits")) + gray("  (off by default — opt in with /settings <key> on; persisted to ~/.nexus/settings.json. The env var shown on each row overrides it for one launch.)");
+        text += "\n\n" + bold(cyan("Limits")) + gray("   off by default · saved to ~/.nexus/settings.json · an env var overrides one launch");
         for (const row of settingsStore.describe()) {
           if (!(row.key in liveGov)) continue;
           const val = liveGov[row.key];
-          const shown = row.key === "budgetCap" ? (val ? "$" + Number(val).toFixed(2) : "off") : (val ? "ON" : "off");
-          const src = Ssrc[row.key] === "env" ? gray(" [env]") : Ssrc[row.key] === "saved" ? gray(" [saved]") : gray(" [default]");
+          const shown = row.key === "budgetCap" ? (val ? "$" + Number(val).toFixed(2) : "off") : (val ? "on" : "off");
+          const srcTxt = Ssrc[row.key] === "env" ? " env" : Ssrc[row.key] === "saved" ? " saved" : " default", src = gray(srcTxt) + " ".repeat(Math.max(2, 20 - shown.length - srcTxt.length));
           const envName = nexusSettings.ENV_NAME[row.key];
-          text += "\n  " + row.key.padEnd(24) + bold(shown) + src + gray("   /settings " + row.key + (row.key === "budgetCap" ? " <usd>|off" : " on|off") + (envName ? "  ·  env " + envName : ""));
+          text += "\n  " + row.key.padEnd(26) + bold(onOff(shown)) + src + gray("/settings " + row.key + (row.key === "budgetCap" ? " <usd>|off" : " on|off") + (envName ? "  " + envName : ""));
         }
         text += "\n  " + gray("colour: NO_COLOR=1 disables, FORCE_COLOR=1 forces (NO_COLOR wins).");
         transcript.push({ role: "system", text });
