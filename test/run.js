@@ -4137,7 +4137,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
       if (req.url === "/split") { res.writeHead(200, { "content-type": "text/plain" }); const b = Buffer.from("añb"); res.write(b.subarray(0, 2)); setTimeout(() => res.end(b.subarray(2)), 20); return; }
       res.writeHead(404); res.end();
     });
-    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    await new Promise((r) => srv.listen(0, r));
     const base = "http://127.0.0.1:" + srv.address().port;
     const deps = { isLocal: (u) => /blocked\.internal/.test(u) }; // the real guard would also block 127.0.0.1; here only the redirect target is "private"
     let r = await HF.httpFetchTool({ url: base + "/r1" }, deps);
