@@ -18,6 +18,7 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log("  \x1
   const out = res.stdout || "";
   ok("all three piped commands ran", (out.match(/auto-approve ON/g) || []).length === 1 && (out.match(/auto-approve OFF/g) || []).length === 1 && /conversation cleared/.test(out));
   ok("end of input ends the session cleanly", res.status === 0 && /stay sharp/.test(out));
+  if (fail) console.log("  status=" + res.status + " signal=" + res.signal + " error=" + (res.error && res.error.message) + "\n  stdout tail: " + JSON.stringify(out.slice(-600)) + "\n  stderr tail: " + JSON.stringify(String(res.stderr || "").slice(-600)));
   fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(dir, { recursive: true, force: true });
 
   console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m  (piped stdin)");
