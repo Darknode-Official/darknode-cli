@@ -14,7 +14,20 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log("  \x1
   ok("the reader returns every line in order, then null at the end", JSON.stringify(got) === JSON.stringify(["a", "b", "c", null, null]));
 
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "nx-pipe-")), dir = fs.mkdtempSync(path.join(os.tmpdir(), "nx-pipe-cwd-"));
-  const res = cp.spawnSync(process.execPath, [path.join(__dirname, "..", "darknode.js"), "nexus", "--new"], { cwd: dir, input: "/auto\n/auto\n/clear\n", encoding: "utf8", timeout: 30000, env: { ...process.env, HOME: home, NO_COLOR: "1", DARKNODE_FAST: "1" } });
+  // A stand-in Ollama (model list only), so the session starts on machines with no engine
+  // installed (CI); no slash command here reaches the model.
+  const http = require("http");
+  const fake = http.createServer((req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(req.url.startsWith("/api/tags") ? JSON.stringify({ models: [{ name: "qwen2.5-coder:7b", model: "qwen2.5-coder:7b", size: 1 }] }) : "{}"); });
+  await new Promise((r) => fake.listen(0, "127.0.0.1", r));
+  const res = await new Promise((resolve) => {
+    const ch = cp.spawn(process.execPath, [path.join(__dirname, "..", "darknode.js"), "nexus", "--new"], { cwd: dir, env: { ...process.env, HOME: home, NO_COLOR: "1", DARKNODE_FAST: "1", OLLAMA_HOST: "127.0.0.1", OLLAMA_PORT: String(fake.address().port) } });
+    let stdout = "", stderr = "";
+    ch.stdout.on("data", (d) => { stdout += d; }); ch.stderr.on("data", (d) => { stderr += d; });
+    const t = setTimeout(() => ch.kill("SIGKILL"), 30000);
+    ch.on("close", (status, signal) => { clearTimeout(t); resolve({ status, signal, stdout, stderr }); });
+    ch.stdin.end("/auto\n/auto\n/clear\n");
+  });
+  fake.close();
   const out = res.stdout || "";
   ok("all three piped commands ran", (out.match(/auto-approve ON/g) || []).length === 1 && (out.match(/auto-approve OFF/g) || []).length === 1 && /conversation cleared/.test(out));
   ok("end of input ends the session cleanly", res.status === 0 && /stay sharp/.test(out));
