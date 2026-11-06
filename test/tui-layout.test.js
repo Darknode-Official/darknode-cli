@@ -31,7 +31,9 @@ group("welcomeCard fits its column budget at every width");
   let bad = "";
   for (const w of WIDTHS) if (!fits(WC(w), w)) bad = bad || ("overflow/escape at " + w);
   ok("every row fits 36..200 cols with no stray escapes", !bad);
-  ok("the box is balanced (equal corner rows)", (() => { const L = WC(80).filter((l) => l.trim()); return /^╭/.test(stripAnsi(L[0])) && /╯$/.test(stripAnsi(L[L.length - 1])); })());
+  ok("draws the Darknode 2x2 mark beside the session", (() => { const L = WC(80).map(stripAnsi); return L.some((l) => /^███ ███   Nexus/.test(l)) && L.filter((l) => /^(███|▀▀▀) (███|▀▀▀)/.test(l)).length === 4; })());
+  ok("lit moves the amber box (paint.lit) round the grid", (() => { const P = { box: (t) => "b" + t, lit: (t) => "L" + t }; const m = F.logoMark({ paint: P, lit: 0 }); return m[0].startsWith("L███") && !m[2].includes("L") && F.logoMark({ paint: P })[2].includes("L███"); })());
+  ok("drops the mark on a tiny terminal but keeps the text", (() => { const s = stripAnsi(WC(30).join("\n")); return !s.includes("███") && /Nexus/.test(s); })());
   ok("plain output (no paint) carries no ANSI escapes", plainClean(WC(80)));
   ok("shows product, model, engine and a quick-start command", (() => { const s = WC(80).join("\n"); return /Nexus/.test(s) && /Opus 5\.5/.test(s) && /Claude Code/.test(s) && /\/help/.test(s); })());
 }
@@ -43,7 +45,7 @@ group("welcomeCard keeps the branch even when it is long and the terminal is nar
   ok("branch (possibly truncated) is still shown at 36 cols", stripAnsi(WC(36).join("\n")).includes("ui/tui"));
   for (const w of [40, 50]) ok("branch is still shown at " + w + " cols", stripAnsi(WC(w).join("\n")).includes("ui/tui-pol"));
   ok("a card with only a branch (no cwd) still shows it", stripAnsi(WC(80, { cwd: "" }).join("\n")).includes("ui/tui-polish-20261101"));
-  ok("a card with neither cwd nor branch omits the Project row", !/Project/.test(stripAnsi(WC(80, { cwd: "", branch: "" }).join("\n"))));
+  ok("a card with neither cwd nor branch shows no path", !/darknode-cli|~\//.test(stripAnsi(WC(80, { cwd: "", branch: "" }).join("\n"))));
 }
 
 group("idleHome fills the screen without overflowing");
@@ -53,9 +55,9 @@ group("idleHome fills the screen without overflowing");
   for (const w of WIDTHS) if (!fits(mk(w), w)) bad = bad || ("overflow/escape at " + w);
   ok("every row fits 36..200 cols with no stray escapes", !bad);
   ok("plain output carries no ANSI escapes", plainClean(mk(80)));
-  ok("renders the NEXUS hero wordmark", mk(80).join("\n").includes("█"));
+  ok("lists starter prompts with no block-letter wordmark", (() => { const s = mk(80).join("\n"); return /start with/.test(s) && /› review my uncommitted changes/.test(s) && !s.includes("█"); })());
   ok("surfaces the live project pulse (name + branch)", (() => { const s = stripAnsi(mk(80).join("\n")); return s.includes("darknode-cli") && /\bmain\b/.test(s); })());
-  ok("falls back to a compact wordmark on a very narrow terminal", stripAnsi(idleHome({ cols: 20 }).join("\n")).includes("N E X U S"));
+  ok("still fits on a very narrow terminal", fits(idleHome({ cols: 20 }), 30));
 }
 
 group("footerLine right-aligns status and never overflows");
@@ -79,6 +81,15 @@ group("helpLines aligns names and wraps long descriptions under the column");
   ok("plain output carries no escapes", plainClean(helpLines(sections, 80)));
   ok("shows the heading and every command name", (() => { const s = helpLines(sections, 80).join("\n"); return /Session/.test(s) && /\/clear/.test(s) && /\/fixshell/.test(s) && /\/exit/.test(s); })());
   ok("wraps a long description onto continuation rows (name column stays empty)", (() => { const L = helpLines(sections, 60).map(stripAnsi); const i = L.findIndex((l) => /\/fixshell/.test(l)); if (i < 0 || i + 1 >= L.length) return false; const cont = L[i + 1]; const indent = (s) => s.length - s.replace(/^ +/, "").length; return cont.trim().length > 0 && !/\/fixshell/.test(cont) && indent(cont) > indent(L[i]); })());
+}
+
+group("activity line names what the turn is doing");
+{
+  ok("a running tool reads as a verb + target", F.activityLabel([{ type: "text" }, { type: "tool", status: "run", label: "Bash(npm test)" }]) === "Running npm test");
+  ok("a tool waiting on approval says so", /^Waiting for approval/.test(F.activityLabel([{ type: "tool", status: "wait", label: "Edit(a.js)" }])));
+  ok("thinking / writing / nothing yet", F.activityLabel([{ type: "thinking" }]) === "Thinking" && F.activityLabel([{ type: "text" }]) === "Writing" && F.activityLabel([]) === "Thinking");
+  ok("an unknown tool falls back to Using <name>", F.activityLabel([{ type: "tool", status: "run", label: "repo_map()" }]) === "Using repo_map");
+  ok("the orbit glyph walks the four quadrants clockwise", [0, 110, 220, 330, 440].map((t) => F.orbitGlyph(t, 110)).join("") === "▘▝▗▖▘");
 }
 
 console.log("\n" + (fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m" + "  (tui layout)");

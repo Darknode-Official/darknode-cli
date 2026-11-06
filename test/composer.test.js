@@ -313,10 +313,10 @@ group("shortenPath — zero/negative width yields empty, like fitWidth");
 group("idleHome — fills the empty-chat screen, never overflows, stays plain under NO_COLOR");
 {
   const L = TF.idleHome({ cols: 80, project: { name: "proj", branch: "main", dirty: true, files: 7, commits: 3, last: "init" } });
-  ok("returns several rows of content", L.length >= 15);
-  ok("renders the NEXUS wordmark (block letters)", L.some((r) => /█/.test(r)));
+  ok("returns several rows of content", L.length >= 8);
+  ok("no block-letter wordmark (the mark lives in the header)", !L.some((r) => /█/.test(r)));
   ok("no row exceeds the usable width (cols-2)", Math.max.apply(null, L.map((r) => TF.visLen(r))) <= 78);
-  ok("shows the Try asking heading", L.some((r) => /Try asking/.test(r)));
+  ok("shows the starter-prompt heading", L.some((r) => /start with/.test(r)));
   ok("includes a real starter prompt", L.some((r) => /scan this repository for leaked secrets/.test(r)));
   ok("project pulse shows name + branch + file/commit counts", L.some((r) => /proj/.test(r)) && L.some((r) => /7 files/.test(r) && /3 commits/.test(r)));
   ok("dirty tree is reported", L.some((r) => /uncommitted changes/.test(r)));
@@ -327,7 +327,7 @@ group("idleHome — fills the empty-chat screen, never overflows, stays plain un
   const noRepo = TF.idleHome({ cols: 80 });
   ok("no project pulse when not in a repo", !noRepo.some((r) => /working tree clean|\d+ files?|\d+ commits?/.test(r)));
   const narrow = TF.idleHome({ cols: 30 });
-  ok("narrow terminal uses the compact wordmark without overflow", Math.max.apply(null, narrow.map((r) => TF.visLen(r))) <= 28);
+  ok("narrow terminal does not overflow", Math.max.apply(null, narrow.map((r) => TF.visLen(r))) <= 28);
 }
 
 group("persisted prefs — /style and /redact round-trip; dead defaults removed");

@@ -63,7 +63,7 @@ const { getSnippet, saveBody, expandSnippet } = require("./lib/cli/snippets"); /
 const { expandAts } = require("./lib/cli/at-mentions"); // @path → inlined file contents (TUI + line mode)
 const Branches = require("./lib/cli/branches"); // /branch files: what is saved, what a switch restores
 const { conversationText, exportMarkdown } = require("./lib/cli/convo-text"); // /find: the whole conversation (with tool output) as searchable text // /pager: read a whole tool output in-place (less-style keys + search) // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
-const { asText, sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
+const { asText, sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, MARK_ORBIT, orbitGlyph, activityLabel, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
 const CompactAnim = require("./lib/cli/compact-anim");
@@ -2721,9 +2721,7 @@ async function nexusRun(argv) {
 
 // Full-screen chat TUI (alt-screen, scrolling transcript, fixed bottom input box). No deps.
 // Whimsical status verbs — Claude Code's set PLUS Nexus-originals (marked below).
-const FORGE = ["Accomplishing", "Actioning", "Actualizing", "Baking", "Booping", "Brewing", "Calculating", "Cerebrating", "Channelling", "Churning", "Coalescing", "Cogitating", "Combobulating", "Computing", "Concocting", "Conjuring", "Considering", "Cooking", "Crafting", "Creating", "Crunching", "Deliberating", "Determining", "Discombobulating", "Divining", "Doing", "Effecting", "Elucidating", "Enchanting", "Envisioning", "Finagling", "Flibbertigibbeting", "Forging", "Forming", "Frolicking", "Generating", "Germinating", "Hatching", "Herding", "Honking", "Hustling", "Ideating", "Imagining", "Incubating", "Inferring", "Jiving", "Kneading", "Manifesting", "Marinating", "Meandering", "Moseying", "Mulling", "Mustering", "Musing", "Noodling", "Percolating", "Perusing", "Philosophising", "Pondering", "Pontificating", "Processing", "Puttering", "Puzzling", "Reticulating", "Ruminating", "Scheming", "Schlepping", "Shimmying", "Shucking", "Simmering", "Smooshing", "Spelunking", "Spinning", "Stewing", "Sussing", "Synthesizing", "Thinking", "Tinkering", "Transmuting", "Unfurling", "Vibing", "Wandering", "Whirring", "Wibbling", "Wizarding", "Working", "Wrangling",
-  // Nexus-original verbs (built from scratch):
-  "Nexusing", "Nebulizing", "Weaving", "Orchestrating", "Constellating", "Tessellating", "Kindling", "Untangling", "Refracting", "Distilling", "Alchemizing", "Threading", "Warping", "Grokking", "Percussing", "Lucubrating", "Quantizing", "Foraging", "Splicing", "Braiding", "Zhuzhing", "Effervescing", "Crystallizing", "Cascading"];
+// The working line names what the turn is doing (activityLabel), not a random verb.
 // Feature tips shown while a turn is running. NEXUS_TIPS are engine-agnostic (Nexus's own
 // features); ENGINE_TIPS list ONLY what that specific AI actually offers — never mixed.
 const NEXUS_TIPS = [
@@ -3228,7 +3226,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const cur = () => transcript[transcript.length - 1];
     const ensureText = (b) => { if (!b) b = cur(); if (!b.items) b.items = []; let last = b.items[b.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; b.items.push(last); } return last; };
     // ---- render body ----
-    const spin = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     // Darknode logo — the official 2x2 mark (four navy rounded boxes, one yellow).
     //   index 0 1   (TL TR)
     //         2 3   (BL BR)   clockwise from BR: 3 -> 2 -> 0 -> 1 -> 3
@@ -3243,13 +3240,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // gradient (dim end -> bright end) so it always matches /theme and /gradient.
     // Wall-clock driven so the cadence stays steady and frameDiff rewrites only
     // the one cell that changes each tick.
-    const _WORK = ["·", "✧", "✦", "✶", "✷", "✸", "✹", "✺", "✹", "✸", "✷", "✶", "✦", "✧"];
-    const workGlyph = () => {
-      const i = Math.floor(Date.now() / 90) % _WORK.length, peak = _WORK.length >> 1;
-      const lvl = 1 - Math.abs(i - peak) / peak;                     // 0 at the faint point, 1 at the burst
-      const code = GRAD[Math.round((1 - lvl) * (GRAD.length - 1))]; // lvl 1 -> GRAD[0], the head of the theme gradient
-      return useColor ? "\x1b[" + code + "m" + _WORK[i] + "\x1b[0m" : _WORK[i];
-    };
+    // Working animation: the Darknode 2x2 mark in one cell, its lit quadrant walking
+    // clockwise in the accent colour. Wall-clock driven, so frameDiff rewrites one cell.
+    const workGlyph = () => cyan(orbitGlyph(Date.now(), 110));
+    // Launch intro: the amber box walks once round the mark in the welcome header, then
+    // settles bottom-right where the real logo has it. markLit is part of the body signature.
+    let markLit = 3;
     // One welcome tip chosen once per session (stable across every render so the
     // card never flickers), rotated by start time for a little variety.
     const _welcomeTip = NEXUS_TIPS[Math.floor(Date.now() / 1000) % NEXUS_TIPS.length];
@@ -3264,7 +3260,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const m = transcript[transcript.length - 1];
       let last = "";
       if (m) { last = (m.role || "") + ":" + (m.text ? m.text.length : 0); if (m.items) { last += ":" + m.items.length; for (const it of m.items) last += "," + (it.status || "") + "." + (it.label ? it.label.length : 0) + "." + (it.detail ? it.detail.length : 0) + "." + (it.result ? String(it.result).length : 0) + "." + (it.diff ? it.diff.length : 0) + (it.type === "text" ? "." + String(it.full || "").length + "/" + (it.shown | 0) : ""); } } // text progress too: an async command (/commit, /review ...) fills its reply after the turn ends, and a stale cache hid it
-      return transcript.length + "|" + cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + effort + "|" + engine + "|" + shownModel() + "|" + guard + "|" + (gitBranch || "") + "|" + mcpServers.filter((s) => s && !s.error).length + "|" + (_welcomeTip || "") + "|" + nextQueue.length + "/" + nextQueue.join("\u0001").length + "|" + last;
+      return markLit + "|" + transcript.length + "|" + cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + effort + "|" + engine + "|" + shownModel() + "|" + guard + "|" + (gitBranch || "") + "|" + mcpServers.filter((s) => s && !s.error).length + "|" + (_welcomeTip || "") + "|" + nextQueue.length + "/" + nextQueue.join("\u0001").length + "|" + last;
     };
     let _blCache = null, _blSig = "";
     // Per-message memo for the BUSY path. The whole-transcript cache above is off
@@ -3318,7 +3314,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           // (model/engine/project/context), and a two-column quick-start grid that
           // also surfaces the customization commands (/settings, /theme). One
           // accent colour, no gradients.
-          const paint = useColor ? { brand: (t) => bold(cyan(t)), border: gray, muted: gray, faint: (t) => t, accent: (t) => bold(cyan(t)), label: (t) => gray(t), key: (t) => bold(cyan(t)) } : null;
+          const paint = useColor ? { brand: (t) => bold(t), border: gray, muted: gray, faint: (t) => dim(gray(t)), accent: (t) => cyan(t), label: (t) => gray(t), key: (t) => cyan(t), box: (t) => "\x1b[38;5;250m" + t + "\x1b[0m", lit: (t) => "\x1b[38;5;214m" + t + "\x1b[0m" } : null;
           const _liveMcp = mcpServers.filter((s) => s && !s.error).length;
           const cardLines = welcomeCard({
             version: VERSION, model: modelLabel(shownModel()), engineLabel: (ENGINES[engine] || {}).label || engine,
@@ -3326,7 +3322,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             effort: (ENGINES[engine] && ENGINES[engine].kind === "stream" && effort) ? effortLabel(effort) : "",
             contextLabel: Math.round((sess.ctxWindow || 200000) / 1000) + "K",
             guard: guard === "enforce" ? "on" : guard,
-            mcp: _liveMcp, tip: _welcomeTip,
+            mcp: _liveMcp, tip: _welcomeTip, lit: markLit,
           });
           for (const ln of cardLines) L.push(ln);
           continue;
@@ -3367,14 +3363,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         if (m.role === "recap") { recapLines(m.text).forEach((x) => L.push(x)); L.push(""); continue; }
         if (m.role === "system") { if (m.lines) for (const ln of m.lines) L.push(gray("│ ") + ln); else for (const ln of wrap(m.text)) L.push("  " + ln); L.push(""); continue; }
         if (m.role === "user") {
-          // the submitted prompt sits on a full-width grey block (the Claude-Code
-          // look): a 236 background that spans to the right margin, re-asserted
-          // after every reset so the coloured ❯/bold tokens don't punch holes.
           const w = wrap(m.text);
-          const _uw = Math.max(0, cols() - 3); // inner width of the grey block (flush-left ❯, Claude-Code look)
-          const chatHl = (c) => "\x1b[48;5;236m" + String(c).replace(/\x1b\[0m/g, "\x1b[0m\x1b[48;5;236m") + " ".repeat(Math.max(0, _uw - strWidth(c))) + " \x1b[0m";
-          L.push(chatHl(cyan("❯ ") + bold(w[0] || "")));
-          for (let i = 1; i < w.length; i++) L.push(chatHl("  " + bold(w[i])));
+          // the submitted prompt: an accent bar down its left edge, text in bold
+          L.push(cyan("▌") + " " + bold(w[0] || ""));
+          for (let i = 1; i < w.length; i++) L.push(cyan("▌") + " " + bold(w[i]));
           L.push(""); continue;
         }
         // nexus turn: ordered items. Each text block opens with a plain bullet,
@@ -3385,16 +3377,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             if (prevType) L.push("");
             const vis = it.full.slice(0, it.shown);
             let first = true;
-            for (const ln of mdLines(it, vis, Math.max(1, cols() - 4))) { const lead = first && stripA(ln).trim() ? "● " : "  "; if (stripA(ln).trim()) first = false; L.push(lead + ln); }
+            for (const ln of mdLines(it, vis, Math.max(1, cols() - 4))) { const lead = first && stripA(ln).trim() ? cyan("▪") + " " : "  "; if (stripA(ln).trim()) first = false; L.push(lead + ln); }
             prevType = "text";
           } else if (it.type === "thinking") {
             if (prevType) L.push("");
-            L.push(dim(gray("∴ Thinking" + (expanded ? "" : "  (ctrl+o to expand)"))));
+            L.push(dim(gray("· thinking" + (expanded ? "" : "  ctrl+o to read"))));
             if (expanded) for (const ln of wrap(it.full).slice(0, 24)) L.push("  " + dim(gray(ln)));
             prevType = "thinking";
           } else if (it.type === "tool") {
             if (prevType) L.push("");
-            const dot = it.status === "run" || it.status === "wait" ? cyan(spin[Math.floor(Date.now() / 90) % spin.length]) : it.status === "err" ? red("●") : green("●");
+            const dot = it.status === "run" || it.status === "wait" ? workGlyph() : it.status === "err" ? red("✗") : green("✓");
             const rawSec = it.end ? (it.end - it.start) / 1000 : (Date.now() - it.start) / 1000;
             const secs = rawSec < 0.1 ? "<0.1s" : fmtDur(rawSec);
             const _lp = it.label.indexOf("(");
@@ -3405,7 +3397,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               const d = it.diff, dw = Math.max(12, Math.min(cols() - 7, 120));
               const _pl = (n, w) => n + " " + w + (n === 1 ? "" : "s"), _fn = (it.label.match(/\((.*)\)$/) || [])[1] || "file";
               const cnt = /^Write\(/.test(it.label) ? "Wrote " + _pl(d.added, "line") + " to " + bold(_fn) : !(d.added + d.removed) ? "No changes to " + bold(_fn) : "Updated " + bold(_fn) + " with " + [d.added ? _pl(d.added, "addition") : "", d.removed ? _pl(d.removed, "removal") : ""].filter(Boolean).join(" and ");
-              L.push("  " + gray("⎿") + "  " + cnt);
+              L.push("  " + gray("╰─") + " " + cnt);
               const cap = expanded ? 200 : 16;
               const rows = d.rows.slice(0, cap);
               const gw = rows.reduce((w, r) => Math.max(w, r.ln ? String(r.ln).length : 0), 0); // line-number gutter (0 = no numbers known)
@@ -3438,7 +3430,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               // a todo checklist, red "Error: …" — not the raw tool JSON.
               const v = toolResultView(it.name, it.input, it.result !== undefined ? it.result : it.detail, { isError: it.status === "err" && !it.interrupted, interrupted: it.interrupted, expanded, secs });
               let first = true;
-              const pre = () => { const p = first ? "  " + gray("⎿") + "  " : "     "; first = false; return p; };
+              const pre = () => { const p = first ? "  " + gray("╰─") + " " : "     "; first = false; return p; };
               for (const ln of v.lines) {
                 if (ln.k === "todo") { L.push(pre() + (ln.s === "done" ? gray("☒ ") + dim(strike(ln.text)) : ln.s === "active" ? bold("☐ " + ln.text) : "☐ " + ln.text)); continue; }
                 for (const w of wrap(stripA(ln.text)).slice(0, expanded ? 40 : 2)) L.push(pre() + (ln.k === "err" ? red(w) : ln.k === "out" ? w : gray(w)));
@@ -3447,14 +3439,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             } else if (it.status === "run" && (it.name === "Bash" || it.name === "run_command")) {
               // live tail: the last lines the command printed, so you can see what it is doing right now
               const tl = it.live ? Tail.tailLines(it.live, expanded ? 12 : 3) : [];
-              if (!tl.length) L.push("  " + gray("⎿") + "  " + gray("Running…"));
-              tl.forEach((x, k) => L.push((k ? "     " : "  " + gray("⎿") + "  ") + dim(clip(x, Math.max(8, cols() - 9)))));
+              if (!tl.length) L.push("  " + gray("╰─") + " " + gray("Running…"));
+              tl.forEach((x, k) => L.push((k ? "     " : "  " + gray("╰─") + " ") + dim(clip(x, Math.max(8, cols() - 9)))));
               const seen = it.live ? Tail.lineCount(it.live) : 0;
               if (seen > tl.length) L.push(gray("     " + seen.toLocaleString("en-US") + " lines so far · /pager to read all"));
             } else if (it.detail && (done || expanded)) {
               const dl = wrap(stripA(it.detail)).filter((x) => x.trim());
               const n = expanded ? 8 : 1;
-              dl.slice(0, n).forEach((x, k) => L.push((k ? "     " : "  " + cyan("⎿") + "  ") + gray(x)));
+              dl.slice(0, n).forEach((x, k) => L.push((k ? "     " : "  " + cyan("╰─") + " ") + gray(x)));
               if (dl.length > n) L.push(gray("     … +" + (dl.length - n) + " line" + (dl.length - n > 1 ? "s" : "") + " (ctrl+o to expand)"));
             }
             prevType = "tool";
@@ -3467,10 +3459,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           const et = ENGINE_TIPS[engine] || [], tips = [];
           for (let k = 0; k < Math.max(NEXUS_TIPS.length, et.length); k++) { if (et[k]) tips.push(et[k]); if (NEXUS_TIPS[k]) tips.push(NEXUS_TIPS[k]); } // interleave so an engine-specific tip shows first
           L.push("");
-          L.push(workGlyph() + " " + cyan(busyWord + "…") + gray("  (" + fmtElapsed(el) + tok + " · esc to interrupt)"));
-          if (tips.length) L.push("  " + gray("⎿ Tip: " + tips[Math.floor(el / 4) % tips.length]));
+          L.push(workGlyph() + " " + cyan(clip(busyWord || activityLabel(m.items), Math.max(10, cols() - 34))) + gray("   " + fmtElapsed(el) + tok + "  ·  esc to stop"));
+          if (tips.length) L.push("  " + gray("╰─ ") + dim(gray("tip  " + tips[Math.floor(el / 6) % tips.length])));
         } else if (m.summary) {
-          L.push("  " + cyan("⎿") + "  " + gray(m.summary));
+          L.push("  " + cyan("╰─") + " " + gray(m.summary));
         }
         if (m.recap && !(busy && m === cur())) recapLines(m.recap).forEach((x) => L.push(x));
         L.push("");
@@ -3482,10 +3474,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       // and a live project pulse — so a fresh session reads as a product, not a void.
       if (transcript.length === 1 && transcript[0].role === "art" && !busy) {
         loadIdleInfo();
-        const paint = useColor ? { brand: (t) => bold(cyan(t)), accent: (t) => bold(cyan(t)), muted: gray, faint: (t) => dim(gray(t)), key: (t) => bold(cyan(t)) } : null;
-        const grad = useColor ? (line) => { let o = ""; for (let c = 0; c < line.length; c++) { const ch = line[c]; if (ch === " ") { o += " "; continue; } const code = GRAD[Math.min(GRAD.length - 1, Math.floor((c / Math.max(1, line.length)) * GRAD.length))]; o += "\x1b[" + code + "m" + ch + "\x1b[0m"; } return o; } : null;
+        const paint = useColor ? { accent: (t) => cyan(t), muted: gray, faint: (t) => dim(gray(t)), key: (t) => cyan(t) } : null;
         const project = gitBranch ? { name: base(cwd), branch: gitBranch.replace(/\*$/, ""), dirty: /\*$/.test(gitBranch), files: idleInfo ? idleInfo.files : undefined, commits: idleInfo ? idleInfo.commits : undefined, last: idleInfo ? idleInfo.last : undefined } : null;
-        for (const ln of idleHome({ cols: cols(), paint, grad, project })) L.push(ln);
+        for (const ln of idleHome({ cols: cols(), paint, project })) L.push(ln);
       }
       // Live task panel (todo_write) — a persistent checklist like Claude Code's
       // TodoWrite, shown at the bottom of the transcript while any task is open.
@@ -4331,7 +4322,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const relOf = (p) => { try { return path.relative(cwd, path.resolve(cwd, p)); } catch (_) { return null; } };
       const ckTree = nexusCheckpoint(cwd); // every engine can now modify files, so always checkpoint (null if not a git repo)
       let ckObj = null; if (ckTree) { ckObj = { tree: ckTree, label: oneline(text, 40), ts: Date.now() }; checkpoints.push(ckObj); }
-      busy = true; busyStart = Date.now(); busyWord = FORGE[Math.floor(Math.random() * FORGE.length)]; sess.liveOut = 0; curTurnFromQueue = _nextFromQueue; _nextFromQueue = false; setTitle("● " + (sessionTitle || "Nexus"));
+      busy = true; busyStart = Date.now(); busyWord = ""; sess.liveOut = 0; curTurnFromQueue = _nextFromQueue; _nextFromQueue = false; setTitle("● " + (sessionTitle || "Nexus"));
       ctl = makeCtl(); // local engine checks .stopped; claude overrides .kill with a process kill
       startTick(); render();
       const finish = (res) => {
@@ -6889,7 +6880,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // No animation, no starfield, no latency: render the compact header (see the
     // "art" transcript row) straight away. fastBoot/NO_MOTION kept for parity.
     finishBoot();
-    void fastBoot;
+    if (!fastBoot && useColor && transcript.length === 1 && transcript[0].role === "art") {
+      let step = 0;
+      const intro = setInterval(() => { step++; markLit = MARK_ORBIT[step % MARK_ORBIT.length]; if (step >= MARK_ORBIT.length) { clearInterval(intro); markLit = 3; } try { render(); } catch (_) { clearInterval(intro); } }, 170);
+      if (intro.unref) intro.unref();
+    }
   });
 }
 // add `.nexus/` to .gitignore (Nexus's state dir shouldn't clutter git); returns true if it added it
