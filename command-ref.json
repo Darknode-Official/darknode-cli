@@ -1,7 +1,7 @@
 {
   "generatedFrom": "lib/cli/reference.js COMMAND_GROUPS",
   "version": "2.46.3",
-  "commandCount": 89,
+  "commandCount": 93,
   "groups": [
     {
       "title": "AI & Nexus",
@@ -13,6 +13,22 @@
         {
           "usage": "nexus run \"<goal>\" [opts]",
           "desc": "autonomous multi-level runner: -e engine, --overnight, --until, --resume"
+        },
+        {
+          "usage": "nexus bg [-- agent args]",
+          "desc": "start a background session (Nexus, or e.g. -- claude) that keeps running after you close the terminal"
+        },
+        {
+          "usage": "nexus ls / nexus sessions",
+          "desc": "every background session marked working, blocked or idle; sessions = live list (Enter attaches)"
+        },
+        {
+          "usage": "nexus attach <name>",
+          "desc": "take over a background session in this terminal; Ctrl+] detaches and leaves it running"
+        },
+        {
+          "usage": "nexus hub send|wait|peek|kill <name>",
+          "desc": "drive a session from scripts or other agents; wait --until blocked|idle|done; hub restore after a restart"
         },
         {
           "usage": "nexus serve [port]",
