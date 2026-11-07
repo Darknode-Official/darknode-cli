@@ -586,6 +586,33 @@ They apply to every engine. Add custom styles as `.nexus/styles/<name>.md`.
 /update              check for Darknode CLI updates
 ```
 
+### Background sessions
+
+Run agents in the background so they keep working after you close the terminal or lose an SSH connection. A small per-user hub (started on first use) owns each session under a real terminal. Linux and macOS.
+
+```
+nexus bg                       start Nexus here in the background
+nexus bg --name api -- claude  any agent or command after --
+nexus bg --prompt "add tests"  type a first prompt once it is ready
+nexus ls                       every session: working, blocked (needs you), idle, done
+nexus sessions                 live list: Enter attaches, n new, x stop, r restore
+nexus attach api               take it over in this terminal; Ctrl+] detaches
+nexus hub send api "run the tests"
+nexus hub wait api --until blocked|idle|done|stopped [--timeout 600]
+nexus hub peek api [--lines 40 | --screen]
+nexus hub kill api
+nexus hub restore              after a reboot: relaunch saved sessions (Nexus resumes its conversation)
+nexus hub stop | status
+```
+
+`send`, `wait`, `peek` and `kill` also work without `hub` when the next word is a session name (`nexus wait api`).
+
+- **States.** Nexus reports its own state exactly. Other agents are read from their screen: recent output (or a shell running a foreground command) means working, and a permission menu or a y/n question on the last line means blocked.
+- **Notifications.** When a session nobody is attached to becomes blocked or finishes, you get a desktop notification.
+- **Agents driving agents.** The `sessions` tool (list, spawn, send, wait, peek, kill) gives the agent the same control. It is available in Nexus's own loop and to Claude Code, Codex and other engines through the `nexus` MCP bridge. It goes through the same danger gate and policy as `run_command`, is blocked in plan mode, and only spawns inside the project folder.
+- **Where things live.** `~/.nexus/hub/` (mode 700): the socket and `sessions.json`. `NEXUS_HUB_DIR` points it elsewhere.
+- **Limits.** Processes do not survive a reboot or `nexus hub stop`; `hub restore` starts them again. Two Nexus sessions in one folder share that folder's saved conversation. Windows is not supported yet.
+
 ---
 
 ## Misc Commands

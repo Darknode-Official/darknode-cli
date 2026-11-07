@@ -83,7 +83,7 @@ function runAsk(input, env) {
     ok("initialize with an unknown version answers one the shim speaks", by(0).result && by(0).result.protocolVersion === "2025-06-18");
     ok("malformed JSON gets a -32700 parse error", m.some((x) => x.id === null && x.error && x.error.code === -32700));
     ok("a notification of any method gets no reply (no id-less responses)", !m.some((x) => !("id" in x)));
-    ok("a batch has every member answered", by("b1").result && by("b2").result && by("b2").result.tools.length === 1);
+    ok("a batch has every member answered", by("b1").result && by("b2").result && by("b2").result.tools.map((t) => t.name).join(",") === "ask_user,sessions");
     ok("an unknown tool is -32602", by("u").error && by("u").error.code === -32602);
     ok("ask_user without a question is -32602, not a blank popup", by("q").error && by("q").error.code === -32602 && by("t").error && by("t").error.code === -32602);
     ok("an unknown method is -32601", by(5).error && by(5).error.code === -32601);
