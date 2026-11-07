@@ -26,8 +26,8 @@ jobs:
   build-mac-cli:
     runs-on: macos-14   # Apple Silicon — builds arm64 natively and cross-builds x64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 18
 
@@ -94,7 +94,7 @@ jobs:
           echo "Notarized. (Raw CLI binaries can't be stapled, but Gatekeeper verifies the ticket online.)"
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: darknode-cli-macos
           path: dist/Darknode-cli-macos-*
