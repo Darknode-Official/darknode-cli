@@ -1209,6 +1209,12 @@ async function cliRun(args, gate) {
     else if (sub === "run" || sub === "supervise" || sub === "loop") await nexusRun(rest.slice(1));
     else if (sub === "overnight") await nexusRun(["--overnight"].concat(rest.slice(1)));
     else if (sub === "agents" || sub === "parallel") await nexusAgents(rest.slice(1));
+    // Background sessions (lib/nexus/hub): bg / ls / attach / send / wait / peek / kill / sessions / hub.
+    else if (await require("./lib/nexus/hub/cli").claims(sub, rest.slice(1))) {
+      const Hub = require("./lib/nexus/hub/cli"), C = { bold, gray, cyan, yellow, green, red };
+      try { await (sub === "hub" ? Hub.hubMain(rest.slice(1), C) : Hub.main(sub, rest.slice(1), C)); }
+      catch (e) { console.error("  " + red(e.message)); process.exitCode = 1; }
+    }
     // Operator-facing headless equivalents of the in-TUI self-check slash commands: they run the
     // exact same tool engines the agent calls (via deviceTool), print the result, and exit non-zero
     // when the check fails so they double as CI gates.
@@ -1451,7 +1457,7 @@ const CODER_SCHEMA = { type: "object", properties: { thought: { type: "string" }
 // it has no tools. normalizeToolCall recovers the real name + args so tools still fire.
 const TOOL_ARGKEY = { run_command: "command", run_background: "command", read_file: "path", write_file: "path", edit_file: "path", multi_edit: "path", multiedit: "path", apply_patch: "patch", patch: "patch", list_dir: "path", make_dir: "path", mkdir: "path", delete: "path", delete_file: "path", rm: "path", move: "from", copy: "from", search: "pattern", grep: "pattern", find: "glob", glob: "glob", http_fetch: "url", web_fetch: "url", fetch_url: "url", http: "url", web_search: "query", discover: "query", remember: "text", check_background: "id", stop_background: "id", list_processes: "filter", batch: "ops", batch_read: "ops", browser_read: "target", browser_page: "target", browser_eval: "expression", browser_exec: "expression", browser_screenshot: "path", browser_shot: "path", ask_user: "question", ask_question: "question", ask: "question" };
 const KNOWN_ARGKEYS = new Set(["path", "command", "content", "query", "q", "url", "pattern", "glob", "find", "text", "note", "id", "filter", "to", "from", "dest", "name", "tasks", "todos", "items", "method", "replace", "recursive"]);
-const KNOWN_TOOLS = new Set(["code_search", "read_file", "write_file", "edit_file", "list_dir", "run_command", "run_background", "check_background", "stop_background", "search", "grep", "find", "find_files", "glob", "http_fetch", "web_fetch", "fetch_url", "http", "web_search", "search_web", "google", "todo_write", "todos", "todo_list", "write_todos", "sysinfo", "system_info", "list_processes", "ps", "make_dir", "mkdir", "move", "rename", "move_file", "copy", "copy_file", "delete", "delete_file", "rm", "remember", "discover", "spawn_agents", "repo_map", "repomap", "multi_edit", "multiedit", "apply_patch", "patch", "verify", "run_tests", "test_project", "find_symbol", "symbol", "goto", "find_references", "references", "find_refs", "usages", "callers", "module_graph", "import_graph", "deps_graph", "dependents", "importers", "outline", "file_outline", "symbols", "read_symbol", "read_function", "show_symbol", "json_query", "jq", "read_json", "undo_edit", "replace_in_files", "wait_for", "write_stdin", "batch", "batch_read", "invariants", "check_invariants", "difflint", "attest", "attestation", "capability_attest", "bisect", "regression_bisect", "explain_break", "explainbreak", "blame_turn", "shrink", "minimize_change", "ddmin", "browser_status", "browser_tabs", "browser_list", "browser_read", "browser_page", "browser_eval", "browser_exec", "browser_screenshot", "browser_shot", "ask_user", "ask_question", "ask"]);
+const KNOWN_TOOLS = new Set(["sessions", "code_search", "read_file", "write_file", "edit_file", "list_dir", "run_command", "run_background", "check_background", "stop_background", "search", "grep", "find", "find_files", "glob", "http_fetch", "web_fetch", "fetch_url", "http", "web_search", "search_web", "google", "todo_write", "todos", "todo_list", "write_todos", "sysinfo", "system_info", "list_processes", "ps", "make_dir", "mkdir", "move", "rename", "move_file", "copy", "copy_file", "delete", "delete_file", "rm", "remember", "discover", "spawn_agents", "repo_map", "repomap", "multi_edit", "multiedit", "apply_patch", "patch", "verify", "run_tests", "test_project", "find_symbol", "symbol", "goto", "find_references", "references", "find_refs", "usages", "callers", "module_graph", "import_graph", "deps_graph", "dependents", "importers", "outline", "file_outline", "symbols", "read_symbol", "read_function", "show_symbol", "json_query", "jq", "read_json", "undo_edit", "replace_in_files", "wait_for", "write_stdin", "batch", "batch_read", "invariants", "check_invariants", "difflint", "attest", "attestation", "capability_attest", "bisect", "regression_bisect", "explain_break", "explainbreak", "blame_turn", "shrink", "minimize_change", "ddmin", "browser_status", "browser_tabs", "browser_list", "browser_read", "browser_page", "browser_eval", "browser_exec", "browser_screenshot", "browser_shot", "ask_user", "ask_question", "ask"]);
 // A tool "name" that is really a shell command line — weak models often emit
 // {tool:"cat /etc/passwd"} or {tool:"ls /bin/*"} instead of run_command.
 const SHELL_CMD = /^(sudo\s+)?(ls|cat|grep|egrep|fgrep|echo|cd|pwd|whoami|id|uname|hostname|ps|top|df|du|free|date|env|printenv|which|type|find|locate|head|tail|awk|sed|cut|tr|sort|uniq|wc|xargs|tee|curl|wget|ping|traceroute|nmap|nc|ncat|dig|host|nslookup|ip|ifconfig|iwconfig|netstat|ss|arp|route|cp|mv|rm|mkdir|rmdir|touch|ln|stat|file|chmod|chown|tar|gzip|gunzip|zip|unzip|git|make|gcc|python3?|node|npm|npx|pip3?|bash|sh|zsh|kill|pkill|killall|systemctl|service|apt|apt-get|dpkg|ssh|scp|rsync|darknode|sentinel|nexus|nikto|sqlmap|hydra|john|hashcat|gobuster|ffuf|masscan|whatweb|searchsploit|msfconsole)(\s|$)/i;
@@ -2489,6 +2495,7 @@ async function deviceTool(name, a, cwd) {
     if (!syms.length) res.note = /\.jsonc?$/i.test(fp) ? "JSON has no symbols — use json_query {path, query, keys_only:true} to see its structure" : "no functions/classes recognized in this file type — use read_file or search";
     return res;
   }
+  if (name === "sessions") return require("./lib/nexus/hub/tool").sessionsTool(a, cwd); // background agent sessions (lib/nexus/hub)
   return null;
 }
 // Render one of the agentic self-check tools' result objects (invariants/attest/bisect/
@@ -3651,6 +3658,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // ---- /effort interactive slider (Claude-Code-style): a Faster↔Smarter bar
     // the user nudges with ←/→ and confirms with Enter, instead of typing a level.
     let pendingEffort = null; // { sel } while the picker is open
+    // Inside a background session (nexus bg), tell the hub whether this TUI is working, waiting on a question, or idle.
+    const hubPoke = require("./lib/nexus/hub/report").startReporter(() => (pendingAsk ? "blocked" : busy ? "working" : "idle"));
     // ---- /god-prompt: a one-shot "maximum quality" mode for the NEXT message.
     // Arming turns the composer border gold; the settings apply for that single
     // turn only and revert automatically when it finishes.
@@ -3807,6 +3816,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const render = () => {
       pruneAgents();
       if (cleaned) return; // after teardown: never touch the terminal again (a pending timer could still fire)
+      hubPoke();
       if (_wasBusy && !busy && nextQueue.length) scheduleDrain(300);
       _wasBusy = busy;
       if (godActive && !busy) { godRestore(); godActive = false; } // /god-prompt reverts once its one turn finishes
