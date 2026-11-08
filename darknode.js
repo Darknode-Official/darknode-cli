@@ -3153,7 +3153,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const MDC = { inline: (l) => colorMd(l, false), gray, dim, mag, green, yellow, cyan, red, bold, italic: (x) => p("\x1b[3m", x), underline: (x) => p("\x1b[4m", x) };
     const _mdMemo = new WeakMap();
     const mdLines = (owner, text, w) => { const c = owner && _mdMemo.get(owner); if (c && c.w === w && c.text === text) return c.lines; const lines = renderMd(text, w, MDC); if (owner) _mdMemo.set(owner, { w, text, lines }); return lines; };
-    const wrap = (text) => ansiWrap(text, Math.max(1, cols() - 4)); // ANSI-aware: measures visible width, never slices a color escape, carries color across lines
+    const wrap = (text, pre = 2) => ansiWrap(text, Math.max(1, cols() - 2 - pre)); // pre = visible width of the row prefix; body rows hold cols()-2 cells. // ANSI-aware: measures visible width, never slices a color escape, carries color across lines
     // Rendered like Claude Code: gray ※, bold "recap:", italic body, then the disable hint.
     const recapLines = (t) => { const it = (x) => "\x1b[3m" + gray(x) + "\x1b[23m"; return wrap("recap: " + t + " (disable recaps in /config)").map((ln, j) => j ? "  " + it(ln) : gray("※") + " " + bold(gray("recap:")) + it(ln.slice(6))); };
     // ---- tool-card labels (Claude-Code style) ----
@@ -3445,7 +3445,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               const pre = () => { const p = first ? "  " + gray("╰─") + " " : "     "; first = false; return p; };
               for (const ln of v.lines) {
                 if (ln.k === "todo") { L.push(pre() + (ln.s === "done" ? gray("☒ ") + dim(strike(ln.text)) : ln.s === "active" ? bold("☐ " + ln.text) : "☐ " + ln.text)); continue; }
-                for (const w of wrap(stripA(ln.text)).slice(0, expanded ? 40 : 2)) L.push(pre() + (ln.k === "err" ? red(w) : ln.k === "out" ? w : gray(w)));
+                for (const w of wrap(stripA(ln.text), 5).slice(0, expanded ? 40 : ln.k === "err" ? 4 : 2)) L.push(pre() + (ln.k === "err" ? red(w) : ln.k === "out" ? w : gray(w)));
               }
               if (v.more) L.push(gray("     … +" + v.more + " line" + (v.more > 1 ? "s" : "") + " (ctrl+o to expand · /pager to read all)"));
             } else if (it.status === "run" && (it.name === "Bash" || it.name === "run_command")) {
@@ -3456,7 +3456,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               const seen = it.live ? Tail.lineCount(it.live) : 0;
               if (seen > tl.length) L.push(gray("     " + seen.toLocaleString("en-US") + " lines so far · /pager to read all"));
             } else if (it.detail && (done || expanded)) {
-              const dl = wrap(stripA(it.detail)).filter((x) => x.trim());
+              const dl = wrap(stripA(it.detail), 5).filter((x) => x.trim());
               const n = expanded ? 8 : 1;
               dl.slice(0, n).forEach((x, k) => L.push((k ? "     " : "  " + cyan("╰─") + " ") + gray(x)));
               if (dl.length > n) L.push(gray("     … +" + (dl.length - n) + " line" + (dl.length - n > 1 ? "s" : "") + " (ctrl+o to expand)"));
@@ -3474,7 +3474,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           L.push(workGlyph() + " " + cyan(clip(busyWord || activityLabel(m.items), Math.max(10, cols() - 34))) + gray("   " + fmtElapsed(el) + tok + "  ·  esc to stop"));
           if (tips.length) L.push("  " + gray("╰─ ") + dim(gray("tip  " + tips[Math.floor(el / 6) % tips.length])));
         } else if (m.summary) {
-          L.push("  " + cyan("╰─") + " " + gray(m.summary));
+          wrap(m.summary, 5).forEach((x, k) => L.push((k ? "     " : "  " + cyan("╰─") + " ") + gray(x)));
         }
         if (m.recap && !(busy && m === cur())) recapLines(m.recap).forEach((x) => L.push(x));
         L.push("");
@@ -3499,7 +3499,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         AGENT_TODOS.slice(0, cap).forEach((t) => {
           const box = t.status === "done" ? green("[x]") : t.status === "in_progress" ? yellow("[~]") : gray("[ ]");
           const paint = t.status === "done" ? gray : t.status === "in_progress" ? bold : (s) => s;
-          const w = wrap(t.content);
+          const w = wrap(t.content, 6);
           L.push(gray("│ ") + box + " " + paint(w[0] || ""));
           for (let i = 1; i < w.length; i++) L.push(gray("│ ") + "    " + paint(w[i]));
         });
@@ -3861,7 +3861,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       // breathing room below the footer so the composer floats off the terminal
       // floor (matches Claude Code, which leaves a margin under its prompt).
       // clamped away on short terminals so it never eats the transcript.
-      const bottomMargin = Math.min(5, Math.max(0, R - 16));
+      const bottomMargin = Math.min(5, Math.max(0, Math.floor((R - 30) / 4))); // only tall windows get the gap; a small window keeps every row for the transcript
       // Agents panel: the live sub-agent list sits between the composer/menu and
       // the footer (Claude-Code layout). Hidden while a full-width card owns the
       // bottom. Capped so a long list never crowds out the transcript.
