@@ -71,7 +71,8 @@ const Ledger = require("./lib/cli/ledger");
 const TokCount = require("./lib/cli/tokcount"); // pure /tokens estimator — price files before @-attaching them (lib/cli/tokcount.js) // pure per-session cost ledger (/turns) + lossless cost advisor (/costtips) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
 const CacheWarm = require("./lib/cli/cachewarm"); // pure prompt-cache TTL countdown for the status chip + /warm (lib/cli/cachewarm.js)
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
-const { idleWatchdog, engineWaits } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based, paused while the user answers a popup
+const { idleWatchdog } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based (ask_user no longer holds the engine open)
+const AskDefer = require("./lib/nexus/ask-defer"); // ask_user never blocks the engine: answer later, sent as the next prompt
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
 const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, toGeminiServers, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
 const ASK_MCP_PATH = require("path").join(__dirname, "lib", "nexus", "ask-mcp.js"); // stdio MCP shim spawned by the engine
@@ -4056,20 +4057,30 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // MCP shim (lib/nexus/ask-mcp.js) connects to askBridge.sockPath and forwards
     // the question here, where handleBridgeAsk shows the real card and answers. ----
     let askBridge = null;
-    const handleBridgeAsk = async (req, link) => {
+    // The engine's call returns at once ({ deferred }), so its model ends the turn: no
+    // timeout, and no tokens spent while the question waits. The popup stays until the
+    // user answers or dismisses it; an answer goes out as the next ordinary prompt.
+    const deferredAsks = [];
+    const handleBridgeAsk = async (req) => {
       const q = String((req && req.question) || "");
       if (!q) return { skipped: true };
-      // live while the popup is open; once settled it becomes a record of the answer, so it never
-      // keeps saying the model is asking
-      const line = { role: "system", text: gray("the model is asking: ") + oneline(q, 60) }; transcript.push(line); render();
-      const settle = (r) => { const a = r && (r.selected != null ? [].concat(r.selected).join(", ") : r.answer); const i = transcript.indexOf(line); if (i >= 0) transcript[i] = { role: "system", text: gray("asked: ") + oneline(q, 50) + gray("  → ") + (a != null && a !== "" ? oneline(String(a), 50) : gray((r && r.withdrawn) || tok.gone ? "withdrawn" : "skipped")) }; _blCache = null; _pre = null; render(); return r; }; // a new object: lines are cached per message and by the last message only
-      // Tag this request's popup; if the engine disconnects before the user answers,
-      // withdraw it (with a notice) rather than accept an answer that goes nowhere.
-      const tok = {};
-      const tagAsk = (qq, oo, ex) => { const pr = askUser(qq, oo, ex); if (pendingAsk) pendingAsk._bridge = tok; return pr; };
-      if (link && link.onGone) link.onGone(() => { if (pendingAsk && pendingAsk._bridge === tok) { tok.gone = true; const p = pendingAsk; pendingAsk = null; transcript.push({ role: "system", text: yellow("the engine stopped before you answered — the question was withdrawn (your answer was not sent)") }); p.resolve({ cancelled: true }); render(); } });
-      engineWaits.n++; // the engine is silent while it waits on the user — never treat that as hung
-      try { return settle(await answerBridgeAsk(req, q, tagAsk)); } catch (e) { settle({ withdrawn: true }); throw e; } finally { engineWaits.n--; }
+      deferredAsks.push(req);
+      if (deferredAsks.length === 1) showDeferredAsk();
+      return { deferred: true };
+    };
+    const showDeferredAsk = () => {
+      const req = deferredAsks[0]; if (!req) return;
+      const q = String(req.question);
+      const line = { role: "system", text: gray("the model asked: ") + oneline(q, 60) + gray("  · answer whenever you are ready") }; transcript.push(line); render();
+      const next = () => { deferredAsks.shift(); showDeferredAsk(); };
+      answerBridgeAsk(req, q, askUser).then((r) => {
+        const a = AskDefer.answerText(r);
+        const i = transcript.indexOf(line); // a new object: lines are cached per message and by the last message only
+        if (i >= 0) transcript[i] = { role: "system", text: gray("asked: ") + oneline(q, 50) + gray("  → ") + (a != null ? oneline(a, 50) : gray("dismissed, nothing sent")) };
+        _blCache = null; _pre = null;
+        if (a != null) { nextQueue.push(AskDefer.answerPrompt(q, a)); scheduleDrain(0); }
+        render(); next();
+      }, next);
     };
     const answerBridgeAsk = async (req, q, askUser) => {
       if (req.input) { const ans = await askUser(q, [], { input: true, placeholder: req.placeholder }); return ans.cancelled ? { skipped: true } : { answer: String(ans.value || "") }; }
