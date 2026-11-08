@@ -3648,6 +3648,13 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("fmtAnswer: single pick", fmtAnswer({ selected: "Option B", index: 1 }) === "The user chose: Option B");
     ok("fmtAnswer: multi pick", fmtAnswer({ selected: ["A", "C"], indices: [0, 2] }) === "The user selected: A, C");
     ok("fmtAnswer: dismissed/skip", /dismissed the question/.test(fmtAnswer({ skipped: true })) && /dismissed the question/.test(fmtAnswer(null)));
+    { const AD = require("../lib/nexus/ask-defer");
+      ok("fmtAnswer: deferred tells the model to end its turn", fmtAnswer({ deferred: true }) === AD.DEFERRED_NOTE && /End your turn now/.test(AD.DEFERRED_NOTE));
+      ok("ask_user description says the answer comes as the next message", /next message/.test(ASK_TOOL.description));
+      ok("ask-defer: picks and typed answers become text", AD.answerText({ selected: "B", index: 1 }) === "B" && AD.answerText({ selected: ["A", "C"] }) === "A, C" && AD.answerText({ answer: "go" }) === "go");
+      ok("ask-defer: a dismissed question sends nothing", AD.answerText({ skipped: true }) === null && AD.answerText({ cancelled: true }) === null && AD.answerText({ answer: "" }) === null && AD.answerText(null) === null);
+      ok("ask-defer: answer prompt quotes the question", AD.answerPrompt("Ship  it?\nnow", "Yes") === 'Answer to your question "Ship it? now": Yes');
+      ok("ask-defer: a long question is shortened in the prompt", AD.answerPrompt("x".repeat(1000), "y").length < 330); }
     ok("ask_user tool schema requires a question", ASK_TOOL.name === "ask_user" && ASK_TOOL.inputSchema.required.includes("question"));
 
     // --- real end-to-end: the stdio shim forwards a tools/call to the bridge and returns the user's answer ---
