@@ -1988,6 +1988,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     try { cp.stdin.on("error", () => {}); cp.stdin.end(viaStdin ? prompt : undefined); } catch (_) {} // big prompt on stdin, else EOF so claude doesn't wait on stdin
     const dropSys = () => { if (sysFile) { try { require("fs").unlinkSync(sysFile); } catch (_) {} sysFile = ""; } };
     let buf = "", finalText = "", res = null, killed = false;
+    const bgT = require("./lib/nexus/bg-cutoff").createBgTracker(); // background agents still working when claude exits
     if (ctl) ctl.kill = () => { killed = true; killGroup(cp, "SIGINT"); setTimeout(() => killGroup(cp, "SIGKILL"), 1500); };
     cp.stdout.setEncoding("utf8");
     cp.stdout.on("data", (d) => {
@@ -1997,6 +1998,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
         const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
         let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
+        bgT.event(ev);
         if (ev.type === "system" && ev.subtype === "init") { h.onInit && h.onInit(ev); }
         else if (ev.type === "rate_limit_event") { h.onRateLimit && h.onRateLimit(ev.rate_limit_info || {}); }
         else if (ev.type === "assistant" && ev.message) {
@@ -2022,7 +2024,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
       }
     });
     cp.stderr.on("data", () => { to.touch(); });
-    cp.on("close", (code) => { to.clear(); dropSys(); resolve({ ok: code === 0 && !killed, interrupted: killed, output: finalText, result: res }); });
+    cp.on("close", (code) => { to.clear(); dropSys(); resolve({ ok: code === 0 && !killed, interrupted: killed, output: finalText, result: res, bgCut: killed ? 0 : bgT.cut() }); });
     cp.on("error", (e) => { to.clear(); dropSys(); resolve({ ok: false, output: "engine spawn error: " + e.message + (e.code === "E2BIG" ? " (the environment is too large to start a process; run /fixshell)" : " (is claude installed & logged in?)") }); });
   });
 }
@@ -4257,8 +4259,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const onRejection = (e) => { if (busy || (ctl)) { busy = false; ctl = null; try { transcript.push({ role: "system", text: "recovered from an internal error: " + (e && e.message || e) }); } catch (_) {} try { render(); } catch (_) {} } };
     process.on("exit", cleanup); process.on("SIGINT", onSigint); process.on("SIGTERM", onSigterm); process.on("SIGHUP", onHup); process.on("uncaughtException", onFatal); process.on("unhandledRejection", onRejection); // SIGHUP = terminal closed: still stop background jobs (they run in their own process groups)
     // ---- engine turn ----
+    // Automatic resumes after Claude Code stopped background agents (lib/nexus/bg-cutoff.js):
+    // capped per message the user typed; a prompt Nexus queued itself does not reset the count.
+    let bgResumes = 0; const bgResumeTexts = new Set();
     const submit = (text) => {
       if (compact.on) { nextQueue.push(text); render(); return; } // runs once the compaction finishes
+      if (!bgResumeTexts.delete(text)) bgResumes = 0;
       clearPending = false; // sending a message cancels a pending /clear confirmation
       // Only enforce budget cap on API-billed engines, not Claude Max subscription
       const isSubEngine = onPlan(engine);
@@ -4342,7 +4348,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const finish = (res) => {
         for (const it of block.items) if (it.type === "tool" && it.status === "run") { it.status = res && res.interrupted ? "err" : "ok"; it.interrupted = !!(res && res.interrupted); it.end = Date.now(); }
         runningShells = 0; activeAgents = 0; ctl = null;
-        for (const rg of agents) if (rg.status === "run" && rg.native === false) finishAgent(rg, res && res.interrupted ? "stopped" : "ok"); // any Claude sub-agent still open when the turn ends
+        const bgCut = (res && !res.interrupted && res.bgCut) || 0; // Claude Code exited with background agents mid-task
+        for (const rg of agents) if (rg.status === "run" && rg.native === false) finishAgent(rg, (res && res.interrupted) || bgCut ? "stopped" : "ok"); // any Claude sub-agent still open when the turn ends
         if (!block.items.length || !block.items.some((i) => i.type === "text" && i.full.trim())) { const t = textItem(); if (!t.full.trim()) t.full = res && res.interrupted ? "(interrupted)" : (res && res.output) || "(no output)"; }
         const dt = ((Date.now() - stat.t0) / 1000).toFixed(1);
         const din = sess.inTok - stat.inTok0, dout = sess.outTok - stat.outTok0, dcost = sess.cost - stat.cost0;
@@ -4392,6 +4399,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             }
             input = text; curPos = input.length; composer.text = input; composer.cursor = curPos; composer.draft = ""; hIdx = history.length; composer.histIndex = history.length;
           }
+        }
+        if (bgCut) {
+          const BG = require("./lib/nexus/bg-cutoff"), what = bgCut === 1 ? "a background agent" : bgCut + " background agents";
+          if (bgResumes < BG.RESUME_LIMIT) {
+            bgResumes++; const rp = BG.resumePrompt(bgCut); bgResumeTexts.add(rp); nextQueue.unshift(rp);
+            transcript.push({ role: "system", text: yellow("Claude Code ended its session while " + what + " " + (bgCut === 1 ? "was" : "were") + " still working, which stops them.") + gray(" Resuming them automatically (" + bgResumes + " of " + BG.RESUME_LIMIT + "). Esc stops it.") });
+          } else transcript.push({ role: "system", text: yellow("Claude Code ended its session while " + what + " " + (bgCut === 1 ? "was" : "were") + " still working, which stops them.") + gray(" Nexus already resumed " + BG.RESUME_LIMIT + " times for this message; type continue to resume again.") });
         }
         if (!(res && res.interrupted) && (stat.files.size || stat.cmds || +dt >= 20 || block.items.filter((i) => i.type === "tool").length >= 3)) maybeRecap(block, text, { files: [...stat.files], cmds: stat.cmds });
         maybeAutoCompact(); maybeAutoTitle(); idleTitle(); render(); refreshGit();
@@ -4446,7 +4460,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             addUsage(_mu, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
-        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
+        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
       } else if (ENGINES[engine] && ENGINES[engine].kind === "cli") { // gemini / codex / opencode / aider
         const eng = ENGINES[engine];
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose
