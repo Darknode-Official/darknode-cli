@@ -3718,6 +3718,27 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
   {
     const CH = require("../lib/nexus/cheap");
     eq("flag only when on", CH.launchFlags(true).concat(CH.launchFlags(false)), ["--exclude-dynamic-system-prompt-sections"]);
+    eq("overrides ride on --settings", CH.launchFlags(true, { pdf: "name-only" }).slice(1), ["--settings", '{"skillOverrides":{"pdf":"name-only"}}']);
+    eq("overrides ignored when off", CH.launchFlags(false, { pdf: "name-only" }), []);
+    eq("unused skills go name-only, used and kept stay on", CH.skillOverrides(["pdf", "docs", "ship", "claude-api"], ["anthropic-skills:docs"], ["ship"]), { pdf: "name-only" });
+    ok("no scan yet = no trim", CH.skillOverrides(["pdf"], undefined) === null);
+    ok("no listing yet = no trim", CH.skillOverrides(undefined, []) === null);
+    ok("everything used = no trim", CH.skillOverrides(["pdf"], ["pdf"]) === null);
+    {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "cheap-")), proj = path.join(home, ".claude", "projects", "p"), cwd = path.join(home, "repo");
+      fs.mkdirSync(proj, { recursive: true }); fs.mkdirSync(path.join(cwd, ".claude", "skills", "ship"), { recursive: true });
+      const use = '{"type":"tool_use","id":"t","name":"Skill","input":{"skill":"anthropic-skills:docs"}}';
+      fs.writeFileSync(path.join(proj, "a.jsonl"), "x".repeat(1000) + use + "\n<command-name>/review</command-name>\n" + '{"name":"Skill","description":"Invoke a skill."}');
+      const small = await CH.scanSkillUse(path.join(home, ".claude", "projects"), 0, 700);
+      eq("scan finds tool and typed uses, even split across chunks", small.sort(), ["anthropic-skills:docs", "review"]);
+      eq("old files are skipped", await CH.scanSkillUse(path.join(home, ".claude", "projects"), Date.now() + 1e6), []);
+      ok("nothing before a scan", CH.overridesFor(home, cwd) === null);
+      CH.rememberListed(home, ["pdf", "docs", "ship"]);
+      ok("first refresh scans", await CH.refreshUse(home, Date.now()) === true);
+      ok("second refresh is skipped for a day", await CH.refreshUse(home, Date.now()) === false);
+      eq("store drives the overrides, project skills kept", CH.overridesFor(home, cwd), { pdf: "name-only" });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
     ok("effort is never part of the preset", !CH.PRESET_KEYS.includes("effort"));
     const t = { input: 0, output: 1e6, cacheWrite5m: 0, cacheWrite1h: 1e6, cacheRead: 1e7, reported: 0 };
     const r = CH.spendReport({ "claude-haiku-5-5": { input: 10, output: 10, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0 }, "claude-fable-5-2": t });
