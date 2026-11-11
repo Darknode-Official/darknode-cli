@@ -3734,7 +3734,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const row = (txt) => cyan("│") + " " + txt + " ".repeat(Math.max(0, w - strWidth(txt))) + " " + cyan("│");
       const rule = (l, r, left, right) => { left = left || ""; right = right || ""; const fill = Math.max(1, W - 2 - strWidth(left) - strWidth(right)); return cyan(l) + left + cyan("─".repeat(fill)) + right + cyan(r); };
       const secs = (ms) => (ms / 1000).toFixed(1) + "s";
-      const meta = cur.a == null ? (cur.t0 ? yellow(spin[Math.floor(Date.now() / 90) % spin.length] + " " + secs(Date.now() - cur.t0)) : "") : cur.ms != null ? gray((cur.eng ? cur.eng + " · " : "") + secs(cur.ms)) : "";
+      const meta = cur.a == null ? (cur.t0 ? workGlyph() + " " + yellow(secs(Date.now() - cur.t0)) : "") : cur.ms != null ? gray((cur.eng ? cur.eng + " · " : "") + secs(cur.ms)) : "";
       const pos = st.list.length > 1 ? gray((st.i + 1) + "/" + st.list.length) : "";
       const title = " " + bold(cyan(isCmd ? "◇ side panel" : "◇ side question")) + (isCmd ? gray(" " + cur.q) : "") + " ";
       const right = [pos, meta].filter(Boolean).join(gray(" · "));

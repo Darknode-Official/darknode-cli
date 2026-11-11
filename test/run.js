@@ -3714,6 +3714,15 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("no wall-clock 40-minute SIGKILL left on engine turns", !/setTimeout\(\(\) => killGroup\([a-z]+, "SIGKILL"\), 40 \* 60 \* 1000\)/.test(src));
   }
 
+  group("/btw panel renders while the answer is pending");
+  {
+    const main = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
+    const at = main.indexOf("const renderBtw = (C, R, st) => {"), body = main.slice(at, main.indexOf("\n    };", at) + 7);
+    ok("found the renderer", at > 0);
+    ok("uses the shared working glyph, no leftover spin table", /workGlyph\(\)/.test(body) && !/\bspin\b/.test(body));
+    ok("workGlyph is defined before the renderer", main.indexOf("const workGlyph =") > 0 && main.indexOf("const workGlyph =") < at);
+  }
+
   group("/cheap on claude — launch flag, model-switch hold, measured spend");
   {
     const CH = require("../lib/nexus/cheap");
