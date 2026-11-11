@@ -3730,6 +3730,17 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("flag only when on", CH.launchFlags(true).concat(CH.launchFlags(false)), ["--exclude-dynamic-system-prompt-sections"]);
     eq("overrides ride on --settings", CH.launchFlags(true, { pdf: "name-only" }).slice(1), ["--settings", '{"skillOverrides":{"pdf":"name-only"}}']);
     eq("overrides ignored when off", CH.launchFlags(false, { pdf: "name-only" }), []);
+    eq("keep-warm ping turns hooks off alongside overrides", CH.launchFlags(true, { pdf: "name-only" }, true).slice(1), ["--settings", '{"skillOverrides":{"pdf":"name-only"},"disableAllHooks":true}']);
+    eq("keep-warm ping runs one turn on an unsaved fork", CH.keepWarmFlags(), ["--fork-session", "--no-session-persistence", "--max-turns", "1"]);
+    const H = 3600000, kw = { cheap: true, engine: "claude", sid: "s1", busy: false, lastAt: H, ttl: H, now: 2 * H - 120000, lastHumanAt: H, ctxTok: 80000 };
+    const due = (o) => CH.keepWarmDue(Object.assign({}, kw, o));
+    ok("keep-warm fires 2 min before a 1h cache expires", due({}));
+    ok("keep-warm waits until the last 4 minutes", !due({ now: 2 * H - 10 * 60000 }));
+    ok("keep-warm never revives an expired cache", !due({ now: 2 * H + 1 }));
+    ok("keep-warm skips the 5m cache (rebuild is cheaper than pings)", !due({ ttl: 300000, now: H + 300000 - 60000 }));
+    ok("keep-warm skips small contexts", !due({ ctxTok: 5000 }));
+    ok("keep-warm off when /cheap is off, busy, no session or another engine", !due({ cheap: false }) && !due({ busy: true }) && !due({ sid: "" }) && !due({ engine: "gemini" }));
+    ok("keep-warm stops 6h after the last message", due({ lastAt: 5 * H, now: 6 * H - 60000 }) && !due({ lastAt: 7 * H, now: 8 * H - 60000 }));
     eq("unused skills go name-only, used and kept stay on", CH.skillOverrides(["pdf", "docs", "ship", "claude-api"], ["anthropic-skills:docs"], ["ship"]), { pdf: "name-only" });
     ok("no scan yet = no trim", CH.skillOverrides(["pdf"], undefined) === null);
     ok("no listing yet = no trim", CH.skillOverrides(undefined, []) === null);
