@@ -1983,7 +1983,8 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     if (opts.maxBudgetUsd) args.push("--max-budget-usd", String(opts.maxBudgetUsd));
     if (opts.maxTurns) args.push("--max-turns", String(opts.maxTurns));
     if (opts.disallow && opts.disallow.length) args.push("--disallowed-tools", ...opts.disallow);
-    args.push(...Cheap.launchFlags(opts.cheap, opts.skillOverrides));
+    args.push(...Cheap.launchFlags(opts.cheap, opts.skillOverrides, opts.keepWarm));
+    if (opts.keepWarm) args.push(...Cheap.keepWarmFlags()); // one turn on an unsaved fork: reads the cache, leaves the conversation as it was
     if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath); // give claude the Nexus ask bridge (+ any .nexus/mcp.json servers); no --strict so claude keeps its own servers too
     const env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
     const cp = _cp.spawn("claude", args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
@@ -2929,13 +2930,13 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     if (launch.lean) lean = true; // --lean, this launch only
     if (launch.yes) transcript.push({ role: "system", text: "-y / --skip-permissions applies to one-shot runs; here the permission mode is shift+tab (accept edits · plan · bypass)." });
     const READONLY_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"]; // disallowed to enforce read-only (plan mode / /bench)
-    const impact = { localTurns: 0, cloudTurns: 0, localTok: 0, cloudInTok: 0, cloudOutTok: 0, cloudCost: 0, ctxSavedTok: 0, coworkSaved: 0, delegated: 0, cachedHits: 0, cachedSaved: 0, squeezeTok: 0, repeatTok: 0, memoTok: 0, sideSkipped: 0 }; // Impact Receipt tallies
+    const impact = { localTurns: 0, cloudTurns: 0, localTok: 0, cloudInTok: 0, cloudOutTok: 0, cloudCost: 0, ctxSavedTok: 0, coworkSaved: 0, delegated: 0, cachedHits: 0, cachedSaved: 0, squeezeTok: 0, repeatTok: 0, memoTok: 0, sideSkipped: 0, keepWarm: 0, keepWarmCost: 0 }; // Impact Receipt tallies
     const editUndo = require("./lib/nexus/edit-undo").createEditUndo(); // undo_edit: the agent's own per-file changes this session
     const SyntaxGate = require("./lib/nexus/syntax-gate"); // after an edit: warn if it introduced a syntax error (settings.syntaxGate)
     const sessStart = Date.now();             // wall-clock start of this TUI session (dashboard uptime)
     const sessFiles = new Set();              // every repo-relative file the agent touched this session (for the dashboard)
     const toolUse = Object.create(null);      // tool name -> call count this session (for the dashboard)
-    let cheapPrev = settingsStore.getSaved("cheapPrev") || null, modelHold = null; // settings to restore on /cheap off; a model switch waiting for its confirming repeat
+    let cheapPrev = settingsStore.getSaved("cheapPrev") || null, modelHold = null, lastClaudeOpts = null, lastAskAt = 0, warming = false; // lastClaudeOpts/lastAskAt/warming: keep-warm reuses the last real launch exactly; settings to restore on /cheap off; a model switch waiting for its confirming repeat
     let cacheOn = !!S.cache; // response cache: serve exact-repeat read-only answers for free (off by default — opt in with /cache on)
     let cowork = { on: false, strong: "", weak: "", weakKind: "claude" }; // strong codes, weak does cheap work; weakKind: claude|ollama(local, free)
     const auxModel = () => (cowork.on && cowork.weakKind === "claude" && engine === "claude") ? cowork.weak : undefined; // weak CLAUDE model for aux calls
@@ -4126,7 +4127,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const revealing = () => { const b = activeBlock || cur(); if (!b || !b.items) return false; return b.items.some((it) => it.type === "text" && it.shown < it.full.length); };
     const startTick = () => { if (tick) return; tick = setInterval(() => { const b = activeBlock || cur(); if (b && b.items) for (const it of b.items) if (it.type === "text" && it.shown < it.full.length) { let ns = Math.min(it.full.length, it.shown + Math.max(2, Math.ceil((it.full.length - it.shown) / 22))); const cc = it.full.charCodeAt(ns - 1); if (cc >= 0xD800 && cc <= 0xDBFF && ns < it.full.length) ns++; it.shown = ns; } render(); if (!busy && !revealing() && !compact.on) { clearInterval(tick); tick = null; } }, 45); };
     // idle refresh for the prompt-cache chip: re-render only when its text changes (minute steps, then seconds in the last minute)
-    let lastWarmChip = ""; const warmTimer = setInterval(() => { if (busy || engine !== "claude" || !cacheWarm.lastAt) return; const c = CacheWarm.chip(CacheWarm.cacheState({ lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now() })); if (c !== lastWarmChip) { lastWarmChip = c; render(); } }, 5000); if (warmTimer.unref) warmTimer.unref();
+    // /cheap keep-warm: refresh a 1-hour cache just before it expires while you are away
+    const keepWarm = () => {
+      if (warming || !lastClaudeOpts || !Cheap.keepWarmDue({ cheap: !!(cacheOn && tightEdits && cheapSide), engine, sid: claudeSid, busy, lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now(), lastHumanAt: lastAskAt, ctxTok: sess.ctxUsed })) return;
+      warming = true; const sid = claudeSid, model = sess.resolvedModel || sess.model;
+      runClaudeStream(Cheap.KEEP_WARM_PROMPT, cwd, false, { onResult: (ev) => {
+        if (claudeSid !== sid) return; // the chat was cleared meanwhile
+        const u = ev.usage || {}, c = costOf(model, usageBuckets(u)); // usage is this run's own; modelUsage and total_cost_usd carry the resumed session's running totals
+        addUsage(null, u, model); sess.cost += c; impact.keepWarmCost += c;
+        impact.keepWarm++;
+      } }, null, Object.assign({}, lastClaudeOpts, { resume: sid, keepWarm: true, maxBudgetUsd: undefined })).then(() => { warming = false; render(); }, () => { warming = false; });
+    };
+    let lastWarmChip = ""; const warmTimer = setInterval(() => { if (busy || engine !== "claude" || !cacheWarm.lastAt) return; keepWarm(); const c = CacheWarm.chip(CacheWarm.cacheState({ lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now() })); if (c !== lastWarmChip) { lastWarmChip = c; render(); } }, 5000); if (warmTimer.unref) warmTimer.unref();
     // Flatten the kept transcript tail into a short plain-text summary, so a
     // claude turn that has just dropped --continue still knows what came before.
     // User lines and the model's own answers only — no tool spew, capped so the
@@ -4439,6 +4451,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const _resumeSid = (engine === "claude" && claudeSid) ? claudeSid : undefined; // always resume OUR session by id: bare --continue takes the folder's newest Claude session (a one-shot, or the user's own `claude` run)
       oneShotRan = false;
       if (engine === "claude") {
+        lastAskAt = Date.now();
         runClaudeStream(promptText, cwd, cont, {
           onInit: (ev) => { if (ev.model) sess.model = ev.model; if (ev.session_id) claudeSid = ev.session_id; },
           onRateLimit: (info) => { rate = info; },
@@ -4474,7 +4487,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             addUsage(_mu, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
-        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), skillOverrides: cacheOn && tightEdits && cheapSide ? Cheap.overridesFor(NHOME, cwd) : null, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
+        }, ctl, lastClaudeOpts = { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), skillOverrides: cacheOn && tightEdits && cheapSide ? Cheap.overridesFor(NHOME, cwd) : null, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
       } else if (ENGINES[engine] && ENGINES[engine].kind === "cli") { // gemini / codex / opencode / aider
         const eng = ENGINES[engine];
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose
@@ -5939,7 +5952,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           row(tightEdits, "surgical edits — change only what differs, never rewrite whole lines"),
           row(cacheOn, "exact-repeat cache — free re-answers for unchanged read-only turns", impact.cachedHits ? gray("  " + impact.cachedHits + " hit" + (impact.cachedHits === 1 ? "" : "s") + " · $" + impact.cachedSaved.toFixed(4) + " saved") : isClaude ? gray("  (first message of a session only)") : ""),
           row(cheapSide, "local tab titles + recaps — no extra Claude Code session per title/recap", impact.sideSkipped ? gray("  " + impact.sideSkipped + " call" + (impact.sideSkipped === 1 ? "" : "s") + " skipped") : ""),
-          ...(isClaude ? [row(on, "unused skills listed by name only — still available, long descriptions not resent", trimmed ? gray("  " + trimmed + " skills") : on ? gray("  (starts after your next message)") : ""), row(on, "shared cache prefix — per-machine context kept out of the system prompt"), row(on, "model-switch hold — /model waits for a repeat while it would discard a warm cache")] : []),
+          ...(isClaude ? [row(on, "unused skills listed by name only — still available, long descriptions not resent", trimmed ? gray("  " + trimmed + " skills") : on ? gray("  (starts after your next message)") : ""), row(on, "shared cache prefix — per-machine context kept out of the system prompt"), row(on, "model-switch hold — /model waits for a repeat while it would discard a warm cache"), row(on, "keep-warm — refreshes a 1-hour cache before it expires while you are away (up to 6h)", impact.keepWarm ? gray("  " + impact.keepWarm + " refresh" + (impact.keepWarm === 1 ? "" : "es") + " · " + money(impact.keepWarmCost)) : "")] : []),
           row(null, "context de-dup, re-read supersession, unchanged-file skip", tk(impact.squeezeTok)),
           row(null, "repeated / counting output lines + node-internal frames → exact summaries", tk(impact.repeatTok) || localOnly),
           row(null, "repeated read-only tool calls → pointer to the identical earlier result", tk(impact.memoTok) || localOnly),
