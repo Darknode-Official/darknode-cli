@@ -51,7 +51,7 @@ const eq = (name, a, b) => ok(name + "  (" + JSON.stringify(a) + " === " + JSON.
 const group = (t) => console.log("\n\x1b[1m" + t + "\x1b[0m");
 
 group("pricing");
-for (const [m, i, o] of [["opus", 4, 20], ["claude-opus-5-5", 4, 20], ["claude-opus-4-8", 5, 25], ["claude-opus-4-1-20250805", 15, 75], ["sonnet", 2, 10], ["claude-sonnet-4-6", 3, 15], ["haiku", 0.1, 0.5], ["claude-haiku-4-5-20251001", 1, 5], ["claude-3-5-haiku-20241022", 0.8, 4], ["fable", 10, 50], ["gemini-2.5-pro", 1.25, 10], ["gemini-2.5-flash", 0.3, 2.5], ["gpt-5-codex", 1.25, 10], ["o4-mini", 1.1, 4.4], ["gpt-4o", 2.5, 10], ["totally-unknown", 3, 15]])
+for (const [m, i, o] of [["opus", 4, 20], ["claude-opus-5-5", 4, 20], ["claude-opus-4-8", 5, 25], ["claude-opus-4-1-20250805", 15, 75], ["sonnet", 2, 10], ["claude-sonnet-4-6", 3, 15], ["haiku", 0.1, 0.5], ["claude-haiku-4-5-20251001", 1, 5], ["claude-3-5-haiku-20241022", 0.8, 4], ["fable", 8, 40], ["gemini-2.5-pro", 1.25, 10], ["gemini-2.5-flash", 0.3, 2.5], ["gpt-5-codex", 1.25, 10], ["o4-mini", 1.1, 4.4], ["gpt-4o", 2.5, 10], ["totally-unknown", 3, 15]])
   ok("priceOf " + m, priceOf(m).in === i && priceOf(m).out === o);
 {
   const P = require("../lib/nexus/pricing");
@@ -59,6 +59,8 @@ for (const [m, i, o] of [["opus", 4, 20], ["claude-opus-5-5", 4, 20], ["claude-o
   ok("opus 5.5 exact cache rates (5m 5, 1h 8, read 0.20)", o55.cw5 === 5 && o55.cw1h === 8 && o55.cr === 0.2 && o55.label === "Claude Opus 5.5" && o55.known);
   ok("sonnet 5.5 cache read 0.10, sonnet 5 cache read 0.20", P.priceOf("claude-sonnet-5-5").cr === 0.1 && P.priceOf("claude-sonnet-5").cr === 0.2);
   ok("fable 5.1 cache read 0.25, opus 4 (dated id) = 15/75", P.priceOf("claude-fable-5-1").cr === 0.25 && P.priceOf("claude-opus-4-20250514").in === 15);
+  { const f = P.priceOf("claude-fable-5-2"); ok("fable 5.2 exact rates (8/40, 5m 10, 1h 16, read 0.20)", f.in === 8 && f.out === 40 && f.cw5 === 10 && f.cw1h === 16 && f.cr === 0.2 && f.known && f.label === "Claude Fable 5.2"); }
+  ok("fable 5.1 keeps its own price", P.priceOf("claude-fable-5-1").in === 10 && P.priceOf("claude-fable-5-1").out === 50);
   ok("unlisted claude version falls back to family latest, flagged", P.priceOf("claude-opus-9-9").in === 4 && P.priceOf("claude-opus-9-9").known === false);
   eq("costOf opus 5.5, 1M in every bucket", P.costOf("claude-opus-5-5", { input: 1e6, output: 1e6, cacheWrite5m: 1e6, cacheWrite1h: 1e6, cacheRead: 1e6 }), 37.2);
   eq("haiku 5.5 tier: 50k prompt", P.costOf("claude-haiku-5-5", { input: 50000 }), 0.005);
@@ -3175,6 +3177,7 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
   eq("claude-sonnet-5-5 -> Sonnet 5.5", modelLabel("claude-sonnet-5-5"), "Sonnet 5.5");
   eq("claude-haiku-5-5 -> Haiku 5.5", modelLabel("claude-haiku-5-5"), "Haiku 5.5");
   eq("fable-5-1 -> Fable 5.1", modelLabel("fable-5-1"), "Fable 5.1");
+  eq("claude-fable-5-2 -> Fable 5.2", modelLabel("claude-fable-5-2"), "Fable 5.2");
   eq("version-first id claude-3-5-sonnet-20241022 -> Sonnet 3.5", modelLabel("claude-3-5-sonnet-20241022"), "Sonnet 3.5");
   eq("bare alias opus -> Opus (no invented version)", modelLabel("opus"), "Opus");
   eq("engine name claude -> Claude", modelLabel("claude"), "Claude");
