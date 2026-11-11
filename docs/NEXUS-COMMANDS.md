@@ -152,7 +152,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/git` — branch, status & recent commits
 - `/blame` — who last changed a file's lines
 - `/cowork` — strong model codes, weak model does cheap work
-- `/cheap` — turn on every lossless token saver · /cheap status · /cheap off
+- `/cheap` — lossless savers + measured spend vs Opus · /cheap status · /cheap off
 - `/tight` — surgical edits — change only what differs (lossless)
 - `/lean` — ask for minimal output (saves output tokens) · /lean on|off
 - `/style` — output style: concise·explanatory·review·tdd·secure·teacher

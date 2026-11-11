@@ -3714,6 +3714,27 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     ok("no wall-clock 40-minute SIGKILL left on engine turns", !/setTimeout\(\(\) => killGroup\([a-z]+, "SIGKILL"\), 40 \* 60 \* 1000\)/.test(src));
   }
 
+  group("/cheap on claude — launch flag, model-switch hold, measured spend");
+  {
+    const CH = require("../lib/nexus/cheap");
+    eq("flag only when on", CH.launchFlags(true).concat(CH.launchFlags(false)), ["--exclude-dynamic-system-prompt-sections"]);
+    ok("effort is never part of the preset", !CH.PRESET_KEYS.includes("effort"));
+    const t = { input: 0, output: 1e6, cacheWrite5m: 0, cacheWrite1h: 1e6, cacheRead: 1e7, reported: 0 };
+    const r = CH.spendReport({ "claude-haiku-5-5": { input: 10, output: 10, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0 }, "claude-fable-5-2": t });
+    eq("main bucket is the costliest model", r.model, "claude-fable-5-2");
+    ok("list price: fable 16 + 2 + 40", Math.abs(r.cost - 58) < 1e-6);
+    ok("same tokens on opus 5.5: 8 + 2 + 20", Math.abs(r.opus55 - 30) < 1e-6);
+    ok("same tokens on opus 5: 10 + 5 + 25", Math.abs(r.opus5 - 40) < 1e-6);
+    ok("nothing measured = null", CH.spendReport({}) === null);
+    const base = { cheap: true, engine: "claude", sid: "s", warm: true, ctxTok: 1e6, ttl: 3600000, from: "claude-opus-5-5", to: "claude-fable-5-2", pending: null, now: 1000 };
+    const h = CH.switchHold(base);
+    ok("warm switch is held", h.hold === true);
+    ok("hold cost = new write - old read", Math.abs(h.cost - 15.8) < 1e-6);
+    ok("repeat confirms", CH.switchHold(Object.assign({}, base, { pending: h.pending, now: 2000 })).hold === false);
+    ok("late repeat holds again", CH.switchHold(Object.assign({}, base, { pending: h.pending, now: 1000 + CH.HOLD_MS + 1 })).hold === true);
+    for (const [why, x] of [["cheap off", { cheap: false }], ["cold cache", { warm: false }], ["other engine", { engine: "codex" }], ["no session", { sid: "" }], ["empty context", { ctxTok: 0 }], ["same model", { to: "claude-opus-5-5[1m]" }]]) ok("no hold: " + why, CH.switchHold(Object.assign({}, base, x)).hold === false);
+  }
+
   group("/cheap v2 savers — repeat-line collapse + read-only call memo");
   {
     const CS = require("../lib/nexus/costsave");
