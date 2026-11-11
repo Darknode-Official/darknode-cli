@@ -3372,7 +3372,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         // short one-line notice stays an indented dim line. The rail is the same 2 columns the old
         // indent used, so wrap/clip widths are unchanged.
         if (m.role === "compacted") {
-          L.push(CompactAnim.doneRow({ before: m.before, auto: m.auto, hasSummary: !!m.summary, expanded, colors: { cyan, gray, bold, dim, mag } })); // the condenser's closed frame ▸◆◂
+          L.push(CompactAnim.doneRow({ before: m.before, auto: m.auto, hasSummary: !!m.summary, expanded, colors: { cyan, gray, bold, dim, mag } })); // the condenser's closed frame ┣╋┫
           if (expanded && m.summary) for (const ln of wrap(m.summary)) L.push(mag("┃ ") + gray(ln));
           L.push(""); continue;
         }

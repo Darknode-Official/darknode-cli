@@ -3463,18 +3463,19 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
   {
     const CA = require("../lib/cli/compact-anim");
     const f0 = CA.squeezeBar(0, 21).plain, fEnd = CA.squeezeBar(CA.CYCLE_MS - 10, 21).plain;
-    ok("the core ◆ sits dead center", f0[10] === "◆" && fEnd[10] === "◆");
-    ok("jaws start at the edges", f0[0] === "▸" && f0[20] === "◂");
-    ok("jaws close in on the core over the cycle", fEnd.indexOf("▸") > f0.indexOf("▸") && fEnd.indexOf("◂") < f0.indexOf("◂"));
-    ok("folded-away cells become dots", /^·+▸/.test(fEnd));
+    ok("the core ╋ sits dead center", f0[10] === "╋" && fEnd[10] === "╋");
+    ok("jaws start at the edges", f0[0] === "┣" && f0[20] === "┫");
+    ok("jaws close in on the core over the cycle", fEnd.indexOf("┣") > f0.indexOf("┣") && fEnd.indexOf("┫") < f0.indexOf("┫"));
+    ok("folded-away cells become dots", /^·+┣/.test(fEnd));
     ok("the bar loops (frame at one full cycle == frame 0)", CA.squeezeBar(CA.CYCLE_MS, 21).plain === f0);
     ok("bar width is honored", CA.squeezeBar(700, 15).plain.length === 15);
+    ok("every bar cell is a box-drawing char or a dot, so nothing spills over its neighbours", [0, 300, 700, 1200, 1590].every((ms) => /^[\u2500-\u257F\u00B7]+$/.test(CA.squeezeBar(ms, 21).plain)) && /^[\u2500-\u257F]{3} /.test(CA.doneRow({ before: 1 })));
     const rows = CA.compactRows({ now: 13000, start: 1000, tok: 1234, before: 48200, width: 80 });
     ok("title says Condensing conversation with elapsed + tokens + esc", /Condensing conversation/.test(rows[0]) && /12s/.test(rows[0]) && /1\.2k tokens/.test(rows[0]) && /esc to interrupt/.test(rows[0]));
     ok("bar row shows the context being folded", /48\.2k tokens → folding/.test(rows[1]));
     ok("rows stay within the width", rows.every((r) => r.length <= 80));
     ok("a narrow terminal still renders", CA.compactRows({ now: 5, start: 0, width: 24 }).every((r) => typeof r === "string"));
-    ok("done marker is the closed frame + folded size", /^▸◆◂ condensed 48\.2k tokens/.test(CA.doneRow({ before: 48200 })));
+    ok("done marker is the closed frame + folded size", /^┣╋┫ condensed 48\.2k tokens/.test(CA.doneRow({ before: 48200 })));
     ok("done marker notes auto + the summary toggle", /auto-condensed/.test(CA.doneRow({ before: 1, auto: true })) && /ctrl\+o shows the summary/.test(CA.doneRow({ hasSummary: true })) && /hides/.test(CA.doneRow({ hasSummary: true, expanded: true })));
   }
 
