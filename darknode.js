@@ -1983,7 +1983,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     if (opts.maxBudgetUsd) args.push("--max-budget-usd", String(opts.maxBudgetUsd));
     if (opts.maxTurns) args.push("--max-turns", String(opts.maxTurns));
     if (opts.disallow && opts.disallow.length) args.push("--disallowed-tools", ...opts.disallow);
-    args.push(...Cheap.launchFlags(opts.cheap));
+    args.push(...Cheap.launchFlags(opts.cheap, opts.skillOverrides));
     if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath); // give claude the Nexus ask bridge (+ any .nexus/mcp.json servers); no --strict so claude keeps its own servers too
     const env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
     const cp = _cp.spawn("claude", args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
@@ -2002,7 +2002,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
         if (!line.trim()) continue;
         let ev; try { ev = JSON.parse(line); } catch (_) { continue; }
         bgT.event(ev);
-        if (ev.type === "system" && ev.subtype === "init") { h.onInit && h.onInit(ev); }
+        if (ev.type === "system" && ev.subtype === "init") { h.onInit && h.onInit(ev); if (opts.cheap) Cheap.rememberListed(os.homedir(), ev.skills); }
         else if (ev.type === "rate_limit_event") { h.onRateLimit && h.onRateLimit(ev.rate_limit_info || {}); }
         else if (ev.type === "assistant" && ev.message) {
           const pid = ev.parent_tool_use_id || null; // set on a sub-agent's (Task) own messages
@@ -4474,7 +4474,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             addUsage(_mu, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
-        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
+        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), skillOverrides: cacheOn && tightEdits && cheapSide ? Cheap.overridesFor(NHOME, cwd) : null, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
       } else if (ENGINES[engine] && ENGINES[engine].kind === "cli") { // gemini / codex / opencode / aider
         const eng = ENGINES[engine];
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose
@@ -5930,6 +5930,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         }
         const on = cacheOn && tightEdits && cheapSide, tk = (n) => n ? gray("  ~" + fmtK(n) + " tok saved") : "";
         const row = (st, label, extra) => "  " + (st === true ? green("●") : st === false ? gray("○") : cyan("◆")) + " " + label + (extra || "");
+        if (cacheOn && tightEdits && cheapSide && engine === "claude") Cheap.refreshUse(NHOME).catch(() => {});
+        const trimmed = Object.keys(Cheap.overridesFor(NHOME, cwd) || {}).length;
         const isClaude = engine === "claude", localOnly = isClaude ? gray("  (local engines only)") : "", spend = isClaude ? Cheap.spendReport(sess.byModel) : null, usd = (n) => "$" + n.toFixed(n < 1 ? 4 : 2);
         const measured = !isClaude ? "" : !spend ? "\n  " + gray("no claude usage measured yet this session — send a message, then /cheap status") : "\n  measured on " + cyan(spend.model) + ": " + fmtK(spend.read) + " read from cache (" + Math.round(spend.hitRate * 100) + "%), " + fmtK(spend.written) + " written, " + fmtK(spend.output) + " output = " + bold(usd(spend.cost)) + gray(" at list price") + "\n  " + gray("same tokens on Opus 5.5: " + usd(spend.opus55) + " · on Opus 5: " + usd(spend.opus5) + (onPlan(engine) ? " · on a subscription these are list-price equivalents" : ""));
         const lossy = [["lean", lean], ["minimizeCalls", minimizeCalls], ["stepCap", stepCap], ["trimOutput", trimOutput], ["autoCompact", autoCompact]].filter((x) => x[1]).map((x) => x[0]);
@@ -5937,7 +5939,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           row(tightEdits, "surgical edits — change only what differs, never rewrite whole lines"),
           row(cacheOn, "exact-repeat cache — free re-answers for unchanged read-only turns", impact.cachedHits ? gray("  " + impact.cachedHits + " hit" + (impact.cachedHits === 1 ? "" : "s") + " · $" + impact.cachedSaved.toFixed(4) + " saved") : isClaude ? gray("  (first message of a session only)") : ""),
           row(cheapSide, "local tab titles + recaps — no extra Claude Code session per title/recap", impact.sideSkipped ? gray("  " + impact.sideSkipped + " call" + (impact.sideSkipped === 1 ? "" : "s") + " skipped") : ""),
-          ...(isClaude ? [row(on, "shared cache prefix — per-machine context kept out of the system prompt"), row(on, "model-switch hold — /model waits for a repeat while it would discard a warm cache")] : []),
+          ...(isClaude ? [row(on, "unused skills listed by name only — still available, long descriptions not resent", trimmed ? gray("  " + trimmed + " skills") : on ? gray("  (starts after your next message)") : ""), row(on, "shared cache prefix — per-machine context kept out of the system prompt"), row(on, "model-switch hold — /model waits for a repeat while it would discard a warm cache")] : []),
           row(null, "context de-dup, re-read supersession, unchanged-file skip", tk(impact.squeezeTok)),
           row(null, "repeated / counting output lines + node-internal frames → exact summaries", tk(impact.repeatTok) || localOnly),
           row(null, "repeated read-only tool calls → pointer to the identical earlier result", tk(impact.memoTok) || localOnly),
