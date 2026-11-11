@@ -69,6 +69,7 @@ const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the mod
 const CompactAnim = require("./lib/cli/compact-anim");
 const Ledger = require("./lib/cli/ledger");
 const TokCount = require("./lib/cli/tokcount"); // pure /tokens estimator — price files before @-attaching them (lib/cli/tokcount.js) // pure per-session cost ledger (/turns) + lossless cost advisor (/costtips) (lib/cli/ledger.js) // pure renderer for the live compaction "condenser" animation (lib/cli/compact-anim.js)
+const Cheap = require("./lib/nexus/cheap"); // /cheap on the claude engine: launch flags, model-switch hold, measured spend
 const CacheWarm = require("./lib/cli/cachewarm"); // pure prompt-cache TTL countdown for the status chip + /warm (lib/cli/cachewarm.js)
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
 const { idleWatchdog } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based (ask_user no longer holds the engine open)
@@ -1982,6 +1983,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     if (opts.maxBudgetUsd) args.push("--max-budget-usd", String(opts.maxBudgetUsd));
     if (opts.maxTurns) args.push("--max-turns", String(opts.maxTurns));
     if (opts.disallow && opts.disallow.length) args.push("--disallowed-tools", ...opts.disallow);
+    args.push(...Cheap.launchFlags(opts.cheap));
     if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath); // give claude the Nexus ask bridge (+ any .nexus/mcp.json servers); no --strict so claude keeps its own servers too
     const env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
     const cp = _cp.spawn("claude", args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
@@ -2933,6 +2935,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const sessStart = Date.now();             // wall-clock start of this TUI session (dashboard uptime)
     const sessFiles = new Set();              // every repo-relative file the agent touched this session (for the dashboard)
     const toolUse = Object.create(null);      // tool name -> call count this session (for the dashboard)
+    let cheapPrev = settingsStore.getSaved("cheapPrev") || null, modelHold = null; // settings to restore on /cheap off; a model switch waiting for its confirming repeat
     let cacheOn = !!S.cache; // response cache: serve exact-repeat read-only answers for free (off by default — opt in with /cache on)
     let cowork = { on: false, strong: "", weak: "", weakKind: "claude" }; // strong codes, weak does cheap work; weakKind: claude|ollama(local, free)
     const auxModel = () => (cowork.on && cowork.weakKind === "claude" && engine === "claude") ? cowork.weak : undefined; // weak CLAUDE model for aux calls
@@ -3029,7 +3032,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/ensemble", "all engines answer, then synthesize the best"], ["/settings", "all options, neatly arranged (alias /options /config)"], ["/jobs", "background commands the agent started (run_background)"], ["/loop", "autonomous goal loop: /loop [-n rounds] <goal> until GOAL-DONE"], ["/team", "multi-model workspace: architect + builder + reviewer, loops to PASS"], ["/policy", "show the enterprise security policy (org + local)"], ["/audit", "audited tool actions · /audit verify (tamper check)"], ["/bench", "speed / tokens / cost table per engine"], ["/explain", "explain the diff or a file in plain English"], ["/test", "generate & run unit tests for a file"], ["/refactor", "restructure code for clarity without changing behavior"], ["/migrate", "migrate code: /migrate <from> to <to>"], ["/pr", "AI-write a PR title+body from the diff and open it (gh)"],
       ["/index", "index the repo for code search; /index <question> finds the code it is about"], ["/map", "show the repo map; /map <task> ranks it for a task; /map on|off"], ["/verify", "detect + run this project's tests/build"], ["/radar", "codebase complexity + hotspot map"], ["/review-fast", "fast rule-based review of changed code (no AI)"], ["/diffexplain", "explain the current git diff"], ["/testgen", "scaffold tests for a function/file"], ["/snippet", "save / use a prompt macro"], ["/snippets", "list saved prompt macros"],
       ["/plan", "make & run an editable task checklist"], ["/git", "branch, status & recent commits"], ["/blame", "who last changed a file's lines"],
-      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "turn on every lossless token saver · /cheap status · /cheap off"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens) · /lean on|off"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max|ultracode)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
+      ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "lossless savers + measured spend vs Opus · /cheap status · /cheap off"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens) · /lean on|off"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max|ultracode)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
       ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "same as /savings — cost-savings analysis"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "Nexus docs: /docs <topic> or /docs <words> to search every command & key"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
       ["/tree", "show the project file tree"], ["/theme", "change the color theme"],
       ["/color", "set the accent color · /color <name|0-255|#hex> · /color reset"], ["/colors", "list accent colors"], ["/gradient", "set the logo gradient · /gradient <theme|reset>"], ["/mouse", "toggle mouse capture · /mouse off to select & copy text"],
@@ -3609,7 +3612,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       "/color": () => Object.keys(COLORS).map((n) => [n, "\x1b[" + COLORS[n] + "m█████\x1b[0m"]),
       "/gradient": () => Object.keys(THEMES).map((t) => [t, THEMES[t].grad.map((g) => "\x1b[" + g + "m█\x1b[0m").join("")]),
       "/style": () => [["default", ""], ["concise", "minimal"], ["explanatory", "detailed"], ["review", "code review"], ["tdd", "test-driven"], ["secure", "security-focused"], ["teacher", "educational"]],
-      "/cheap": () => [["status", "what each saver did this session"], ["off", "undo the preset (cache + local titles off)"]],
+      "/cheap": () => [["status", "what each saver did this session"], ["off", "restore your settings from before /cheap"]],
       "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"], ["xhigh", "harder problems"], ["max", "maximum thinking"], ["ultracode", "max + multi-agent workflows"]],
       "/guard": () => [["enforce", "block destructive commands"], ["warn", "warn but allow"], ["off", "no safety checks"]],
       "/marketplace": () => [["list", "installed packages"], ["install", "install from path/URL"], ["remove", "uninstall a package"], ["init", "scaffold a publishable package"]],
@@ -4471,7 +4474,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             addUsage(_mu, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
-        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
+        }, ctl, { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
       } else if (ENGINES[engine] && ENGINES[engine].kind === "cli") { // gemini / codex / opencode / aider
         const eng = ENGINES[engine];
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose
@@ -5912,26 +5915,35 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         // lossy knobs, so /cheap can never degrade output. /cheap status reports
         // what each saver did this session; /cheap off undoes the preset.
         const sub = (arg || "").trim().toLowerCase();
-        if (sub === "off") { cacheOn = false; cheapSide = false; saveSetting("cache", false); saveSetting("cheapSide", false); }
+        if (sub === "off") {
+          const was = cheapPrev || { cache: false, tightEdits, cheapSide: false, lean, minimizeCalls, stepCap, trimOutput, autoCompact, autoCompactAt };
+          cacheOn = !!was.cache; tightEdits = !!was.tightEdits; cheapSide = !!was.cheapSide; lean = !!was.lean; minimizeCalls = !!was.minimizeCalls; stepCap = was.stepCap; trimOutput = was.trimOutput; autoCompact = !!was.autoCompact; autoCompactAt = was.autoCompactAt || 0;
+          for (const k of Cheap.PRESET_KEYS) saveSetting(k, was[k]);
+          cheapPrev = null; saveSetting("cheapPrev", null);
+        }
         else if (sub !== "status") {
+          if (!cheapPrev && !(cacheOn && tightEdits && cheapSide)) { cheapPrev = { cache: cacheOn, tightEdits, cheapSide, lean, minimizeCalls, stepCap, trimOutput, autoCompact, autoCompactAt }; saveSetting("cheapPrev", cheapPrev); }
           cacheOn = true; tightEdits = true; cheapSide = true;
-          lean = false; effort = ""; minimizeCalls = false; stepCap = false; trimOutput = false; autoCompact = false; autoCompactAt = 0;
+          lean = false; minimizeCalls = false; stepCap = false; trimOutput = false; autoCompact = false; autoCompactAt = 0;
           saveSetting("cache", true); saveSetting("tightEdits", true); saveSetting("cheapSide", true);
-          saveSetting("lean", false); saveSetting("effort", ""); saveSetting("minimizeCalls", false); saveSetting("stepCap", false); saveSetting("trimOutput", false); saveSetting("autoCompact", false); saveSetting("autoCompactAt", 0);
+          saveSetting("lean", false); saveSetting("minimizeCalls", false); saveSetting("stepCap", false); saveSetting("trimOutput", false); saveSetting("autoCompact", false); saveSetting("autoCompactAt", 0);
         }
         const on = cacheOn && tightEdits && cheapSide, tk = (n) => n ? gray("  ~" + fmtK(n) + " tok saved") : "";
         const row = (st, label, extra) => "  " + (st === true ? green("●") : st === false ? gray("○") : cyan("◆")) + " " + label + (extra || "");
-        const lossy = [["lean", lean], ["effort " + effort, effort === "low" || effort === "minimal"], ["minimizeCalls", minimizeCalls], ["stepCap", stepCap], ["trimOutput", trimOutput], ["autoCompact", autoCompact]].filter((x) => x[1]).map((x) => x[0]);
+        const isClaude = engine === "claude", localOnly = isClaude ? gray("  (local engines only)") : "", spend = isClaude ? Cheap.spendReport(sess.byModel) : null, usd = (n) => "$" + n.toFixed(n < 1 ? 4 : 2);
+        const measured = !isClaude ? "" : !spend ? "\n  " + gray("no claude usage measured yet this session — send a message, then /cheap status") : "\n  measured on " + cyan(spend.model) + ": " + fmtK(spend.read) + " read from cache (" + Math.round(spend.hitRate * 100) + "%), " + fmtK(spend.written) + " written, " + fmtK(spend.output) + " output = " + bold(usd(spend.cost)) + gray(" at list price") + "\n  " + gray("same tokens on Opus 5.5: " + usd(spend.opus55) + " · on Opus 5: " + usd(spend.opus5) + (onPlan(engine) ? " · on a subscription these are list-price equivalents" : ""));
+        const lossy = [["lean", lean], ["minimizeCalls", minimizeCalls], ["stepCap", stepCap], ["trimOutput", trimOutput], ["autoCompact", autoCompact]].filter((x) => x[1]).map((x) => x[0]);
         transcript.push({ role: "system", text: "cheap mode " + (on ? green("ON") : sub === "off" ? red("OFF") : yellow("PARTIAL")) + " — token savers that keep full quality (" + green("●") + " on  " + gray("○") + " off  " + cyan("◆") + " always on):\n" + [
           row(tightEdits, "surgical edits — change only what differs, never rewrite whole lines"),
-          row(cacheOn, "exact-repeat cache — free re-answers for unchanged read-only turns", impact.cachedHits ? gray("  " + impact.cachedHits + " hit" + (impact.cachedHits === 1 ? "" : "s") + " · $" + impact.cachedSaved.toFixed(4) + " saved") : ""),
+          row(cacheOn, "exact-repeat cache — free re-answers for unchanged read-only turns", impact.cachedHits ? gray("  " + impact.cachedHits + " hit" + (impact.cachedHits === 1 ? "" : "s") + " · $" + impact.cachedSaved.toFixed(4) + " saved") : isClaude ? gray("  (first message of a session only)") : ""),
           row(cheapSide, "local tab titles + recaps — no extra Claude Code session per title/recap", impact.sideSkipped ? gray("  " + impact.sideSkipped + " call" + (impact.sideSkipped === 1 ? "" : "s") + " skipped") : ""),
+          ...(isClaude ? [row(on, "shared cache prefix — per-machine context kept out of the system prompt"), row(on, "model-switch hold — /model waits for a repeat while it would discard a warm cache")] : []),
           row(null, "context de-dup, re-read supersession, unchanged-file skip", tk(impact.squeezeTok)),
-          row(null, "repeated / counting output lines + node-internal frames → exact summaries", tk(impact.repeatTok)),
-          row(null, "repeated read-only tool calls → pointer to the identical earlier result", tk(impact.memoTok)),
+          row(null, "repeated / counting output lines + node-internal frames → exact summaries", tk(impact.repeatTok) || localOnly),
+          row(null, "repeated read-only tool calls → pointer to the identical earlier result", tk(impact.memoTok) || localOnly),
           row(null, "terminal-noise strip — colour codes + progress-bar redraws dropped from logs"),
           row(null, "prompt caching (automatic on the claude engine) — /warm shows the countdown"),
-        ].join("\n") + "\n  " + (lossy.length ? yellow("quality-reducing knobs still ON: " + lossy.join(", ") + " — /cheap turns them off") : gray("quality-reducing knobs (lean, low effort, minimizeCalls, stepCap, trimOutput, autoCompact) are OFF.")) + "\n  " + gray("/cheap status · /cheap off · deeper cuts with a small quality trade-off: /cowork " + (cowork.on ? cowork.strong : "opus") + " ollama:<local-model>, or /lean.") }); }
+        ].join("\n") + "\n  " + (lossy.length ? yellow("quality-reducing knobs still ON: " + lossy.join(", ") + " — /cheap turns them off") : gray("quality-reducing knobs (lean, minimizeCalls, stepCap, trimOutput, autoCompact) are OFF.")) + "\n  " + gray("effort stays as you set it: " + (effort || "default")) + measured + "\n  " + gray("/cheap status · /cheap off · deeper cuts with a small quality trade-off: /cowork " + (cowork.on ? cowork.strong : "opus") + " ollama:<local-model>, or /lean.") }); }
       else if (cmd === "/estimate") { if (!argstr) transcript.push({ role: "system", text: "usage: /estimate <prompt> — rough token/cost estimate before you send it" }); else if (!PAID[engine]) transcript.push({ role: "system", text: "local engine — free (no token charges)" }); else { const inTok = Math.ceil(argstr.length / 4) + sess.ctxUsed; const outEst = lean ? 400 : 900; const mdl = cowork.on ? cowork.strong : sess.model; const pr = priceOf(mdl); const cost = (inTok / 1e6) * pr.in + (outEst / 1e6) * pr.out; transcript.push({ role: "system", text: "estimate on " + mdl + ": ~" + fmtK(inTok) + " input (your prompt + ~" + fmtK(sess.ctxUsed) + " current context) + ~" + outEst + " output  →  ~$" + cost.toFixed(4) + " (rough; " + (lean ? "lean on" : "add /lean to cut output") + ")" }); } }
       else if (cmd === "/models") {
         transcript.push({ role: "system", text: "checking local models…" }); render();
@@ -6057,7 +6069,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       else if (cmd === "/setup") { const blk = { role: "system", text: "checking setup…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); const log = (s) => { blk.text += "\n" + s; render(); }; nexusSetup({ log, auto: true }).then(() => { busy = false; ctl = null; render(); }).catch((e) => { blk.text += "\n" + red(e.message); busy = false; ctl = null; render(); }); }
       else if (cmd === "/model") {
         const eng = ENGINES[engine] || {};
-        const setModel = (name) => { sess.model = name; sess.userModel = true; if (engine === "claude") saveSetting("model", name); /* only claude restores a saved model at startup; persisting it for other engines poisons claude's choice */ const known = engine === "ollama" || (eng.models || []).includes(name); const note = known ? "" : ((eng.models && eng.models.length) ? gray("  (not in " + engine + "'s known list — using it anyway)") : ""); const lbl = modelLabel(name); const effBit = effort ? gray(" · effort " + effort) : gray(" · effort default"); transcript.push({ role: "system", text: "model → " + bold(lbl) + (lbl.toLowerCase() !== name.toLowerCase() ? gray(" (" + name + ")") : "") + effBit + note }); };
+        const holdSwitch = (name) => {
+          const now = Date.now(), st = CacheWarm.cacheState({ lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now }).state;
+          const c = Cheap.switchHold({ cheap: cacheOn && tightEdits && cheapSide, engine, sid: claudeSid, from: sess.resolvedModel || shownModel(), to: name, warm: st === "warm" || st === "cooling", ctxTok: sess.ctxUsed || 0, ttl: cacheWarm.ttl, pending: modelHold, now });
+          modelHold = c.pending;
+          if (c.hold) { transcript.push({ role: "system", text: yellow("not switched yet") + " — each model has its own cache, so moving to " + cyan(name) + " now re-writes ~" + fmtK(sess.ctxUsed) + " tokens of context, about $" + c.cost.toFixed(2) + " at list price.\n  " + gray("run the same /model again within a minute to switch anyway") }); render(); }
+          return c.hold;
+        };
+        const setModel = (name) => { if (holdSwitch(name)) return; sess.model = name; sess.userModel = true; if (engine === "claude") saveSetting("model", name); /* only claude restores a saved model at startup; persisting it for other engines poisons claude's choice */ const known = engine === "ollama" || (eng.models || []).includes(name); const note = known ? "" : ((eng.models && eng.models.length) ? gray("  (not in " + engine + "'s known list — using it anyway)") : ""); const lbl = modelLabel(name); const effBit = effort ? gray(" · effort " + effort) : gray(" · effort default"); transcript.push({ role: "system", text: "model → " + bold(lbl) + (lbl.toLowerCase() !== name.toLowerCase() ? gray(" (" + name + ")") : "") + effBit + note }); };
         const show = (names, tag) => {
           modelPick = names.slice();
           const cur = sess.model && sess.model !== engine ? sess.model : (eng.model || "engine default");
