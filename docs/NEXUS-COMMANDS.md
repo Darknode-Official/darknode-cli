@@ -152,7 +152,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/git` — branch, status & recent commits
 - `/blame` — who last changed a file's lines
 - `/cowork` — strong model codes, weak model does cheap work
-- `/cheap` — lossless savers + measured spend vs Opus · /cheap status · /cheap off
+- `/cheap` — lossless savers + measured spend · /cheap status · /cheap off
 - `/tight` — surgical edits — change only what differs (lossless)
 - `/lean` — ask for minimal output (saves output tokens) · /lean on|off
 - `/style` — output style: concise·explanatory·review·tdd·secure·teacher
@@ -320,7 +320,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 ```
 Nexus is a terminal AI coding agent built into the Darknode CLI. It drives one of six
 engines from a single dependency-free binary:
-  claude    — the Claude Code CLI in the cloud (strongest; needs `claude` installed + logged in)
+  claude    — the Claude Code CLI (needs `claude` installed + logged in)
   gemini · codex · opencode · aider — those vendors' CLIs, same interface
   ollama    — a free, private, local model on your machine (needs Ollama)
 

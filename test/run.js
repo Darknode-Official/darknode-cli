@@ -3766,8 +3766,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     const r = CH.spendReport({ "claude-haiku-5-5": { input: 10, output: 10, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0 }, "claude-fable-5-2": t });
     eq("main bucket is the costliest model", r.model, "claude-fable-5-2");
     ok("list price: fable 16 + 2 + 40", Math.abs(r.cost - 58) < 1e-6);
-    ok("same tokens on opus 5.5: 8 + 2 + 20", Math.abs(r.opus55 - 30) < 1e-6);
-    ok("same tokens on opus 5: 10 + 5 + 25", Math.abs(r.opus5 - 40) < 1e-6);
+    const oth = Object.fromEntries(r.others.map((o) => [o.label, o.cost]));
+    ok("same tokens on opus 5.5: 8 + 2 + 20", Math.abs(oth["Claude Opus 5.5"] - 30) < 1e-6);
+    ok("compares every other family's latest model, never the one used, cheapest first", r.others.length === 4 && !("Claude Fable 5.2" in oth) && "Claude Sonnet 5.5" in oth && "Claude Haiku 5.5" in oth && r.others.every((o, i, a) => !i || a[i - 1].cost <= o.cost));
     ok("nothing measured = null", CH.spendReport({}) === null);
     const base = { cheap: true, engine: "claude", sid: "s", warm: true, ctxTok: 1e6, ttl: 3600000, from: "claude-opus-5-5", to: "claude-fable-5-2", pending: null, now: 1000 };
     const h = CH.switchHold(base);
