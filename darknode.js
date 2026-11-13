@@ -2936,7 +2936,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const sessStart = Date.now();             // wall-clock start of this TUI session (dashboard uptime)
     const sessFiles = new Set();              // every repo-relative file the agent touched this session (for the dashboard)
     const toolUse = Object.create(null);      // tool name -> call count this session (for the dashboard)
-    let cheapPrev = settingsStore.getSaved("cheapPrev") || null, modelHold = null, lastClaudeOpts = null, lastAskAt = 0, warming = false; // lastClaudeOpts/lastAskAt/warming: keep-warm reuses the last real launch exactly; settings to restore on /cheap off; a model switch waiting for its confirming repeat
+    let cheapPrev = settingsStore.getSaved("cheapPrev") || null, modelHold = null, lastClaudeOpts = null, lastAskAt = 0, warming = false, warmSkipAt = 0; // lastClaudeOpts/lastAskAt/warming: keep-warm reuses the last real launch exactly; settings to restore on /cheap off; a model switch waiting for its confirming repeat
     let cacheOn = !!S.cache; // response cache: serve exact-repeat read-only answers for free (off by default — opt in with /cache on)
     let cowork = { on: false, strong: "", weak: "", weakKind: "claude" }; // strong codes, weak does cheap work; weakKind: claude|ollama(local, free)
     const auxModel = () => (cowork.on && cowork.weakKind === "claude" && engine === "claude") ? cowork.weak : undefined; // weak CLAUDE model for aux calls
@@ -4127,9 +4127,14 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const revealing = () => { const b = activeBlock || cur(); if (!b || !b.items) return false; return b.items.some((it) => it.type === "text" && it.shown < it.full.length); };
     const startTick = () => { if (tick) return; tick = setInterval(() => { const b = activeBlock || cur(); if (b && b.items) for (const it of b.items) if (it.type === "text" && it.shown < it.full.length) { let ns = Math.min(it.full.length, it.shown + Math.max(2, Math.ceil((it.full.length - it.shown) / 22))); const cc = it.full.charCodeAt(ns - 1); if (cc >= 0xD800 && cc <= 0xDBFF && ns < it.full.length) ns++; it.shown = ns; } render(); if (!busy && !revealing() && !compact.on) { clearInterval(tick); tick = null; } }, 45); };
     // idle refresh for the prompt-cache chip: re-render only when its text changes (minute steps, then seconds in the last minute)
+    // Everything a claude launch depends on besides the prompt. Keep-warm rebuilds it to check
+    // that the next real message would still match the cached prefix it is about to refresh.
+    const claudeOpts = (resume) => ({ resume, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), skillOverrides: cacheOn && tightEdits && cheapSide ? Cheap.overridesFor(NHOME, cwd) : null, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined });
     // /cheap keep-warm: refresh a 1-hour cache just before it expires while you are away
     const keepWarm = () => {
       if (warming || !lastClaudeOpts || !Cheap.keepWarmDue({ cheap: !!(cacheOn && tightEdits && cheapSide), engine, sid: claudeSid, busy, lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now(), lastHumanAt: lastAskAt, ctxTok: sess.ctxUsed })) return;
+      if (warmSkipAt === cacheWarm.lastAt) return; // already decided for this cache window
+      if (Cheap.prefixKey(claudeOpts(claudeSid)) !== Cheap.prefixKey(lastClaudeOpts)) { warmSkipAt = cacheWarm.lastAt; return; } // model, effort or a setting changed since: the next message will not read this cache, so refreshing it is wasted
       warming = true; const sid = claudeSid, model = sess.resolvedModel || sess.model;
       runClaudeStream(Cheap.KEEP_WARM_PROMPT, cwd, false, { onResult: (ev) => {
         if (claudeSid !== sid) return; // the chat was cleared meanwhile
@@ -4436,6 +4441,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         }
         if (!(res && res.interrupted) && (stat.files.size || stat.cmds || +dt >= 20 || block.items.filter((i) => i.type === "tool").length >= 3)) maybeRecap(block, text, { files: [...stat.files], cmds: stat.cmds });
         maybeAutoCompact(); maybeAutoTitle(); idleTitle(); render(); refreshGit();
+        if (engine === "claude" && cacheOn && tightEdits && cheapSide) Cheap.refreshUse(NHOME).catch(() => {}); // keeps the unused-skill list current (at most daily); it only ran when /cheap was typed
         if (nextQueue.length && !busy && !compact.on) scheduleDrain(300);
       };
       let lastCtx = 0; // context size from the latest main-thread API call this turn
@@ -4488,7 +4494,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             addUsage(_mu, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
-        }, ctl, lastClaudeOpts = { resume: _resumeSid, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), skillOverrides: cacheOn && tightEdits && cheapSide ? Cheap.overridesFor(NHOME, cwd) : null, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined }).then(finish);
+        }, ctl, lastClaudeOpts = claudeOpts(_resumeSid)).then(finish);
       } else if (ENGINES[engine] && ENGINES[engine].kind === "cli") { // gemini / codex / opencode / aider
         const eng = ENGINES[engine];
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose

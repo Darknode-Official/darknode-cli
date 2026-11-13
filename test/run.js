@@ -3732,6 +3732,9 @@ ok("shouldCheck: first launch runs; throttled within 4h; runs after", shouldChec
     eq("overrides ride on --settings", CH.launchFlags(true, { pdf: "name-only" }).slice(1), ["--settings", '{"skillOverrides":{"pdf":"name-only"}}']);
     eq("overrides ignored when off", CH.launchFlags(false, { pdf: "name-only" }), []);
     eq("keep-warm ping turns hooks off alongside overrides", CH.launchFlags(true, { pdf: "name-only" }, true).slice(1), ["--settings", '{"skillOverrides":{"pdf":"name-only"},"disableAllHooks":true}']);
+    const pk = { model: "fable", effort: "high", appendSystemPrompt: "x", cheap: true, skillOverrides: { a: "name-only" }, resume: "s1", maxBudgetUsd: "3.00" };
+    ok("keep-warm: same launch = same prefix, even after the model alias resolves to its id", CH.prefixKey(pk) === CH.prefixKey(Object.assign({}, pk, { model: "claude-fable-5-2", resume: "s2", maxBudgetUsd: "2.50", skillOverrides: null })));
+    ok("keep-warm: a new model, effort or system prompt is a different prefix", CH.prefixKey(pk) !== CH.prefixKey(Object.assign({}, pk, { model: "claude-opus-5-5" })) && CH.prefixKey(pk) !== CH.prefixKey(Object.assign({}, pk, { effort: "max" })) && CH.prefixKey(pk) !== CH.prefixKey(Object.assign({}, pk, { appendSystemPrompt: "y" })));
     eq("keep-warm ping runs one turn on an unsaved fork", CH.keepWarmFlags(), ["--fork-session", "--no-session-persistence", "--max-turns", "1"]);
     const H = 3600000, kw = { cheap: true, engine: "claude", sid: "s1", busy: false, lastAt: H, ttl: H, now: 2 * H - 120000, lastHumanAt: H, ctxTok: 80000 };
     const due = (o) => CH.keepWarmDue(Object.assign({}, kw, o));
