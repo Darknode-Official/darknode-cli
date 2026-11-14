@@ -203,7 +203,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/recap` — recap this session now · /recap [on|off] toggles the after-task recap
 - `/title` — name the terminal tab for this session's topic · /title [text|on|off]
 - `/feature` — add/remove your own commands: /feature create <name> <what it does> · /feature remove <name>
-- `/open` — launch the live web dashboard in your browser
+- `/open` — live browser view of everything Nexus does: chat, tool calls, terminal, files, agents, cost · /open <tab>
 - `/dashboard` — start/stop the localhost web UI — live pipelines, jobs & cowork agents
 - `/marketplace` — browse, install & publish agents, skills, hooks & pipelines
 - `/cron` — scheduled pipeline runs — /cron add "0 9 * * *" <goal> · /cron list · /cron remove <id>
@@ -257,7 +257,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 
 - `/feature` — add your own command: /feature create <name> <what it does>
 - `/commands` — list your custom project commands
-- `/open` — launch the live web dashboard in your browser
+- `/open` — live browser view of everything Nexus does · /open <tab>
 - `/dashboard` — start/stop the localhost web UI
 - `/settings` — all options, neatly arranged
 - `/theme` — change the color theme

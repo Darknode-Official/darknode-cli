@@ -3059,7 +3059,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/recap", "recap this session now · /recap [on|off] toggles the after-task recap"],
       ["/title", "name the terminal tab for this session's topic · /title [text|on|off]"],
       ["/feature", "add/remove your own commands: /feature create <name> <what it does> · /feature remove <name>"],
-      ["/open", "launch the live web dashboard in your browser"],
+      ["/open", "live browser view of everything Nexus does: chat, tool calls, terminal, files, agents, cost · /open <tab>"],
       ["/dashboard", "start/stop the localhost web UI — live pipelines, jobs & cowork agents"],
       ["/marketplace", "browse, install & publish agents, skills, hooks & pipelines"],
       ["/cron", "scheduled pipeline runs — /cron add \"0 9 * * *\" <goal> · /cron list · /cron remove <id>"],
@@ -3070,7 +3070,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       { title: "Session", rows: [["/clear","start a new conversation"],["/chat-clear","clear the screen but keep the conversation in memory"],["/compact","summarize the conversation to free up context"],["/fixshell","repair the engine shell when commands fail with E2BIG, without /clear (check = report only, all = clear every snapshot)"],["/resume","reload the last saved session"],["/export","save the conversation to markdown (/export <file> to pick where)"],["/copy","copy the last reply to the clipboard"],["/undo","revert the last turn's file changes"],["/status","engine, model, tokens & cost"],["/recap","recap the session so far (/recap [on|off] for after-task recaps)"],["/title","name the terminal tab for this topic (/title [text|on|off])"],["/exit","quit Nexus"]] },
       { title: "Model & cost", rows: [["/model","pick the model (lists the catalog)"],["/engine","switch AI backend"],["/effort","thinking level: low … max | ultracode"],["/cost","session cost at exact list prices"],["/budget","set a spend cap in USD"],["/cheap","max token savings, zero quality loss"],["/tight","surgical minimal edits (lossless)"],["/cowork","strong model codes, weak model assists"],["/impact","tokens & cost you've saved"]] },
       { title: "Code & repo", rows: [["/diff","colored word-level diff of your changes"],["/commit","write a commit message & commit"],["/review","second opinion from another engine"],["/codereview","parallel reviewers + a verifier per finding, ranked by severity (--fix applies, --comment posts to a PR)"],["/test","generate & run tests for a file"],["/explain","explain the diff or a file in plain English"],["/plan","make & run an editable task checklist"],["/scan","quick TCP port scan of a host"],["/secrets","scan the repo for leaked credentials"]] },
-      { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/open","launch the live web dashboard in your browser"],["/dashboard","start/stop the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
+      { title: "Extend", rows: [["/feature","add your own command: /feature create <name> <what it does>"],["/commands","list your custom project commands"],["/open","live browser view of everything Nexus does · /open <tab>"],["/dashboard","start/stop the localhost web UI"],["/settings","all options, neatly arranged"],["/theme","change the color theme"],["/keys","the full keyboard-shortcut list"]] },
       { title: "Input prefixes", rows: [["/command","run a command (type / to browse)"],["@file","attach a file or image (Tab completes the path)"],["!command","run a shell command (output goes to the AI)"],["#note","save a note to memory"]] },
     ];
     const KEY_SECTIONS = [
@@ -3613,6 +3613,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       "/color": () => Object.keys(COLORS).map((n) => [n, "\x1b[" + COLORS[n] + "m█████\x1b[0m"]),
       "/gradient": () => Object.keys(THEMES).map((t) => [t, THEMES[t].grad.map((g) => "\x1b[" + g + "m█\x1b[0m").join("")]),
       "/style": () => [["default", ""], ["concise", "minimal"], ["explanatory", "detailed"], ["review", "code review"], ["tdd", "test-driven"], ["secure", "security-focused"], ["teacher", "educational"]],
+      "/open": () => [["live", "what is running now + every tool call"], ["conversation", "full chat with thinking and tool output"], ["terminal", "every shell command and its output"], ["files", "files read and changed, with diffs"], ["agents", "sub-agents and their work"], ["jobs", "background commands"], ["cost", "per-turn cost ledger"], ["session", "plan, cowork, tools used"]],
       "/cheap": () => [["status", "what each saver did this session"], ["off", "restore your settings from before /cheap"]],
       "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"], ["xhigh", "harder problems"], ["max", "maximum thinking"], ["ultracode", "max + multi-agent workflows"]],
       "/guard": () => [["enforce", "block destructive commands"], ["warn", "warn but allow"], ["off", "no safety checks"]],
@@ -5245,11 +5246,21 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     };
     // Ensure the dashboard server is up, then run cb(d) with the live handle.
     // Shared by /dashboard and /open so there is one start path.
+    const DASH_TABS_HELP = [
+      ["live", "what is running right now, the live output, the latest answer, every tool call"],
+      ["conversation", "the full chat: prompts, answers, thinking, each tool's input and output, diffs"],
+      ["terminal", "every shell command in order with its output (running ones stream)"],
+      ["files", "files read and changed, with each change as a diff; searches and web fetches"],
+      ["agents", "sub-agents with their brief, their own tool calls and result"],
+      ["jobs", "background commands and their output"],
+      ["cost", "per-turn tokens, cache reads, time and cost"],
+      ["session", "plan, cowork pair, pipelines, tools used"],
+    ].map(([t, d]) => "  " + cyan(t.padEnd(13)) + gray(d)).join("\n");
     const ensureDashboard = (blk, cb) => {
       if (dashServer) { cb(dashServer); return; }
       try {
         const { startDashboard } = require("./lib/nexus/dashboard");
-        startDashboard({ port: 7979, getState: dashboardState }).then((d) => { dashServer = d; cb(d); render(); })
+        startDashboard({ port: 7979, getState: dashboardState, getDetail: dashboardDetail, getJob: (id) => { const out = bgJobs.tail(id, 200000); return out == null ? null : { id, output: out }; } }).then((d) => { dashServer = d; cb(d); render(); })
           .catch((e) => { if (blk) { blk.text = red("could not start the dashboard: " + (e && e.message || e)); render(); } });
       } catch (e) { if (blk) { blk.text = red("dashboard module failed to load: " + (e && e.message || e)); render(); } }
     };
@@ -5280,7 +5291,18 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       return out.slice(-18);
     };
+    const DashView = require("./lib/nexus/dash-view");
+    const dashboardDetail = () => {
+      const tail = (t) => Tail.tailText(t);
+      const conversation = DashView.conversation(transcript, { tail });
+      return { conversation, terminal: DashView.terminal(conversation), files: DashView.fileActivity(conversation), agents: DashView.agentsView(agents, tail), turns: turnLog.slice(-300) };
+    };
     const dashboardState = () => ({
+      rev: DashView.revision(transcript, agents), now: Date.now(),
+      busy: !!busy, busyWord: busyWord || "", busyFor: busy ? Math.round((Date.now() - busyStart) / 1000) : 0,
+      mode: (MODES[mode] && MODES[mode].k) || "", running: runningShells,
+      cache: engine === "claude" ? { lastAt: cacheWarm.lastAt || 0, ttl: cacheWarm.ttl || 0 } : null,
+      toolCalls: Object.keys(toolUse).reduce((a, k) => a + toolUse[k], 0),
       title: sessionTitle || "",
       turns: transcript.filter((m) => m.role === "user" && m.text && String(m.text).trim()).length,
       engine, model: sess.model || engine, paid: !!PAID[engine],
@@ -5288,7 +5310,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ctxUsed: sess.ctxUsed || 0, ctxWindow: sess.ctxWindow || CTXW[engine] || 0,
       dir: cwd.replace(os.homedir(), "~"),
       jobs: bgJobs.list(), jobsRunning: bgJobs.running(),
-      agents: activeAgents,
+      agents: Math.max(activeAgents, agents.filter((a) => a.status === "run").length),
       cowork: { on: cowork.on, strong: cowork.strong, weak: cowork.weak, weakKind: cowork.weakKind },
       impact: { delegated: impact.delegated, coworkSaved: impact.coworkSaved },
       plan: plan.map((p) => ({ text: p.text || p.title || "", done: !!p.done, running: !!p.running })),
@@ -5407,16 +5429,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           transcript.push({ role: "system", text: "dashboard is live — open " + cyan(dashServer.url) + " in your browser\n  /open to launch it · /dashboard stop to shut it down" });
         } else {
           const blk = { role: "system", text: "starting the dashboard…" }; transcript.push(blk); render();
-          ensureDashboard(blk, (d) => { blk.text = "dashboard live — " + cyan(d.url) + "\n  live: pipelines · background jobs · cowork agents · plan · tokens & cost  (updates every second)\n  /open to launch it in your browser · /dashboard stop to shut it down"; });
+          ensureDashboard(blk, (d) => { blk.text = "dashboard live — " + cyan(d.url) + "\n" + DASH_TABS_HELP + "\n  " + gray("/open to launch it in your browser · /dashboard stop to shut it down"); });
         }
       }
       else if (cmd === "/open") {
-        // Launch the live localhost dashboard straight in the default browser —
-        // starts the server first if it is not already running.
+        // Launch the live localhost dashboard in the default browser (starts it first
+        // if needed). /open <tab> lands on that tab: live, conversation, terminal, ...
+        const TABS = ["live", "conversation", "terminal", "files", "agents", "jobs", "cost", "session"];
+        const want = (arg || "").trim().toLowerCase(), pick = want ? TABS.find((t) => t.startsWith(want)) : "live";
+        if (want && !pick) { transcript.push({ role: "system", text: "no dashboard tab '" + want + "' — " + TABS.map(cyan).join(" · ") }); render(); return; }
         const blk = { role: "system", text: "opening the dashboard in your browser…" }; transcript.push(blk); render();
         ensureDashboard(blk, (d) => {
-          const ok = openUrl(d.url);
-          blk.text = (ok ? "opened " : "dashboard live at ") + cyan(d.url) + (ok ? " in your browser" : gray(" — couldn't auto-launch; open it manually")) + "\n  live: pipelines · background jobs · cowork agents · plan · tokens & cost  (updates every second)\n  /dashboard stop to shut it down";
+          const u = d.url + "/#" + pick, ok = openUrl(u);
+          blk.text = (ok ? "opened " : "dashboard live at ") + cyan(u) + (ok ? " in your browser" : gray(" — couldn't auto-launch; open it manually")) + "\n" + DASH_TABS_HELP + "\n  " + gray("updates every second · read-only · this machine only (127.0.0.1) · /open <tab> jumps to a tab · /dashboard stop shuts it down");
         });
       }
       else if (cmd === "/trust") {
