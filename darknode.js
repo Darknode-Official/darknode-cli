@@ -6899,12 +6899,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         // existing queue now.
         if (s === "\x18" || s === "\x13") {
           const v = (composer.submit() || "").trim(); flush(); hIdx = composer.histIndex; input = ""; curPos = 0; menuSel = 0;
+          // a side command (/btw, /cost, /find...) never waits in the queue or stops the turn: it opens now
+          if (v && isInstant(v)) { handleSlash(v); render(); return; }
           if (v) nextQueue.unshift(v);
           if (!nextQueue.length) { pasteNotice = "nothing to send yet — type a prompt, then Ctrl+X/Ctrl+S to run it now"; render(); return; }
           // Interrupt ONLY the original turn. Once the first press has started the
           // queue flushing, the running turn is itself a queued prompt — a second
           // press must not kill it, or it would cancel the message it just launched.
-          if (curTurnFromQueue) { pasteNotice = (v ? "queued to run next — " : "already running your queue — ") + nextQueue.length + " in line"; }
+          // A NEWLY typed draft is an explicit "send this now", so it always interrupts.
+          if (curTurnFromQueue && !v) { pasteNotice = "already running your queue — " + nextQueue.length + " in line"; }
           else if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "sending the next queued prompt now — interrupting the current turn" }); }
           render(); return;
         }
@@ -6912,7 +6915,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         // completes, Enter queues the highlighted command to run after the turn
         if (cm.length && s === "\x1b") { input = ""; curPos = 0; menuSel = 0; render(); return; }
         if (cm.length && s === "\t") { if (_mm.length) { input = (_mm[menuSel] || _mm[0])[0] + " "; refreshArgCache(); } else { const sp = input.indexOf(" "); input = input.slice(0, sp) + " " + (_am[menuSel] || _am[0])[0] + " "; } curPos = input.length; menuSel = 0; render(); return; }
-        if (_mm.length && (s === "\r" || s === "\n")) { const t = (_mm[menuSel] || _mm[0])[0]; if (isInstant(t) && t !== "/btw") { input = ""; curPos = 0; menuSel = 0; handleSlash(t); return; } nextQueue.push(t); input = ""; curPos = 0; menuSel = 0; render(); return; }
+        if (_mm.length && (s === "\r" || s === "\n")) { const t = (_mm[menuSel] || _mm[0])[0]; if (t === "/btw") { input = "/btw "; curPos = input.length; composer.text = input; composer.cursor = curPos; menuSel = 0; render(); return; } if (isInstant(t)) { input = ""; curPos = 0; menuSel = 0; handleSlash(t); return; } nextQueue.push(t); input = ""; curPos = 0; menuSel = 0; render(); return; }
         if (s === "\x1b" || s === "\x03") { if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); } render(); return; }
         if (isDown && agentSel < 0 && !agentView && agents.length && !input) { agentSel = 0; render(); return; } // Down on an empty prompt drops focus into the Agents panel
         if (isUp || isDown) { arrowVert(isUp ? -1 : 1); return; }       // same as idle: visual row, then history / queued recall
