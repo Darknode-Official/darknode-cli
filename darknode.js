@@ -1642,8 +1642,10 @@ async function aiCoder(argv) {
   const lean = leanFlag || !!cfg.lean; // minimal-output mode (also used for read/step budgets)
   // Any-model support: an OpenAI-compatible endpoint (from .nexus/config.json or
   // env) turns the local engine into a driver for ANY model. Env wins over config.
-  if (cfg.apiBase && !process.env.DARKNODE_API_BASE) process.env.DARKNODE_API_BASE = cfg.apiBase;
-  if (cfg.apiKey && !process.env.DARKNODE_API_KEY) process.env.DARKNODE_API_KEY = cfg.apiKey;
+  // A repo's apiBase/apiKey would send your prompts, code and API key to whatever server
+  // it names, and that server's tool calls would run here, so they wait for /trust.
+  if ((cfg.apiBase || cfg.apiKey) && !isRepoTrusted(cwd)) { _heldRepoApi = { apiBase: cfg.apiBase, apiKey: cfg.apiKey }; _untrustedRepoConfig = true; delete cfg.apiBase; delete cfg.apiKey; if (printMode) console.error("  " + yellow("note: ignoring apiBase/apiKey in this repo's .nexus/config.json until you trust it (/trust in the TUI, or DARKNODE_TRUST_REPO=1)")); }
+  applyRepoApi(cfg);
   const _instr = require("./lib/nexus/instructions").loadInstructions(cwd, { allowOutside: isRepoTrusted(cwd) }); // AGENTS.md / CLAUDE.md / GEMINI.md / .cursorrules root->cwd, then .nexus/NEXUS.md
   let nexusMd = _instr.text;
   const avail = {}; for (const e of ENGINE_ORDER) avail[e] = engineAvail(e);
@@ -1945,7 +1947,7 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
     if (!m || !m.args || m.kind === "local") return resolve({ ok: false, output: "engine '" + engine + "' cannot run as a CLI task" });
     // A prompt starting with "-" would be parsed as an option by every engine's CLI
     // (claude: "unknown option"); a leading space keeps it a value for all of them.
-    const cmd = m.bin, args = m.args(/^-/.test(prompt) ? " " + prompt : prompt, { cont, autonomous, model, effort, mcpServers: extra && extra.mcpServers });
+    const cmd = m.bin, args = m.args(/^-/.test(prompt) ? " " + prompt : prompt, { cont, autonomous, model, effort, mcpServers: extra && extra.mcpServers, readonly: !!(extra && extra.readonly) });
     let out = "";
     const spawnEnv = (extra && extra.env) ? Object.assign({}, process.env, extra.env) : process.env; // e.g. $OPENCODE_CONFIG pointing at the Nexus ask bridge
     const p = _cp.spawn(cmd, args, { cwd, env: spawnEnv, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree
@@ -1983,6 +1985,7 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     if (opts.maxBudgetUsd) args.push("--max-budget-usd", String(opts.maxBudgetUsd));
     if (opts.maxTurns) args.push("--max-turns", String(opts.maxTurns));
     if (opts.disallow && opts.disallow.length) args.push("--disallowed-tools", ...opts.disallow);
+    if (opts.readonly && opts.mcpConfigPath) args.push("--allowed-tools", "mcp__nexus__ask_user"); // plan mode still lets the model ask the user
     args.push(...Cheap.launchFlags(opts.cheap, opts.skillOverrides, opts.keepWarm));
     if (opts.keepWarm) args.push(...Cheap.keepWarmFlags()); // one turn on an unsaved fork: reads the cache, leaves the conversation as it was
     if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath); // give claude the Nexus ask bridge (+ any .nexus/mcp.json servers); no --strict so claude keeps its own servers too
@@ -2102,12 +2105,20 @@ const keptNote = () => { const k = nexusRestore.kept || []; return k.length ? " 
 // them for repos the operator has explicitly trusted. Trust lives OUTSIDE the repo
 // (~/.darknode/trusted-repos.json) so a malicious repo can't mark itself trusted.
 let _untrustedRepoConfig = false;
+let _heldRepoApi = null; // a repo's apiBase/apiKey held back until /trust
+function applyRepoApi(c) {
+  if (c && c.apiBase && !process.env.DARKNODE_API_BASE) process.env.DARKNODE_API_BASE = c.apiBase;
+  if (c && c.apiKey && !process.env.DARKNODE_API_KEY) process.env.DARKNODE_API_KEY = c.apiKey;
+}
+// Only the risky keys of .nexus/config.json are bound into trust (Nexus itself rewrites
+// engine/model there), and only when present, so existing trust entries stay valid.
+function repoApiFingerprint(cwd) { try { const c = JSON.parse(stripBom(require("fs").readFileSync(require("path").join(cwd, ".nexus", "config.json"), "utf8"))); return c && (c.apiBase || c.apiKey) ? JSON.stringify([String(c.apiBase || ""), String(c.apiKey || "")]) : ""; } catch (_) { return ""; } }
 function trustFile() { return require("path").join(darknodeHome(), "trusted-repos.json"); }
 // Trust is bound to the CONTENT of the files that run commands or loosen the guard: a git pull or an
 // agent edit that changes them after /trust leaves the repo untrusted again until the operator re-trusts it.
 const TRUST_FILES = [".nexus/mcp.json", ".mcp.json", ".nexus/hooks.json", ".nexus/permissions.json", ".nexus/policy.json"];
 let _trustChanged = false;
-function trustDigest(cwd) { const fs = require("fs"), path = require("path"); const h = require("crypto").createHash("sha256"); for (const f of TRUST_FILES) { let c = "\u0000missing"; try { c = fs.readFileSync(path.join(cwd, f), "utf8"); } catch (_) {} h.update(f + "\u0000" + c + "\u0000"); } return h.digest("hex"); }
+function trustDigest(cwd) { const fs = require("fs"), path = require("path"); const h = require("crypto").createHash("sha256"); for (const f of TRUST_FILES) { let c = "\u0000missing"; try { c = fs.readFileSync(path.join(cwd, f), "utf8"); } catch (_) {} h.update(f + "\u0000" + c + "\u0000"); } const api = repoApiFingerprint(cwd); if (api) h.update(".nexus/config.json#api\u0000" + api + "\u0000"); return h.digest("hex"); }
 function readTrustList() { try { const l = JSON.parse(require("fs").readFileSync(trustFile(), "utf8")); return Array.isArray(l) ? l : []; } catch (_) { return []; } }
 function trustState(cwd) { // "ok" | "changed" | "no"
   const rp = require("path").resolve(cwd), list = readTrustList();
@@ -2296,10 +2307,13 @@ function permMatch(rule, name, a, kind) {
   let r = String(rule || "").trim(); if (!r) return false;
   const bm = /^Bash\((.*)\)$/i.exec(r); if (bm) r = "run_command:" + bm[1];
   const ix = r.indexOf(":"); const rtool = ix < 0 ? r : r.slice(0, ix); const rpat = ix < 0 ? "" : r.slice(ix + 1);
-  const tool = name;
+  let tool = name;
+  // a run_command deny also covers every other tool that reaches a shell (verify, bisect, sessions...),
+  // judged on the command it will actually run - else a denied `git push` slips through as verify {command}
+  if (kind === "deny" && permCanon(rtool) === "run_command" && permCanon(name) !== "run_command" && isExecTool(name)) { const c = execCommand(name, a); if (c == null) return !rpat || rpat === "*"; tool = "run_command"; a = { command: c }; }
   if (rtool.trim() !== "*" && permCanon(rtool) !== permCanon(tool)) return false;
   if (!rpat || rpat === "*") return true;
-  const target = String(a.command || a.path || a.to || a.dest || a.from || a.url || a.query || "");
+  const target = String(a.command || a.path || a.file || a.to || a.dest || a.destination || a.from || a.src || a.source || a.url || a.query || "");
   if (a.command && permCanon(tool) === "run_command") {
     const { segs, hidden } = cmdSegments(a.command);
     const glob = rpat.includes("*") ? (() => { try { return new RegExp("^" + rpat.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$"); } catch (_) { return null; } })() : null;
@@ -4098,19 +4112,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // Build (or reuse) the per-engine MCP config: the Nexus ask bridge plus any
     // servers the user configured in a trusted .nexus/mcp.json. Returns a file
     // path for claude's --mcp-config, or null if the bridge couldn't open.
-    const engineMcpServers = () => {
+    const engineMcpServers = (readonly) => {
       const b = ensureAskBridge(); if (!b) return null;
-      try { return buildEngineMcpServers({ sockPath: b.sockPath, askMcpPath: ASK_MCP_PATH, userServers: loadMcpConfig(cwd) || {} }); } catch (_) { return null; }
+      try { return buildEngineMcpServers({ sockPath: b.sockPath, askMcpPath: ASK_MCP_PATH, userServers: loadMcpConfig(cwd) || {}, readonly: !!readonly }); } catch (_) { return null; }
     };
-    const engineMcpConfigPath = () => { const servers = engineMcpServers(); if (!servers) return null; try { return writeMcpConfigFile(path.join(cwd, ".nexus"), servers); } catch (_) { return null; } };
+    const engineMcpConfigPath = (readonly) => { const servers = engineMcpServers(readonly); if (!servers) return null; try { return writeMcpConfigFile(path.join(cwd, ".nexus"), servers); } catch (_) { return null; } };
     // Per-engine injection of the ask bridge for the CLI engines (claude uses
     // --mcp-config directly). Returns the `extra` to hand runEngineTask: codex
     // takes -c overrides via mcpServers; opencode is pointed at a merged config
     // file via $OPENCODE_CONFIG (the user's own opencode config is preserved).
-    const engineMcpLaunch = (eng) => {
+    const engineMcpLaunch = (eng, readonly) => {
       const m = ENGINES[eng] || {};
       if (!engineCap(eng, "mcpInject")) return undefined;
-      const servers = engineMcpServers(); if (!servers) return undefined;
+      const servers = engineMcpServers(readonly); if (!servers) return undefined;
       if (m.mcpMode === "env") {
         let obj, fname;
         if (m.mcpFormat === "opencode") { // opencode's own schema; merge INTO a copy of the user's project config
@@ -4130,7 +4144,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // idle refresh for the prompt-cache chip: re-render only when its text changes (minute steps, then seconds in the last minute)
     // Everything a claude launch depends on besides the prompt. Keep-warm rebuilds it to check
     // that the next real message would still match the cached prefix it is about to refresh.
-    const claudeOpts = (resume) => ({ resume, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), skillOverrides: cacheOn && tightEdits && cheapSide ? Cheap.overridesFor(NHOME, cwd) : null, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(), fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined });
+    const claudeOpts = (resume) => ({ resume, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), skillOverrides: cacheOn && tightEdits && cheapSide ? Cheap.overridesFor(NHOME, cwd) : null, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(mode === 2), readonly: mode === 2, fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined });
     // /cheap keep-warm: refresh a 1-hour cache just before it expires while you are away
     const keepWarm = () => {
       if (warming || !lastClaudeOpts || !Cheap.keepWarmDue({ cheap: !!(cacheOn && tightEdits && cheapSide), engine, sid: claudeSid, busy, lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now(), lastHumanAt: lastAskAt, ctxTok: sess.ctxUsed })) return;
@@ -4513,7 +4527,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               renderSoon();
             })
           : ((chunk) => { textItem().full += chunk; sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); });
-        runEngineTask(engine, promptText, cwd, true, cont, onChunk, ctl, mdl, undefined, engineMcpLaunch(engine)).then((res) => {
+        runEngineTask(engine, promptText, cwd, mode !== 2, cont, onChunk, ctl, mdl, undefined, mode === 2 ? Object.assign({}, engineMcpLaunch(engine, true), { readonly: true }) : engineMcpLaunch(engine)).then((res) => {
           const raw = res.output || "";
           let display = raw, inD, outD;
           if (jsonProto) {
@@ -4608,7 +4622,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             // and hand every later check + the tool itself the canonical project-
             // relative path — so `cfg -> .env`, `.nexus/./x` or `../x` can't slip past.
             if (/^(read_file|list_dir|write_file|edit_file|multi_edit|multiedit|undo_edit|delete|delete_file|rm|move|move_file|rename|copy|copy_file)$/.test(name)) {
-              try { for (const k of ["path", "to", "dest", "from"]) if (a[k] != null && a[k] !== "") { const real = Jail.assertInJail(a[k], cwd); a[k] = path.relative(Jail.canonical(path.resolve(cwd)), real) || "."; } }
+              try { for (const k of ["path", "file", "to", "dest", "destination", "from", "src", "source"]) if (a[k] != null && a[k] !== "") { const real = Jail.assertInJail(a[k], cwd); a[k] = path.relative(Jail.canonical(path.resolve(cwd)), real) || "."; } }
               catch (e) { result = { error: e.message }; blocked = true; card.status = "err"; }
             }
             if (!blocked && mode === 2 && isPlanBlocked(name) && !(name === "replace_in_files" && (a.dry_run === true || a.preview === true))) { result = { error: "plan mode is on — file/system changes are blocked. Describe the plan instead, then switch mode with shift+tab to execute." }; blocked = true; card.status = "err"; }
@@ -5445,7 +5459,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         });
       }
       else if (cmd === "/trust") {
-        if (trustRepo(cwd)) { _untrustedRepoConfig = false; if (heldAllow.length) { perms.allow = heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))); heldAllow = []; } mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "trusted this workspace (" + gray(cwd) + ") — its .nexus MCP servers and permission allow rules now load; hooks and any policy.json relaxations apply on next launch." }); }
+        if (trustRepo(cwd)) { _untrustedRepoConfig = false; if (_heldRepoApi) { applyRepoApi(_heldRepoApi); _heldRepoApi = null; } if (heldAllow.length) { perms.allow = heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))); heldAllow = []; } mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "trusted this workspace (" + gray(cwd) + ") — its .nexus MCP servers and permission allow rules now load; hooks and any policy.json relaxations apply on next launch." }); }
         else transcript.push({ role: "system", text: red("could not record trust") });
       }
       else if (cmd === "/mcp") {
@@ -6597,7 +6611,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       } catch (_) {}
     })();
     // warn once if this repo ships MCP servers / hooks but isn't trusted (they were NOT run)
-    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow(_trustChanged ? "warning: this workspace's MCP servers, hooks, permission rules or policy changed since you trusted it — not loaded until you review them and re-trust. " : "warning: this workspace defines MCP servers, hooks, permission allow rules and/or policy relaxations — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
+    if (_untrustedRepoConfig) transcript.push({ role: "system", text: yellow(_trustChanged ? "warning: this workspace's MCP servers, hooks, permission rules, policy or API endpoint changed since you trusted it — not loaded until you review them and re-trust. " : "warning: this workspace defines MCP servers, hooks, permission allow rules, policy relaxations and/or an API endpoint (apiBase) — not loaded because the repo isn't trusted. ") + "Run " + cyan("/trust") + " to enable them" + gray("  (or export DARKNODE_TRUST_REPO=1)") });
     refreshGit(); // populate the status-bar branch indicator
     try { Composer.cleanupDroppedTails(); } catch (_) {} // sweep paste-remainder temp files older than 24h
     let imgCounter = 0; // fallback running number when an image's folder position can't be read
