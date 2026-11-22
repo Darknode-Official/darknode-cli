@@ -72,12 +72,14 @@ const TokCount = require("./lib/cli/tokcount"); // pure /tokens estimator — pr
 const Cheap = require("./lib/nexus/cheap"); // /cheap on the claude engine: launch flags, model-switch hold, measured spend
 const CacheWarm = require("./lib/cli/cachewarm"); // pure prompt-cache TTL countdown for the status chip + /warm (lib/cli/cachewarm.js)
 const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for the Agents panel (live sub-agent list under the prompt bar) (lib/cli/agents.js)
-const { idleWatchdog } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based (ask_user no longer holds the engine open)
+const { idleWatchdog, engineWaits } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based (ask_user no longer holds the engine open)
 const AskDefer = require("./lib/nexus/ask-defer"); // ask_user never blocks the engine: answer later, sent as the next prompt
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
 const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, toGeminiServers, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
 const ASK_MCP_PATH = require("path").join(__dirname, "lib", "nexus", "ask-mcp.js"); // stdio MCP shim spawned by the engine
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
+const Acp = require("./lib/nexus/acp-client"); // Agent Client Protocol transport for engines that speak it (lib/nexus/acp-client.js)
+const Sandbox = require("./lib/nexus/sandbox"); // Landlock engine sandbox (lib/nexus/sandbox.js + landlock.py)
 const Jail = require("./lib/nexus/jail"); // canonical path jail shared by every file tool (symlink/dot-dot safe) (lib/nexus/jail.js)
 const Redact = require("./lib/nexus/redact"); // central sink redaction + keyed placeholders (lib/nexus/redact.js)
 const NexusDocs = require("./lib/cli/nexus-docs"); // the Nexus reference the model reads on questions about Nexus itself
@@ -1947,9 +1949,10 @@ function runEngineTask(engine, prompt, cwd, autonomous, cont, onChunk, ctl, mode
     if (!m || !m.args || m.kind === "local") return resolve({ ok: false, output: "engine '" + engine + "' cannot run as a CLI task" });
     // A prompt starting with "-" would be parsed as an option by every engine's CLI
     // (claude: "unknown option"); a leading space keeps it a value for all of them.
-    const cmd = m.bin, args = m.args(/^-/.test(prompt) ? " " + prompt : prompt, { cont, autonomous, model, effort, mcpServers: extra && extra.mcpServers, readonly: !!(extra && extra.readonly) });
+    let cmd = m.bin, args = m.args(/^-/.test(prompt) ? " " + prompt : prompt, { cont, autonomous, model, effort, mcpServers: extra && extra.mcpServers, readonly: !!(extra && extra.readonly) });
     let out = "";
-    const spawnEnv = (extra && extra.env) ? Object.assign({}, process.env, extra.env) : process.env; // e.g. $OPENCODE_CONFIG pointing at the Nexus ask bridge
+    let spawnEnv = (extra && extra.env) ? Object.assign({}, process.env, extra.env) : process.env; // e.g. $OPENCODE_CONFIG pointing at the Nexus ask bridge
+    if (extra && extra.sandbox) { const w = Sandbox.prepare(cmd, args, spawnEnv, Object.assign({ cwd }, extra.sandbox)); cmd = w.cmd; args = w.args; spawnEnv = w.env; if (extra.onSandbox) extra.onSandbox(w); } // Landlock: no secrets, writes only where allowed
     const p = _cp.spawn(cmd, args, { cwd, env: spawnEnv, detached: process.platform !== "win32" }); // own process group so an interrupt kills the whole tree
     const to = idleWatchdog(() => killGroup(p, "SIGKILL"));
     let killed = false, err = "";
@@ -1989,8 +1992,10 @@ function runClaudeStream(prompt, cwd, cont, h, ctl, opts) {
     args.push(...Cheap.launchFlags(opts.cheap, opts.skillOverrides, opts.keepWarm));
     if (opts.keepWarm) args.push(...Cheap.keepWarmFlags()); // one turn on an unsaved fork: reads the cache, leaves the conversation as it was
     if (opts.mcpConfigPath) args.push("--mcp-config", opts.mcpConfigPath); // give claude the Nexus ask bridge (+ any .nexus/mcp.json servers); no --strict so claude keeps its own servers too
-    const env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
-    const cp = _cp.spawn("claude", args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
+    let env = opts.small ? Object.assign({}, process.env, { ANTHROPIC_SMALL_FAST_MODEL: opts.small, CLAUDE_CODE_BG_CLASSIFIER_MODEL: opts.small }) : process.env;
+    let bin = "claude";
+    if (opts.sandbox) { const w = Sandbox.prepare(bin, args, env, Object.assign({ cwd }, opts.sandbox)); bin = w.cmd; args.splice(0, args.length, ...w.args); env = w.env; if (h.onSandbox) h.onSandbox(w); } // Landlock: no secrets, writes only where allowed
+    const cp = _cp.spawn(bin, args, { cwd, env, detached: process.platform !== "win32" }); // own process group so an interrupt kills claude and its tool subprocesses
     const to = idleWatchdog(() => killGroup(cp, "SIGKILL"));
     try { cp.stdin.on("error", () => {}); cp.stdin.end(viaStdin ? prompt : undefined); } catch (_) {} // big prompt on stdin, else EOF so claude doesn't wait on stdin
     const dropSys = () => { if (sysFile) { try { require("fs").unlinkSync(sysFile); } catch (_) {} sysFile = ""; } };
@@ -2918,6 +2923,19 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const settingsStore = nexusSettings.createStore(NHOME);
     const S = settingsStore.value, Ssrc = settingsStore.source;
     const saveSetting = (k, v) => { try { settingsStore.set(k, v); } catch (_) {} };
+    // ACP transport (/acp) and the Landlock engine sandbox (/sandbox): both persisted like every other toggle.
+    let acpMode = S.acp === "off" ? "off" : "auto", sandboxMode = Sandbox.normMode(S.sandbox) || "auto";
+    const acpBroken = {}; // engine -> why: its ACP handshake failed this session, so it stays on the classic path
+    const sbxOpts = () => (sandboxMode === "off" ? null : { setting: sandboxMode, plan: mode === 2, untrusted: !!_untrustedRepoConfig, home: NHOME });
+    const sbxNoted = new Set();
+    const onSandbox = (w) => { // one note per reason per session: the user sees when (and why) the engine is fenced in
+      const key = w && w.sandbox ? "on:" + w.sandbox.reason + ":" + w.sandbox.writable : w && w.why && sandboxMode === "always" ? "why:" + w.why : ""; // auto falls back quietly where Landlock is missing (macOS, Windows); only an explicit "always" warns
+      if (!key || sbxNoted.has(key)) return; sbxNoted.add(key);
+      let at = activeBlock ? transcript.lastIndexOf(activeBlock) : -1; if (at > 0 && transcript[at - 1] && transcript[at - 1].role === "user") at--; // above this turn's prompt, not under its answer (and an interrupted empty turn still pops cleanly)
+      transcript.splice(at >= 0 ? at : transcript.length, 0, { role: "system", text: w.sandbox
+        ? "sandbox on (" + w.sandbox.reason + "): the engine can't read ~/.ssh, cloud/CLI tokens, browser profiles or shell history" + (w.sandbox.writable ? ", and writes only this project, the temp dir and its own state." : ", and can't write this project.") + gray(" Network stays open. /sandbox to change.")
+        : yellow("sandbox unavailable: " + w.why) + gray(" — this engine runs unsandboxed. /sandbox off hides this note.") });
+    };
     if (settingsStore.corrupt) transcript.push({ role: "system", text: "your settings file (~/.nexus/settings.json) was unreadable, so Nexus started with defaults. The old file was kept as " + settingsStore.corrupt + " — fix it and copy it back to restore your settings." });
     // Signed in to Darknode: let the site owner's admin panel count this account as a Nexus user
     // (version + OS, at most every 6 hours; /shareusage off). Fire and forget.
@@ -3048,7 +3066,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/index", "index the repo for code search; /index <question> finds the code it is about"], ["/map", "show the repo map; /map <task> ranks it for a task; /map on|off"], ["/verify", "detect + run this project's tests/build"], ["/radar", "codebase complexity + hotspot map"], ["/review-fast", "fast rule-based review of changed code (no AI)"], ["/diffexplain", "explain the current git diff"], ["/testgen", "scaffold tests for a function/file"], ["/snippet", "save / use a prompt macro"], ["/snippets", "list saved prompt macros"],
       ["/plan", "make & run an editable task checklist"], ["/git", "branch, status & recent commits"], ["/blame", "who last changed a file's lines"],
       ["/cowork", "strong model codes, weak model does cheap work"], ["/cheap", "lossless savers + measured spend · /cheap status · /cheap off"], ["/tight", "surgical edits — change only what differs (lossless)"], ["/lean", "ask for minimal output (saves output tokens) · /lean on|off"], ["/style", "output style: concise·explanatory·review·tdd·secure·teacher"], ["/effort", "claude thinking level — interactive slider (or low|medium|high|xhigh|max|ultracode)"], ["/estimate", "rough token/cost of a prompt before sending"], ["/fallback", "auto-switch model on rate-limit"],
-      ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "same as /savings — cost-savings analysis"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "Nexus docs: /docs <topic> or /docs <words> to search every command & key"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
+      ["/guard", "preflight destructive commands (enforce|warn|off)"], ["/sandbox", "fence engines in (Landlock): no secrets, writes only the project · /sandbox auto|always|off"], ["/acp", "ACP engines (opencode, gemini): live tool cards, they ask before acting · /acp auto|off"], ["/permissions", "allow/deny tool rules — /allow /deny <rule>"], ["/impact", "same as /savings — cost-savings analysis"], ["/savings", "cross-session cost-savings analysis + 30d projection"], ["/cache", "serve exact-repeat read-only answers free (on/off/clear)"], ["/models", "list cloud & local models"], ["/api", "drive ANY model via an OpenAI-compatible API (OpenRouter, Groq, …)"], ["/recent", "recently changed files"], ["/keys", "keyboard shortcuts"], ["/docs", "Nexus docs: /docs <topic> or /docs <words> to search every command & key"], ["/gaps", "list TODO/FIXME markers · /gaps plan"], ["/dream", "consolidate the session into NEXUS.md memory"],
       ["/tree", "show the project file tree"], ["/theme", "change the color theme"],
       ["/color", "set the accent color · /color <name|0-255|#hex> · /color reset"], ["/colors", "list accent colors"], ["/gradient", "set the logo gradient · /gradient <theme|reset>"], ["/mouse", "toggle mouse capture · /mouse off to select & copy text"],
       ["/hack", "offensive-security mode — pentest/CTF persona + the Darknode toolkit"],
@@ -3631,6 +3649,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       "/cheap": () => [["status", "what each saver did this session"], ["off", "restore your settings from before /cheap"]],
       "/effort": () => [["low", "fast, less thinking"], ["medium", "balanced"], ["high", "deep reasoning"], ["xhigh", "harder problems"], ["max", "maximum thinking"], ["ultracode", "max + multi-agent workflows"]],
       "/guard": () => [["enforce", "block destructive commands"], ["warn", "warn but allow"], ["off", "no safety checks"]],
+      "/sandbox": () => [["auto", "plan mode + untrusted repos (default)"], ["always", "every engine turn"], ["off", "never sandbox"]],
+      "/acp": () => [["auto", "use ACP where the engine speaks it (default)"], ["off", "classic one-shot runs"]],
       "/marketplace": () => [["list", "installed packages"], ["install", "install from path/URL"], ["remove", "uninstall a package"], ["init", "scaffold a publishable package"]],
       "/cron": () => [["list", "show scheduled jobs"], ["add", "schedule a new job"], ["remove", "delete a job"], ["enable", "enable a job"], ["disable", "pause a job"], ["run", "run a job now"]],
       "/mcp": () => [["catalog", "browse available servers"], ["add", "connect a server"], ["remove", "disconnect a server"], ["connect", "reconnect all"]],
@@ -4008,6 +4028,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           case "/fallback": return !!fallback;
           case "/autocompact": return autoCompact;
           case "/guard": return guard !== "off";
+          case "/sandbox": return sandboxMode !== "off";
+          case "/acp": return acpMode !== "off";
           default: return null;
         }
       };
@@ -4138,13 +4160,95 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       return { mcpServers: servers }; // cArgs (codex): -c overrides via args()
     };
+    // ---- ACP engines (opencode, gemini): live tool cards, and the engine asks Nexus before it acts ----
+    const _acpHelp = {};
+    const acpLaunchFor = (eng, mdl) => {
+      const m = ENGINES[eng];
+      if (acpMode === "off" || !m || !m.acp || acpBroken[eng]) return null;
+      let help = "";
+      if (m.acp.needsHelp) { if (_acpHelp[eng] == null) { try { const r = _cp.spawnSync(m.bin, ["--help"], { encoding: "utf8", timeout: 8000 }); _acpHelp[eng] = String(r.stdout || "") + String(r.stderr || ""); } catch (_) { _acpHelp[eng] = ""; } } help = _acpHelp[eng]; } // which ACP flag this install has (it was renamed between versions)
+      const args = m.acp.args({ model: mdl, help }); if (!args) return null;
+      const env = {};
+      if (m.acp.permEnv === "OPENCODE_CONFIG_CONTENT" && !process.env.OPENCODE_CONFIG_CONTENT && mode !== 3) { const ov = Acp.opencodePermOverlay(Acp.opencodeUserConfigs(cwd, NHOME)); if (ov) env.OPENCODE_CONFIG_CONTENT = ov; } // its tools ask Nexus; the user's own permission settings win
+      return { cmd: m.bin, args, env };
+    };
+    const ACP_KIND = { read: "Read", edit: "Update", delete: "Delete", move: "Move", search: "Search", execute: "Bash", think: "Think", fetch: "Fetch", switch_mode: "Mode", other: "Tool" };
+    const acpEngineTurn = (L, mdl, fallback, T) => {
+      const { block, textItem, stat, relOf, finish, promptText } = T;
+      const eng = ENGINES[engine], plan = mode === 2, sb = sbxOpts();
+      const w = sb ? Sandbox.prepare(L.cmd, L.args, Object.assign({}, process.env, L.env), Object.assign({ cwd }, sb)) : { cmd: L.cmd, args: L.args, env: Object.assign({}, process.env, L.env), sandbox: null };
+      if (sb) onSandbox(w);
+      const cards = new Map();
+      const tcPath = (tc) => (tc.locations && tc.locations[0] && tc.locations[0].path) || (tc.input && typeof tc.input === "object" && (tc.input.path || tc.input.filePath || tc.input.filepath || tc.input.file_path)) || "";
+      const tcLabel = (tc) => { const cmd = Acp.commandOf(tc), p = tcPath(tc); return (ACP_KIND[tc.kind] || "Tool") + "(" + oneline(String(tc.kind === "execute" && cmd ? cmd : p ? relP(p) : tc.title || ""), Math.max(30, cols() - 30)) + ")"; };
+      const cardOf = (tc) => {
+        let c = cards.get(tc.id);
+        if (!c) { c = { type: "tool", id: "acp:" + tc.id, name: ACP_KIND[tc.kind] || "Tool", input: tc.input || {}, label: tcLabel(tc), detail: oneline(tc.title || "", 260), status: "run", start: Date.now() }; cards.set(tc.id, c); block.items.push(c); if (tc.kind === "execute") { stat.cmds++; runningShells++; c._sh = true; } }
+        return c;
+      };
+      const settle = (c, good, txt) => { if (c.status !== "run") return; c.status = good ? "ok" : "err"; c.isError = !good; c.end = Date.now(); if (txt) { c.result = txt; c.detail = oneline(txt, 260); } if (c._sh && runningShells) runningShells--; };
+      const touchFiles = (tc) => { if (!/^(edit|delete|move)$/.test(tc.kind)) return; for (const l of tc.locations || []) if (l && l.path) { stat.files.add(base(l.path)); const r = relOf(l.path); if (r) stat.paths.add(r); } };
+      // The same rules the local agent's tools obey: /permissions deny + allow, the destructive-command guard, the project jail.
+      const check = (tc) => {
+        const cmd = Acp.commandOf(tc);
+        if (tc.kind === "execute" && cmd) {
+          const pd = permDecision(perms, "run_command", { command: cmd });
+          if (pd === "deny") return { deny: "permission rule denied " + oneline(cmd, 60) };
+          if (pd === "allow" || guard === "off") return {};
+          const d = classifyDanger(cmd);
+          if (d.level === "block" && guard === "enforce") return { deny: "Darknode guard blocked a destructive command — " + d.why + ": " + oneline(cmd, 46) };
+          return d.level !== "ok" ? { warn: d.why } : {};
+        }
+        const p = tcPath(tc);
+        if (!/^(read|search|think|fetch)$/.test(tc.kind)) { // opencode asks "external_directory" (kind other) before touching a path outside the project
+          const outside = (tc.locations || []).map((l) => l && l.path).concat(p ? [p] : []).filter(Boolean).find((x) => { try { Jail.assertInJail(x, cwd); return false; } catch (_) { return true; } });
+          if (outside || tc.title === "external_directory") return { ask: "that is outside this project" };
+        }
+        if (p && /^(edit|delete|move)$/.test(tc.kind) && permDecision(perms, tc.kind === "delete" ? "delete" : "write_file", { path: p }) === "deny") return { deny: "permission rule denied " + tc.kind + " " + p };
+        return {};
+      };
+      const decide = async (tc) => {
+        const pol = Acp.policyFor(mode, tc, check), c = cardOf(tc);
+        if (pol.decision === "reject") { settle(c, false, pol.why); if (!/^plan mode/.test(pol.why || "")) transcript.push({ role: "system", text: pol.why }); renderSoon(); return "reject"; }
+        if (pol.decision === "ask") {
+          engineWaits.n++; // the hang watchdog never fires while the user decides
+          try {
+            const r = await askUser(eng.label + " wants to " + (tc.kind === "execute" ? "run: " + oneline(Acp.commandOf(tc), 80) : (tc.title === "external_directory" ? "access" : (ACP_KIND[tc.kind] || "use").toLowerCase()) + " " + (tcPath(tc) || tc.title)) + " — " + pol.why, ["Allow once", "Reject"]);
+            const yes = !!(r && !r.cancelled && r.index === 0); if (!yes) settle(c, false, "rejected by you"); return yes ? "allow" : "reject";
+          } finally { engineWaits.n--; }
+        }
+        return "allow";
+      };
+      Acp.runTurn({ cmd: w.cmd, args: w.args, env: w.env, cwd, prompt: promptText, plan, model: mdl, mcpServers: engineMcpServers(plan) || undefined, version: VERSION, ctl, idle: idleWatchdog, jail: (p) => Jail.assertInJail(p, cwd), decide,
+        onText: (t) => { textItem().full += t; sess.liveOut += Math.ceil(t.length / 4); renderSoon(); },
+        onThought: (t) => { let last = block.items[block.items.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; block.items.push(last); } last.full += t; sess.liveOut += Math.ceil(t.length / 4); renderSoon(); },
+        onTool: (tc) => { cardOf(tc).label = tcLabel(tc); render(); },
+        onToolUpdate: (tc) => { const c = cardOf(tc); c.label = tcLabel(tc); if (tc.input) c.input = tc.input; if (tc.status === "completed" || tc.status === "failed") { settle(c, tc.status === "completed", tc.text || (typeof tc.output === "string" ? tc.output : "")); if (tc.status === "completed") touchFiles(tc); } renderSoon(); },
+        onWrite: (real) => { stat.files.add(base(real)); const r = relOf(real); if (r) stat.paths.add(r); },
+        onUsage: (u) => { if (u && u.size) sess.ctxWindow = u.size; },
+      }).then((r) => {
+        if (r.acpFailed && !r.interrupted && !block.items.length) { // never got a session: this install can't do ACP, so run the classic way (and stay there this session)
+          acpBroken[engine] = r.error || "handshake failed";
+          transcript.push({ role: "system", text: gray(eng.label + " ACP unavailable (" + oneline(r.error || "", 80) + ") — using its classic mode this session. /acp off makes that permanent.") });
+          return fallback();
+        }
+        const u = r.usage || {}, display = r.output || "";
+        let inD = (u.inputTokens || 0) + (u.cachedReadTokens || 0) + (u.cachedWriteTokens || 0), outD = (u.outputTokens || 0) + (u.thoughtTokens || 0); // REAL usage from the prompt result
+        if (!inD && !outD) { inD = Math.ceil(promptText.length / 4); outD = Math.ceil(display.length / 4); } // agent sent none: estimate
+        sess.inTok += inD; sess.outTok += outD;
+        sess.ctxUsed = (r.ctx && r.ctx.used) || ((sess.inTok + sess.outTok) - (sess.ctxBase || 0));
+        if (PAID[engine] && !onPlan(engine)) { const ac = r.ctx && r.ctx.cost && +r.ctx.cost.amount; if (ac > 0) sess.cost += ac; else { const pr = priceOf(mdl || eng.model || ""); sess.cost += (inD * pr.in + outD * pr.out) / 1e6; } }
+        if (!r.ok && !r.interrupted && r.error && !display.trim()) textItem().full = engine + " error: " + r.error + (r.needsAuth ? "\nsign in by running `" + eng.bin + (engine === "opencode" ? " auth login" : "") + "` in a terminal, then retry" : "");
+        finish({ ok: r.ok, interrupted: r.interrupted, output: display || r.error || "" });
+      });
+    };
     // ---- animation loop: typewriter reveal + spinners + elapsed ----
     const revealing = () => { const b = activeBlock || cur(); if (!b || !b.items) return false; return b.items.some((it) => it.type === "text" && it.shown < it.full.length); };
     const startTick = () => { if (tick) return; tick = setInterval(() => { const b = activeBlock || cur(); if (b && b.items) for (const it of b.items) if (it.type === "text" && it.shown < it.full.length) { let ns = Math.min(it.full.length, it.shown + Math.max(2, Math.ceil((it.full.length - it.shown) / 22))); const cc = it.full.charCodeAt(ns - 1); if (cc >= 0xD800 && cc <= 0xDBFF && ns < it.full.length) ns++; it.shown = ns; } render(); if (!busy && !revealing() && !compact.on) { clearInterval(tick); tick = null; } }, 45); };
     // idle refresh for the prompt-cache chip: re-render only when its text changes (minute steps, then seconds in the last minute)
     // Everything a claude launch depends on besides the prompt. Keep-warm rebuilds it to check
     // that the next real message would still match the cached prefix it is about to refresh.
-    const claudeOpts = (resume) => ({ resume, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), skillOverrides: cacheOn && tightEdits && cheapSide ? Cheap.overridesFor(NHOME, cwd) : null, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(mode === 2), readonly: mode === 2, fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined });
+    const claudeOpts = (resume) => ({ resume, model: cowork.on ? cowork.strong : ((sess.userModel && sess.model && sess.model !== engine) ? sess.model : undefined), small: cowork.on && cowork.weakKind === "claude" ? cowork.weak : undefined, effort: effort || undefined, cheap: !!(cacheOn && tightEdits && cheapSide), skillOverrides: cacheOn && tightEdits && cheapSide ? Cheap.overridesFor(NHOME, cwd) : null, appendSystemPrompt: require("./lib/nexus/bg-cutoff").HOST_NOTE + "\n" + ((nexusMd ? "Project (.nexus/NEXUS.md):\n" + nexusMd.slice(0, 1000) : "") + (tightEdits ? "\n" + TIGHT_DIR : "") + (minimizeCalls ? "\nMinimize tool calls: chain shell commands, read only needed lines, never re-read after write. 2-5 calls for simple tasks." : "") + (lean ? "\nTerse output, no preamble." : "") + (styleDir(style) ? "\n" + styleDir(style) : "") + (hack ? "\n" + HACK_DIR : "") + policyPrompt() + ASK_ENGINE_NOTE) || undefined, mcpConfigPath: engineMcpConfigPath(mode === 2), readonly: mode === 2, fallbackModel: fallback || undefined, maxBudgetUsd: costCap ? Math.max(0.01, costCap - sess.cost).toFixed(2) : undefined, disallow: mode === 2 ? READONLY_TOOLS : undefined, sandbox: sbxOpts() || undefined });
     // /cheap keep-warm: refresh a 1-hour cache just before it expires while you are away
     const keepWarm = () => {
       if (warming || !lastClaudeOpts || !Cheap.keepWarmDue({ cheap: !!(cacheOn && tightEdits && cheapSide), engine, sid: claudeSid, busy, lastAt: cacheWarm.lastAt, ttl: cacheWarm.ttl, now: Date.now(), lastHumanAt: lastAskAt, ctxTok: sess.ctxUsed })) return;
@@ -4476,6 +4580,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         lastAskAt = Date.now();
         runClaudeStream(promptText, cwd, cont, {
           onInit: (ev) => { if (ev.model) sess.model = ev.model; if (ev.session_id) claudeSid = ev.session_id; },
+          onSandbox,
           onRateLimit: (info) => { rate = info; },
           onThinking: (t, pid) => { const sa = subAgentOf(pid), tg = sa ? sa.items : block.items; let last = tg[tg.length - 1]; if (!last || last.type !== "thinking") { last = { type: "thinking", full: "" }; tg.push(last); } last.full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
           onText: (t, pid) => { const sa = subAgentOf(pid); if (sa) { let last = sa.items[sa.items.length - 1]; if (!last || last.type !== "text") { last = { type: "text", full: "", shown: 0 }; sa.items.push(last); } last.full += t; last.shown = last.full.length; } else textItem().full += t; if (!anyDelta) bumpLive(t); renderSoon(); },
@@ -4513,6 +4618,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       } else if (ENGINES[engine] && ENGINES[engine].kind === "cli") { // gemini / codex / opencode / aider
         const eng = ENGINES[engine];
         const mdl = sess.model && sess.model !== engine ? sess.model : undefined; // only pass a model the user actually chose
+        const classicTurn = () => {
         const jsonProto = eng.proto === "gemini-json" || eng.proto === "codex-json";
         // JSON-mode engines emit machine output (not human text), so don't render the
         // raw chunks. For the live token counter, show the REAL running count, never
@@ -4527,7 +4633,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               renderSoon();
             })
           : ((chunk) => { textItem().full += chunk; sess.liveOut += Math.ceil(chunk.length / 4); renderSoon(); });
-        runEngineTask(engine, promptText, cwd, mode !== 2, cont, onChunk, ctl, mdl, undefined, mode === 2 ? Object.assign({}, engineMcpLaunch(engine, true), { readonly: true }) : engineMcpLaunch(engine)).then((res) => {
+        runEngineTask(engine, promptText, cwd, mode !== 2, cont, onChunk, ctl, mdl, undefined, Object.assign({}, mode === 2 ? Object.assign({}, engineMcpLaunch(engine, true), { readonly: true }) : engineMcpLaunch(engine), { sandbox: sbxOpts() || undefined, onSandbox })).then((res) => {
           const raw = res.output || "";
           let display = raw, inD, outD;
           if (jsonProto) {
@@ -4544,6 +4650,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           if (PAID[engine] && !onPlan(engine)) { const pm = mdl || eng.model || ""; const pr = priceOf(pm); sess.cost += (inD * pr.in + outD * pr.out) / 1e6; } // priced from the table → shown as ~$ (a plan login costs nothing per turn)
           finish(res);
         });
+        };
+        const acpL = acpLaunchFor(engine, mdl);
+        if (acpL) acpEngineTurn(acpL, mdl, classicTurn, { block, textItem, stat, relOf, finish, promptText }); else classicTurn();
       } else { // ollama — LOCAL agent with full device access (read/write/edit/list/run_command)
         const mcps = mcpToolList();
         const extra = (mcps.length ? " MCP tools: " + mcps.map((m) => m.full + " — " + oneline(m.desc, 40)).join("; ") + "." : "") + " spawn_agents{tasks:[\"...\",\"...\"]} runs several INDEPENDENT sub-tasks in parallel via sub-agents and returns all their results — use it to split big work.";
@@ -4680,7 +4789,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               else if (name === "edit_file") { const fp = path.resolve(cwd, a.path); if (fs.existsSync(fp) && !fileGuard.hasSeen(fp)) throw new Error(unreadEditError(a.path)); const _rd = readEditable(fp, a.path); if (_rd.error) throw new Error(_rd.error); const t = _rd.text; const r = applyEditsFlexible(t, [{ find: a.find, replace: a.replace, replaceAll: a.replace_all || a.replaceAll }]); const _sec = (r.ok && policy.blockSecrets) ? scanSecrets(String(a.replace == null ? "" : a.replace)) : []; if (!r.ok) result = { error: r.error }; else if (_sec.length) { result = { error: "BLOCKED by policy: edit would introduce " + _sec.join(", ") }; blocked = true; } else if (r.content === t) { result = { ok: true, note: "no change — find and replace are identical, nothing was written" }; } else { fs.writeFileSync(fp, r.content); delete readCache[fp]; fileGuard.recordWrite(fp, r.content); invalidateRepoMap(); result = Object.assign({ ok: true }, changedRegion(t, r.content) || {}); if (r.applied[0] && r.applied[0].mode === "flexible") result.note = r.applied[0].fixed ? "matched after dropping the " + r.applied[0].fixed + " your find carried (the file has none) - check the lines above" : "matched ignoring whitespace/indentation — the change was re-indented to fit; check the lines above"; } }
               else if (name === "multi_edit" || name === "multiedit") { const fp = path.resolve(cwd, a.path); if (fs.existsSync(fp) && !fileGuard.hasSeen(fp)) throw new Error(unreadEditError(a.path)); const _rd = readEditable(fp, a.path), t = _rd.error ? null : _rd.text; if (t == null) result = { error: _rd.error }; else { const edits = (a.edits || a.changes || []).map((e) => ({ find: e.find || e.old || e.search, replace: e.replace == null ? (e.new == null ? "" : e.new) : e.replace, replaceAll: e.replace_all || e.replaceAll })); const r = applyEditsFlexible(t, edits); if (!r.ok) result = { error: r.error }; else { const sec = policy.blockSecrets ? scanSecrets(edits.map((e) => String(e.replace == null ? "" : e.replace)).join("\n")) : []; /* only the NEW text — a secret-shaped value already in the file is not introduced by this edit */ if (sec.length) { result = { error: "BLOCKED by policy: edit would introduce " + sec.join(", ") }; blocked = true; } else if (r.content === t) { result = { ok: true, note: "no change — every edit was a no-op, nothing was written" }; } else { fs.writeFileSync(fp, r.content); delete readCache[fp]; fileGuard.recordWrite(fp, r.content); invalidateRepoMap(); result = Object.assign({ ok: true, edits: r.applied.length, flexible: r.applied.filter((x) => x.mode === "flexible").length }, changedRegion(t, r.content, 16) || {}); } } } }
               else if (name === "apply_patch" || name === "patch") { const diff = a.patch || a.diff || a.content || a.input || ""; const filesP = parsePatch(diff); if (!filesP.length) result = { error: "no hunks parsed from the patch (need a unified diff with @@ hunks, or a *** Begin Patch envelope)" }; else { let failed = null; const planW = []; for (const f of filesP) { if (!f.file) { failed = "a hunk had no target file (need --- a/path / +++ b/path headers)"; break; } const rp = path.resolve(cwd, f.file); const rel = path.relative(cwd, rp); if (rel.startsWith("..") || path.isAbsolute(rel) || !Jail.resolveInJail(f.file, cwd).inside) { failed = f.file + ": path escapes the workspace"; break; } const pc = policyCheck(policy, { type: "edit", path: f.file }); if (!pc.allow) { failed = f.file + ": blocked by policy — " + pc.reason; break; } if (f.op === "delete" || f.op === "move") { failed = f.file + ": the patch " + (f.op === "delete" ? "deletes this file" : "moves it to " + f.to) + " - apply_patch only edits and creates files; use " + (f.op === "delete" ? "delete{path}" : "move{from,to} first, then patch the new path") + " (nothing was applied)"; break; } let cont = ""; if (fs.existsSync(rp)) { if (f.op !== "add" && !fileGuard.hasSeen(rp)) { failed = f.file + ": " + unreadEditError(f.file); break; } const _rd = readEditable(rp, f.file); if (_rd.error) { failed = f.file + ": " + _rd.error; break; } cont = _rd.text; } const ap = f.op === "add" ? (cont ? { ok: false, error: "already exists, but the patch creates it as a new file (*** Add File or --- /dev/null) - send update hunks instead" } : { ok: true, content: f.hunks.length ? f.hunks[0].after.join("\n") + (f.hunks[0].noEol ? "" : "\n") : "" }) : applyHunks(cont, f.hunks); if (!ap.ok) { failed = f.file + ": " + ap.error; break; } if (policy.blockSecrets) { const added = f.hunks.map((h) => { const had = new Set(h.before); return h.after.filter((l) => !had.has(l)).join("\n"); }).join("\n"); const _ps = scanSecrets(added); if (_ps.length) { failed = f.file + ": patch would introduce " + _ps.join(", "); break; } } /* only ADDED lines — an existing secret-shaped value is not introduced by this patch */ planW.push({ rp, file: f.file, content: ap.content, before: cont }); } if (failed) { result = { error: failed }; if (/blocked by policy|secret/.test(failed)) { blocked = true; } } else { for (const p of planW) { fs.mkdirSync(path.dirname(p.rp), { recursive: true }); fs.writeFileSync(p.rp, p.content); delete readCache[p.rp]; fileGuard.recordWrite(p.rp, p.content); stat.files.add(base(p.file)); const rr = relOf(p.file); if (rr) stat.paths.add(rr); } invalidateRepoMap(); result = { ok: true, files: planW.map((p) => p.file) }; if (planW.length === 1) Object.assign(result, changedRegion(planW[0].before, planW[0].content, 16) || {}); else { result.changed = {}; for (const p of planW) { const cr = changedRegion(p.before, p.content); if (cr) result.changed[p.file] = "lines " + cr.lines; } } } } }
-              else if (name === "run_command") { const r = await coderShell(a.command, cwd, { ctl, timeoutMs: (require("./lib/nexus/wait-for").parseSecs(a.timeout_s) * 1000) || undefined, onData: (d) => Tail.pushTail(card.live || Object.defineProperty(card, "live", { value: Tail.createTail(), configurable: true }).live, d) /* non-enumerable: never written to session.json */ }); delete card.live; const _out = compactOutput(r.output, lean ? 2000 : (trimOutput ? 4000 : 1e9)); const _d = diagnose(_out, r.code, a.command); result = { code: r.code, output: _out + diagAnnotate(_d) }; if (_d) result.diagnosis = _d.category; }
+              else if (name === "run_command") { const r = await coderShell(a.command, cwd, { ctl, sandbox: sbxOpts() || undefined, onSandbox, timeoutMs: (require("./lib/nexus/wait-for").parseSecs(a.timeout_s) * 1000) || undefined, onData: (d) => Tail.pushTail(card.live || Object.defineProperty(card, "live", { value: Tail.createTail(), configurable: true }).live, d) /* non-enumerable: never written to session.json */ }); delete card.live; const _out = compactOutput(r.output, lean ? 2000 : (trimOutput ? 4000 : 1e9)); const _d = diagnose(_out, r.code, a.command); result = { code: r.code, output: _out + diagAnnotate(_d) }; if (_d) result.diagnosis = _d.category; }
               else if (name === "run_background") { if (!a.command || typeof a.command !== "string") { result = { error: "run_background needs a non-empty command string" }; } else { const p = _cp.spawn(process.platform === "win32" ? "cmd" : "sh", process.platform === "win32" ? ["/c", a.command] : ["-c", a.command], { cwd, env: process.env, detached: process.platform !== "win32" }); const id = bgJobs.start(a.command, p, Date.now()); /* own process group → stop kills the whole tree (npm → node), not just sh */ p.stdout && p.stdout.setEncoding("utf8"); p.stderr && p.stderr.setEncoding("utf8"); /* a multi-byte char split across chunks became two U+FFFD */ p.stdout && p.stdout.on("data", (d) => bgJobs.append(id, d)); p.stderr && p.stderr.on("data", (d) => bgJobs.append(id, d)); p.on("close", (code, sig) => bgJobs.finish(id, code, sig)); p.on("error", (e) => { bgJobs.append(id, "spawn error: " + e.message); bgJobs.finish(id, 1); }); result = { ok: true, jobId: id, status: "running", hint: "poll it with check_background{id:'" + id + "'}, stop it with stop_background{id:'" + id + "'}" }; } }
               else if (name === "check_background") { if (a.id || a.job) { a.id = a.id || a.job; const j = bgJobs.get(a.id); if (!j) result = { error: "no such job " + a.id + bgJobs.known() }; else if (a.full) { result = { id: j.id, status: j.status, code: j.code, output: compactOutput(collapseRepeats(bgJobs.tail(a.id, 6000)).text, 4000) }; bgJobs.readNew(a.id); } else {
                 // only what the agent hasn't seen yet — re-sending the same tail on every poll is pure waste
@@ -5779,6 +5888,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         }
       }
       else if (cmd === "/bench") { if (!argstr) transcript.push({ role: "system", text: "usage: /bench <prompt> — runs it on each engine and reports a speed / tokens / cost table" }); else benchEngines(argstr); }
+      else if (cmd === "/sandbox") {
+        const a = Sandbox.normMode(arg);
+        if (a) { sandboxMode = a; saveSetting("sandbox", a); sbxNoted.clear(); }
+        const pb = Sandbox.probe();
+        const what = sandboxMode === "always" ? "every engine turn is sandboxed (external engines, and the local agent's run_command)" : sandboxMode === "auto" ? "plan-mode turns and untrusted repos are sandboxed" : "engines run unsandboxed";
+        transcript.push({ role: "system", text: (a ? "sandbox set to " : "sandbox is ") + cyan(sandboxMode) + " — " + what + "\n"
+          + (pb.ok ? "  " + green("available") + gray(" (Landlock ABI " + pb.abi + ")") : "  " + yellow("unavailable here: " + pb.why) + gray(" — engines run unsandboxed"))
+          + "\n" + gray("  sandboxed engines can read the system but not ~/.ssh, cloud/CLI tokens, browser profiles or shell history,\n  and write only the project (not in plan mode), the temp dir and their own state. Network stays open.")
+          + (a ? "" : "\n" + gray("  usage: /sandbox auto|always|off")) });
+      }
+      else if (cmd === "/acp") {
+        const a = /^(auto|on)$/i.test(arg) ? "auto" : /^off$/i.test(arg) ? "off" : "";
+        if (a) { acpMode = a; saveSetting("acp", a); for (const k of Object.keys(acpBroken)) delete acpBroken[k]; }
+        const speaks = ENGINE_ORDER.filter((e) => ENGINES[e].acp).map((e) => e + (acpBroken[e] ? gray(" (failed this session: " + oneline(acpBroken[e], 50) + ")") : ""));
+        transcript.push({ role: "system", text: (a ? "ACP set to " : "ACP is ") + cyan(acpMode) + (acpMode === "off" ? " — every engine runs its classic one-shot mode" : " — " + speaks.join(", ") + " run over the Agent Client Protocol: live tool cards, real token counts, and they ask Nexus before editing or running commands (plan mode, /permissions and /guard apply)") + (a ? "" : "\n" + gray("  usage: /acp auto|off")) });
+      }
       else if (cmd === "/guard") { if (["enforce", "warn", "off"].includes(arg)) { guard = arg; transcript.push({ role: "system", text: "Darknode guard set to " + arg + (arg === "enforce" ? " — destructive agent commands (rm -rf, git reset --hard, dd, mkfs, pipe-to-shell, fork bombs, …) are blocked" : arg === "warn" ? " — destructive commands are flagged but allowed" : " — destructive-command checks disabled") }); } else transcript.push({ role: "system", text: "Darknode guard is " + guard + ".  usage: /guard enforce|warn|off  — preflights the local agent's shell commands for destructive intent" }); }
       else if (cmd === "/settings" || cmd === "/options" || cmd === "/config") {
         // Toggle an off-by-default governance setting inline: /settings <key> [on|off|<value>]
@@ -5798,7 +5923,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           }
           render(); return;
         }
-        const v = { engine, model: (sess.model && sess.model !== engine ? sess.model : ""), effort, fallback, style, lean, cowork, costCap, cost: sess.cost, mode: (MODES[mode] && MODES[mode].k) || "auto-accept", guard, policyOrg: policy.org, audit: policy.audit, redact, offline, notify, shareUsage: settingsStore.value.shareUsage, ctxPct: sess.ctxWindow ? Math.min(100, Math.round((sess.ctxUsed / sess.ctxWindow) * 100)) : null, pins: pinned.size, bgRunning: bgJobs.running() };
+        const v = { engine, model: (sess.model && sess.model !== engine ? sess.model : ""), effort, fallback, style, lean, cowork, costCap, cost: sess.cost, mode: (MODES[mode] && MODES[mode].k) || "auto-accept", guard, sandbox: sandboxMode, acp: acpMode, policyOrg: policy.org, audit: policy.audit, redact, offline, notify, shareUsage: settingsStore.value.shareUsage, ctxPct: sess.ctxWindow ? Math.min(100, Math.round((sess.ctxUsed / sess.ctxWindow) * 100)) : null, pins: pinned.size, bgRunning: bgJobs.running() };
         // on/off values read green/red at a glance, matching the slash-menu toggle colours
         const onOff = (x) => /^on\b/i.test(x) ? green(x) : /^off$/i.test(x) ? red(x) : x;
         let text = bold("Settings") + gray("   change any option with the command shown");

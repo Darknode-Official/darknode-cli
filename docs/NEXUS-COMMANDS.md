@@ -160,6 +160,8 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/estimate` — rough token/cost of a prompt before sending (opens in the side panel)
 - `/fallback` — auto-switch model on rate-limit
 - `/guard` — preflight destructive commands (enforce|warn|off)
+- `/sandbox` — fence engines in (Landlock): no secrets, writes only the project · /sandbox auto|always|off
+- `/acp` — ACP engines (opencode, gemini): live tool cards, they ask before acting · /acp auto|off
 - `/permissions` — allow/deny tool rules — /allow /deny <rule>
 - `/impact` — same as /savings — cost-savings analysis (opens in the side panel)
 - `/savings` — cross-session cost-savings analysis + 30d projection (opens in the side panel)
