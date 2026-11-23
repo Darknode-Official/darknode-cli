@@ -9,7 +9,7 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log("  \x1
 
 const src = fs.readFileSync(path.join(__dirname, "..", "darknode.js"), "utf8");
 const fnSrc = (name) => { const i = src.indexOf("function " + name + "("); if (i < 0) throw new Error("missing " + name); let d = 0, j = src.indexOf("{", i); for (let k = j; k < src.length; k++) { if (src[k] === "{") d++; else if (src[k] === "}" && --d === 0) return src.slice(i, k + 1); } throw new Error("unbalanced " + name); };
-const api = new Function("_cp", "require", ["nexusCheckpoint", "inSnapshotScope", "nexusRestore"].map(fnSrc).join("\n") + "\nreturn { nexusCheckpoint, nexusRestore, inSnapshotScope };")(cp, require);
+const api = new Function("_cp", "require", "ensureNexusDir", ["nexusCheckpoint", "inSnapshotScope", "nexusRestore"].map(fnSrc).join("\n") + "\nreturn { nexusCheckpoint, nexusRestore, inSnapshotScope };")(cp, require, require("../lib/nexus/nexus-dir").ensureNexusDir);
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "nx-undo-")));
 const proj = path.join(root, "proj"), outside = path.join(root, "outside");

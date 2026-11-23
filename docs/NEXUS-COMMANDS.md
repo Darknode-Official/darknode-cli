@@ -197,7 +197,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 - `/next` — queue a prompt after the current turn (Ctrl+X / Ctrl+S runs it now; clear / rm <n> to manage)
 - `/btw` — side question — answered from context, never saved to history
 - `/find` — search the whole conversation, tool output included: /find <text> (n/N step through matches, q closes)
-- `/pager` — read the newest tool output in full: /pager [n] | answer (j/k, space, g/G, / search, q)
+- `/pager` — read the last reply in full, or a tool output: /pager [n] (j/k, space, g/G, / search, q)
 - `/compat` — which features this model supports (nothing is hidden) (opens in the side panel)
 - `/mode` — capability preset: /mode power|cost|speed|reset (model-compatible only)
 - `/god-prompt` — arm max-quality mode for your NEXT message only (gold border, auto-reverts)
@@ -308,7 +308,7 @@ File tools are confined to the project folder; secrets are blocked from being wr
 ### Scroll, select & copy
 
 - `Mouse wheel` — scroll the transcript
-- `Up / Down (empty input)` — scroll line by line
+- `Up / Down (empty input)` — recall earlier prompts (the wheel scrolls)
 - `PgUp / PgDn` — scroll a page
 - `Home` — jump to the oldest
 - `End` — jump to the latest
@@ -341,7 +341,7 @@ the cloud. Launch it with `darknode nexus --tui`. Type / inside for the command 
 
 Free local setup:
   curl -fsSL https://ollama.com/install.sh | sh
-  ollama pull gpt-oss:20b      # fast local agent (~14GB); pull gpt-oss:120b for max power (~63GB)
+  ollama pull qwen2.5-coder      # fast local agent (~14GB); pull gpt-oss:120b for max power (~63GB)
 ```
 
 ### Engines & models (`/docs engines`)
