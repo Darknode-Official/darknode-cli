@@ -63,7 +63,7 @@ const { getSnippet, saveBody, expandSnippet } = require("./lib/cli/snippets"); /
 const { expandAts } = require("./lib/cli/at-mentions"); // @path → inlined file contents (TUI + line mode)
 const Branches = require("./lib/cli/branches"); // /branch files: what is saved, what a switch restores
 const { conversationText, exportMarkdown } = require("./lib/cli/convo-text"); // /find: the whole conversation (with tool output) as searchable text // /pager: read a whole tool output in-place (less-style keys + search) // click a URL / CVE / GHSA / CWE in the transcript to open it // answer markdown: highlighted code, tables, quotes, links
-const { asText, sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, MARK_ORBIT, orbitGlyph, activityLabel, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
+const { asText, sanitizeTerm, charWidth, strWidth, cutIdx, toolResultView, bootHeader, welcomeCard, idleHome, MARK_ORBIT, orbitGlyph, activityLabel, footerLine, helpLines, padRight: padRightV, ansiWrap, modelLabel, effortLabel, explainEngineError, fitWidth, wrapHelp } = require("./lib/cli/tui-format"); // pure TUI layout helpers (compact boot header + model/effort display names)
 const Composer = require("./lib/cli/composer"); // pure composer model + key dispatch + per-project history (lib/cli/composer.js)
 const Ask = require("./lib/cli/ask"); // pure renderer + key reducer for the model's ask_user multiple-choice prompt (lib/cli/ask.js)
 const CompactAnim = require("./lib/cli/compact-anim");
@@ -75,7 +75,7 @@ const Agents = require("./lib/cli/agents"); // pure renderer + key reducer for t
 const { idleWatchdog, engineWaits } = require("./lib/nexus/engine-watchdog"); // engine hang guard: idle-based (ask_user no longer holds the engine open)
 const AskDefer = require("./lib/nexus/ask-defer"); // ask_user never blocks the engine: answer later, sent as the next prompt
 const { createAskServer } = require("./lib/nexus/ask-bridge"); // socket that lets external engines raise the real popup (lib/nexus/ask-bridge.js)
-const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, toGeminiServers, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
+const { buildEngineMcpServers, writeMcpConfigFile, toOpencodeConfig, toGeminiServers, writeEngineConfigFile } = require("./lib/nexus/engine-mcp"); const { ensureNexusDir } = require("./lib/nexus/nexus-dir"); // MCP-server set for external engines (lib/nexus/engine-mcp.js); codexMcpArgs is used inside engines.js
 const ASK_MCP_PATH = require("path").join(__dirname, "lib", "nexus", "ask-mcp.js"); // stdio MCP shim spawned by the engine
 const Term = require("./lib/cli/term"); // terminal-mode registry: always restore modes, even on a hard crash (lib/cli/term.js)
 const Acp = require("./lib/nexus/acp-client"); // Agent Client Protocol transport for engines that speak it (lib/nexus/acp-client.js)
@@ -1002,7 +1002,7 @@ async function cliRun(args, gate) {
   else if (cmd === "logout") console.log(nexusLogout() ? "  " + green("signed out.") : "  " + gray("was not signed in."));
   else if (cmd === "whoami") { const a = nexusAuth(); console.log(a ? "  " + (a.name || a.email || a.uid) + gray("  " + String(a.provider).replace(".com", "")) : "  " + gray("not signed in")); }
   else if (cmd === "policy") {
-    if (rest[0] === "init") { const fs = require("fs"), path = require("path"); const dir = path.join(process.cwd(), ".nexus"), f = path.join(dir, "policy.json"); if (fs.existsSync(f)) console.log("  " + yellow(".nexus/policy.json already exists — not overwriting")); else { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, JSON.stringify(POLICY_DEFAULTS, null, 2) + "\n"); console.log("  " + green("created ") + ".nexus/policy.json" + gray(" — a starting policy; tighten protected paths, denied commands, and limits, then ") + cyan("darknode policy") + gray(" to review")); } return; }
+    if (rest[0] === "init") { const fs = require("fs"), path = require("path"); const dir = path.join(process.cwd(), ".nexus"), f = path.join(dir, "policy.json"); if (fs.existsSync(f)) console.log("  " + yellow(".nexus/policy.json already exists — not overwriting")); else { ensureNexusDir(process.cwd()); fs.writeFileSync(f, JSON.stringify(POLICY_DEFAULTS, null, 2) + "\n"); console.log("  " + green("created ") + ".nexus/policy.json" + gray(" — a starting policy; tighten protected paths, denied commands, and limits, then ") + cyan("darknode policy") + gray(" to review")); } return; }
     const p = loadPolicy(process.cwd());
     if (rest[0] === "--json") { console.log(JSON.stringify(p, null, 2)); }
     else { banner(); h1("Effective security policy" + (p.org ? "  (ORG-ENFORCED)" : "")); const row = (k, v) => console.log("  " + k.padEnd(22) + v); row("source", p.org ? "org floor (~/.darknode/policy.json) + local .nexus/policy.json" : ".nexus/policy.json (or defaults)"); row("protected paths", (p.protectedPaths || []).length + "  " + gray((p.protectedPaths || []).slice(0, 6).join(", ") + ((p.protectedPaths || []).length > 6 ? " …" : ""))); row("denied commands", (p.deniedCommands || []).length ? p.deniedCommands.join(", ") : gray("(built-in destructive guard only)")); row("max files / turn", p.maxFilesPerTurn || gray("unlimited")); row("block secret writes", p.blockSecrets ? green("on") : red("off")); row("network", p.allowNetwork ? "allowed" : red("blocked")); row("audit", p.audit ? "on (.nexus/audit.jsonl, hash-chained)" : gray("off")); const warns = policyWarnings(process.cwd()); if (warns.length) { console.log("\n  " + yellow("config warnings:")); warns.forEach((wn) => console.log("    " + yellow("• " + wn))); } console.log("\n  " + gray("machine-readable: ") + cyan("darknode policy --json") + "\n"); }
@@ -1527,7 +1527,7 @@ const NEXUS_DOCS = { __proto__: null,
   overview: { title: "Overview", body:
     "Nexus is a terminal AI coding agent built into the Darknode CLI. It drives one of six\nengines from a single dependency-free binary:\n  claude    — the Claude Code CLI (needs `claude` installed + logged in)\n  gemini · codex · opencode · aider — those vendors' CLIs, same interface\n  ollama    — a free, private, local model on your machine (needs Ollama)\n\nIt reads & writes files, runs commands, checkpoints every change, shows real token cost\nlive, saves tokens by delegating cheap work to a weaker/local model, and keeps secrets off\nthe cloud. Launch it with `darknode nexus --tui`. Type / inside for the command menu." },
   quickstart: { title: "Quick start", body:
-    "  darknode init                 scaffold .nexus/ (project context Nexus reads each session)\n  darknode nexus --tui          full-screen agent (Claude if installed, else local)\n  darknode nexus --tui -e ollama  drive a 100% local, private, free agent\n  darknode nexus \"add tests to server.js and run them\"   one-shot task\n\nFree local setup:\n  curl -fsSL https://ollama.com/install.sh | sh\n  ollama pull gpt-oss:20b      # fast local agent (~14GB); pull gpt-oss:120b for max power (~63GB)" },
+    "  darknode init                 scaffold .nexus/ (project context Nexus reads each session)\n  darknode nexus --tui          full-screen agent (Claude if installed, else local)\n  darknode nexus --tui -e ollama  drive a 100% local, private, free agent\n  darknode nexus \"add tests to server.js and run them\"   one-shot task\n\nFree local setup:\n  curl -fsSL https://ollama.com/install.sh | sh\n  ollama pull qwen2.5-coder      # fast local agent (~14GB); pull gpt-oss:120b for max power (~63GB)" },
   engines: { title: "Engines & models", body:
     "  /engine <name>                   switch AI: claude · gemini · codex · opencode · aider · ollama\n  /model [name]                    show/set the model\n  /models                          list cloud tiers + installed local models\n  /fallback <model>                auto-retry on a cheaper model when rate-limited\n  /cowork <strong> <weak>          strong model codes; weak (cheaper Claude tier OR\n                                   a free local model via ollama:<name>) does cheap work\n  Aliases: opus · sonnet · haiku (or full ids like claude-opus-5-5)" },
   cost: { title: "Saving cost", body:
@@ -1590,12 +1590,13 @@ function nexusHelp() {
   console.log("                                  global git config need an explicit -y)");
   console.log("        --lean                    minimal output (also /lean in the session)");
   console.log("        --resume / --new          reopen the last chat (default) / start blank");
+  console.log("    -c, --continue                same as --resume");
   console.log("        --                        the rest is the task, even if it starts with -");
   console.log("    -v, --version                 print the version");
   console.log("    -h, --help                    show this help\n");
   console.log("  " + bold("IN THE SESSION"));
   console.log("    /help lists every command · /model · /clear · /undo · /diff · /exit");
-  console.log("    shift+tab cycles permissions (accept edits · plan · bypass)");
+  console.log("    shift+tab cycles permissions: ask first · accept edits · plan · bypass");
   console.log("    " + gray("@path attaches a file:  fix the bug in @src/app.js") + "\n");
   console.log("  " + bold("ENVIRONMENT"));
   console.log("    DARKNODE_API_BASE, DARKNODE_API_KEY   any OpenAI-compatible API (or /api)");
@@ -1609,7 +1610,7 @@ function nexusHelp() {
   console.log("  " + gray("Prompts go to the engine you pick: -e ollama keeps everything on this machine.") + "\n");
 }
 
-const NEXUS_FLAGS = ["--yes", "--skip-permissions", "--dangerously-skip-permissions", "--print", "--lean", "--tui", "--ui", "--resume", "--new", "--fresh", "--model", "--engine", "--help", "--version"];
+const NEXUS_FLAGS = ["--yes", "--skip-permissions", "--dangerously-skip-permissions", "--print", "--lean", "--tui", "--ui", "--resume", "--continue", "--new", "--fresh", "--model", "--engine", "--help", "--version"];
 
 async function aiCoder(argv) {
   const fs = require("fs"), path = require("path");
@@ -1624,22 +1625,22 @@ async function aiCoder(argv) {
     else if (a === "--print" || a === "-p") { printMode = true; autoApprove = true; }
     else if (a === "--lean") leanFlag = true;
     else if (a === "--tui" || a === "--ui") tuiFlag = true;
-    else if (a === "--resume") resumeFlag = true;
+    else if (a === "--resume" || a === "--continue" || a === "-c") resumeFlag = true; // --continue / -c: the spelling other coding CLIs use
     else if (a === "--new" || a === "--fresh") resumeFlag = "new";
     else if (a === "-m" || a === "--model" || a === "-e" || a === "--engine") { const v = arr[++i]; if (!v || v[0] === "-") { console.error("  " + red(a + " needs a value") + gray(a[1] === "e" || a === "--engine" ? " — e.g. -e ollama  (" + ENGINE_ORDER.join(", ") + ", api)" : " — e.g. -m gpt-oss:20b")); process.exitCode = 2; return; } if (a === "-m" || a === "--model") modelOverride = v; else enginePref = v; }
     else if (a === "-h" || a === "--help") return nexusHelp();
     else if (a === "--version" || a === "-v" || a === "-V") { console.log("nexus " + VERSION); return; }
     else if (a === "--") { parts.push(...arr.slice(i + 1)); break; } // end of options: what follows is task text even if it starts with "-"
-    else { if (a[0] === "-" && a.length > 1 && !/^-\d/.test(a)) unknownFlags.push(a); parts.push(a); } // a flag-looking token is probably a typo (e.g. --modell); warn but still pass it through as task text so nothing silently breaks
+    else { if (a[0] === "-" && a.length > 1 && !/^-\d/.test(a)) unknownFlags.push(a); parts.push(a); } // a flag-looking token is probably a typo (e.g. --modell); it stops below, before any turn is spent
   }
   // A clear misspelling of a real option (--prnt, --modell=x) stops before any turn
-  // is spent; anything else is passed through as task text with a note.
+  // is spent, with a suggestion.
   const typo = unknownFlags.map((f) => [f, nearestFlag(f, NEXUS_FLAGS)]).find(([, n]) => n);
   if (typo) { console.error("  " + red("unknown option " + typo[0]) + " — did you mean " + cyan(typo[1]) + "?" + gray("  (to send it as task text, put it after --)")); process.exitCode = 2; return; }
-  // Surface likely typos: an unrecognized --flag otherwise vanishes into the prompt
-  // and silently wastes a (paid) turn. We keep passing it through — just say so.
+  // Any other unrecognized --flag stops too: taken as task text it started a one-shot
+  // agent run on the words "--continue" (and spent a turn on it).
   parts = parts.filter((x) => String(x).trim()); // nexus --print "" is no task, not an empty one
-  if (unknownFlags.length) console.error("  " + yellow("note: unrecognized option" + (unknownFlags.length > 1 ? "s " : " ") + unknownFlags.join(", ") + " — treated as task text. See `nexus --help`."));
+  if (unknownFlags.length) { console.error("  " + red("unknown option" + (unknownFlags.length > 1 ? "s " : " ") + unknownFlags.join(", ")) + gray(" — see nexus --help (to send it as task text, put it after --)")); process.exitCode = 2; return; }
   let cfg = {}; try { cfg = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "config.json"), "utf8"))); } catch (_) {}
   const lean = leanFlag || !!cfg.lean; // minimal-output mode (also used for read/step budgets)
   // Any-model support: an OpenAI-compatible endpoint (from .nexus/config.json or
@@ -1685,8 +1686,8 @@ async function aiCoder(argv) {
     if (!parts.length) { console.error("  " + red("--print needs a task") + gray(" — e.g. nexus --print \"add tests for utils.js\"  (or pipe it in: echo task | nexus --print)")); process.exitCode = 2; return; }
   }
   const oneShot = parts.length > 0;
-  if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag === "new" ? false : (resumeFlag ? "restart" : "launch"), { model: modelOverride, lean: leanFlag, yes: autoApprove }); // like `claude -c`: the last chat comes back on every launch; --new starts blank
-  if (tuiFlag && !process.stdout.isTTY) console.log("  " + gray("--tui needs an interactive terminal."));
+  if (tuiFlag && !printMode && (!process.stdout.isTTY || oneShot)) { console.error("  " + red(!process.stdout.isTTY ? "--tui needs an interactive terminal" : "--tui opens the session and takes no task text") + gray(!process.stdout.isTTY ? "" : " — type the task in the session, or drop --tui to run it once")); process.exitCode = 2; return; } // --tui never falls through to a one-shot run
+  if (process.stdout.isTTY && !printMode && !oneShot) return nexusTui(engine, cwd, nexusMd, resumeFlag === "new" ? false : (resumeFlag && process.env.NEXUS_SUPERVISED ? "restart" : "launch"), { model: modelOverride, lean: leanFlag, yes: autoApprove }); // like `claude -c`: the last chat comes back on every launch; --new starts blank
   // --print is for scripts: stdout carries only the answer (raw), everything else — header, tool steps, errors — goes to stderr
   const answer = (t) => process.stdout.write(String(t).trim() + "\n");
   if (printMode) console.log = console.error.bind(console);
@@ -1702,7 +1703,7 @@ async function aiCoder(argv) {
       if (explicit && /^darknode(:|$)/i.test(explicit)) { if (await ensureOllamaServer(dlog)) { if (await ensureDarknodeModel(dlog)) modelList = await ollamaTags(); } }
       else if (!explicit && chooseCoderToPull(modelList)) { if (await ensureOllamaServer(dlog)) { if (await ensureCoderModel(dlog)) modelList = await ollamaTags(); } }
     }
-    if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); const oa = ollamaAddr(); console.log("  " + red(await ollamaReachable() ? "No local model. Run `ollama pull gpt-oss:20b`, or use --engine claude." : "Can't reach Ollama at " + oa.host + ":" + oa.port + ". Start it with `ollama serve` (or set OLLAMA_HOST), or use --engine claude.")); process.exitCode = 1; return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull gpt-oss:20b`.")); process.exitCode = 1; return; } }
+    if (!modelList.length && !apiConfigured()) { if (!printMode) banner(); const oa = ollamaAddr(); console.log("  " + red(await ollamaReachable() ? "No local model. Run `ollama pull qwen2.5-coder`, or use --engine claude." : "Can't reach Ollama at " + oa.host + ":" + oa.port + ". Start it with `ollama serve` (or set OLLAMA_HOST), or use --engine claude.")); process.exitCode = 1; return; } model = modelOverride || cfg.apiModel || cfg.model || process.env.DARKNODE_MODEL || pickCoderModel(modelList); if (!model) { if (!printMode) banner(); console.log("  " + red(apiConfigured() ? "An API is set but no model — pass -m <model> (e.g. -m gpt-4o-mini) or set apiModel in .nexus/config.json." : "No local model. Install Ollama + `ollama pull qwen2.5-coder`.")); process.exitCode = 1; return; } }
   if (!printMode) {
     const paint = useColor ? { brand: bold, accent: mag, muted: gray, faint: dim, rule: gray, value: cyan } : null;
     const cols = (process.stdout.columns || 80);
@@ -1762,7 +1763,7 @@ async function aiCoder(argv) {
       const r = (reply || "").trim() || "Hi! I'm Nexus — ask me anything, or give me a task and I'll use tools to do it."; if (printMode) answer(r); else console.log("  " + r + "\n");
       if (printMode) return; continue;
     }
-    let didTool = false, nudges = 0; const protoSt = { bad: 0 }, loopGuard = makeLoopGuard(); // same stall breaker as the TUI and sub-agent loops
+    let didTool = false, nudges = 0, noTools = LocalLoop.forbidsTools(userMsg) ? 2 : 0; const protoSt = { bad: 0 }, loopGuard = makeLoopGuard(); // same stall breaker as the TUI and sub-agent loops
     for (let step = 1; step <= (lean ? 12 : 25); step++) {
       let raw; try { raw = await ollamaChat(model, messages, CODER_SCHEMA); } catch (e) { console.log("  " + red(e.message)); if (printMode) process.exitCode = 1; break; }
       let o; try { o = JSON.parse(raw); } catch (_) { o = extractJson(raw, null); }  // recover fenced/prose-wrapped JSON from lenient providers
@@ -1774,12 +1775,16 @@ async function aiCoder(argv) {
       if (o.args) compact.args = o.args;
       if (o.final) compact.final = o.final;
       messages.push({ role: "assistant", content: JSON.stringify(compact) });
-      if (o.thought && !printMode) console.log("  " + gray("think: " + o.thought.slice(0, 120)));
+      if (o.thought && !printMode && !(o.action === "final" && LocalLoop.sameText(o.thought, o.final))) console.log(ansiWrap("think: " + oneline(o.thought, 200), Math.max(20, (process.stdout.columns || 80) - 11)).map((l, k) => (k ? "         " : "  ") + gray(l.trim())).join("\n")); // wrapped under the text, not into column 0
       if (o.action === "final") {
-        if (!didTool && !isChitchat(userMsg) && nudges++ < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; }
-        if (printMode) answer(o.final || "done"); else console.log("\n  " + green("done: ") + bold(o.final || "done") + "\n"); break;
+        // Only a request that is clearly about the files here is sent back for a look first:
+        // "Do the real work first." on every answer made small models invent an edit to satisfy it.
+        if (!didTool && LocalLoop.wantsToolWork(userMsg) && nudges++ < 1) { messages.push({ role: "tool", content: LocalLoop.NUDGE }); continue; }
+        const fin = (typeof o.final === "string" ? o.final : o.final == null ? "" : JSON.stringify(o.final, null, 2)).trim();
+        if (printMode) { if (fin) answer(fin); else { console.error("  " + red("no answer: the model ended without a reply")); process.exitCode = 1; } } else console.log("\n  " + (fin ? bold(fin) : gray("(no answer: the model ended without a reply)")) + "\n"); break; // never the literal "done" as if it were the answer
       }
       const { name, a } = normalizeToolCall(o); let result;
+      if (noTools && name && name !== "ask_user") { noTools--; messages.push({ role: "tool", content: LocalLoop.NO_TOOLS_REPLY }); continue; } // the user said not to use tools: the call is not run
       // same gate as the sub-agent runner: .nexus/policy.json and the destructive-command guard apply even when -y / -p auto-approve
       const _pa = isExecTool(name) ? { type: "run", command: execCommand(name, a) } : name === "write_file" ? { type: "write", path: a && a.path } : name === "edit_file" ? { type: "edit", path: a && a.path } : null;
       let _pblk = null;
@@ -2048,7 +2053,7 @@ function nexusCheckpoint(cwd) {
     const path = require("path"), fs = require("fs");
     _cp.execSync("git rev-parse --is-inside-work-tree", { cwd, stdio: "ignore" });
     const idx = path.join(cwd, ".nexus", "ckpt.index");
-    fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true });
+    ensureNexusDir(cwd);
     // This runs synchronously on every message, so it must be cheap. The temp index is
     // KEPT between turns (seeded once from the repo's own index) so git's stat cache
     // skips unchanged files, and .nexus is excluded up front so a large session.json is
@@ -2399,7 +2404,7 @@ async function deviceTool(name, a, cwd) {
       const st = typeof t === "object" ? String(t.status || t.state || "pending") : "pending";
       if (content) AGENT_TODOS.push({ content: String(content).slice(0, 200), status: /\b(?:done|complete|completed|finish|finished)\b/i.test(st) ? "done" : /prog|doing|active|current/i.test(st) ? "in_progress" : "pending" });
     }
-    try { fs.mkdirSync(rp(".nexus"), { recursive: true }); fs.writeFileSync(rp(".nexus/todos.json"), JSON.stringify(AGENT_TODOS)); } catch (_) {}
+    try { ensureNexusDir(rp(".")); fs.writeFileSync(rp(".nexus/todos.json"), JSON.stringify(AGENT_TODOS)); } catch (_) {}
     const rendered = AGENT_TODOS.map((t) => (t.status === "done" ? "[x] " : t.status === "in_progress" ? "[~] " : "[ ] ") + t.content).join("\n");
     return { ok: true, count: AGENT_TODOS.length, done: AGENT_TODOS.filter((t) => t.status === "done").length, todos: AGENT_TODOS, rendered };
   }
@@ -2593,7 +2598,7 @@ async function ollamaExec(model, task, ctx, cwd, signal) {
     const compact = { action: o.action }; if (o.tool) compact.tool = o.tool; if (o.args) compact.args = o.args; if (o.final) compact.final = o.final;
     messages.push({ role: "assistant", content: JSON.stringify(compact) });
     if (o.thought) console.log("    " + gray("think: " + (o.thought || "").slice(0, 120)));
-    if (o.action === "final") { if (!didTool && !isChitchat(task) && step < 3) { messages.push({ role: "tool", content: "Do the real work first." }); continue; } return { ok: true, output: log + "\n" + (o.final || "") }; }
+    if (o.action === "final") { if (!didTool && LocalLoop.wantsToolWork(task) && step < 2) { messages.push({ role: "tool", content: LocalLoop.NUDGE }); continue; } return { ok: true, output: log + "\n" + (o.final || "") }; }
     const { name, a } = normalizeToolCall(o); let result;
     // enterprise policy guardrails (.nexus/policy.json) — the same gate the in-process loop applies, so a
     // sub-agent / local engine can't write a protected path, plant a secret, run a denied command or fetch off-net.
@@ -2680,7 +2685,7 @@ async function nexusRun(argv) {
     else if (a === "-h" || a === "--help") return nexusRunHelp();
     else goalParts.push(a);
   }
-  const cwd = process.cwd(), NEXUS = path.join(cwd, ".nexus"); fs.mkdirSync(NEXUS, { recursive: true }); secureNexus(cwd);
+  const cwd = process.cwd(), NEXUS = path.join(cwd, ".nexus"); ensureNexusDir(cwd); secureNexus(cwd);
   const stateFile = path.join(NEXUS, "run.json"), reportFile = path.join(NEXUS, "report.md"), memFile = path.join(NEXUS, "memory.md");
   const memory = (() => { try { return fs.readFileSync(memFile, "utf8"); } catch (_) { return ""; } })();
   const avail = {}; for (const e of ENGINE_ORDER) avail[e] = engineAvail(e);
@@ -2844,6 +2849,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // keyboard (-1 = composer has focus); `agentView` is the open transcript
     // overlay { i, scroll } or null. addAgent/finishAgent feed the registry.
     let agents = [], agentSel = -1, agentView = null;
+    let clearedTurns = 0; // turns wiped by /clear: the dashboard's Turns stays session-wide like its token and cost totals
     let turnLog = []; // one entry per finished paid/local turn this session — feeds /turns + /costtips (never persisted, no prompt text beyond a short label)
     const cacheWarm = { lastAt: 0, ttl: 0 }; // when a claude call last touched the prompt cache + which TTL it wrote (status chip + /warm)
     let bypassCacheOnce = false; // /retry sets this so the next send skips the exact-repeat cache and really re-runs
@@ -3008,7 +3014,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     let bangLog = [];
     const runBang = (c) => { const dg = classifyDanger(c); if (dg.level !== "ok" && guard !== "off") transcript.push({ role: "system", text: "Darknode: this looks destructive (" + dg.why + ") — running it because you typed it directly" }); const blk = { role: "system", text: "$ " + c + "\nrunning…" }; transcript.push(blk); busy = true; ctl = makeCtl(); scroll = 0; render(); const lt = Tail.createTail(); coderShell(c, cwd, { ctl, onData: (d) => { Tail.pushTail(lt, d); blk.text = "$ " + c + "\n" + (Tail.tailLines(lt, 6).join("\n") || "running…"); renderSoon(); } }).then((r) => { const o = (r.output || "").replace(/[ \t\r\n]+$/, "").split("\n").map((l) => { l = l.replace(/\r+$/, ""); const k = l.lastIndexOf("\r"); return k >= 0 ? l.slice(k + 1) : l; }).join("\n"); /* a \r progress bar keeps its last frame */ blk.text = "$ " + c + "\n" + (o || "(no output)") + (r.code ? "\n[exit " + r.code + "]" : ""); bangLog.push({ cmd: c, output: o.length > 2000 ? o.slice(0, 2000) + "\n…[truncated]" : o, code: r.code }); if (bangLog.length > 10) bangLog.splice(0, bangLog.length - 10); busy = false; ctl = null; render(); }).catch((e) => { const msg = "error: " + (e && e.message || e); blk.text = "$ " + c + "\n" + msg; bangLog.push({ cmd: c, output: msg, code: 1 }); if (bangLog.length > 10) bangLog.splice(0, bangLog.length - 10); busy = false; ctl = null; render(); }); };
     // #note appends a durable memory to .nexus/NEXUS.md
-    const addMemory = (line) => { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} fs.writeFileSync(md, addNote(c, line)); /* into the ## Notes section, wherever it sits */ transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + line }); } catch (e) { transcript.push({ role: "system", text: "could not save note: " + e.message }); } };
+    const addMemory = (line) => { try { const dir = ensureNexusDir(cwd); const md = path.join(dir, "NEXUS.md"); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} fs.writeFileSync(md, addNote(c, line)); /* into the ## Notes section, wherever it sits */ transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + line }); } catch (e) { transcript.push({ role: "system", text: "could not save note: " + e.message }); } };
     // ---- ansi-aware width helpers ----
     const stripA = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, "");
     const clip = (s, n) => { if (n <= 0) return ""; let o = "", v = 0, hasColor = false; for (const part of String(s).split(/(\x1b\[[0-9;]*m)/)) { if (/^\x1b/.test(part)) { o += part; hasColor = true; continue; } for (const ch of part) { const cw = charWidth(ch); if (v + cw > n) return o + (hasColor ? "\x1b[0m" : ""); o += ch; v += cw; } } return o; };
@@ -3083,7 +3089,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       ["/autoupdate", "auto-update on launch: /autoupdate on | check | off"],
       ["/next", "queue a prompt after the current turn (Ctrl+X / Ctrl+S runs it now; clear / rm <n> to manage)"],
       ["/btw", "side question — answered from context, never saved to history"],
-      ["/find", "search the whole conversation, tool output included: /find <text> (n/N step through matches, q closes)"], ["/pager", "read the newest tool output in full: /pager [n] | answer (j/k, space, g/G, / search, q)"],
+      ["/find", "search the whole conversation, tool output included: /find <text> (n/N step through matches, q closes)"], ["/pager", "read the last reply in full, or a tool output: /pager [n] (j/k, space, g/G, / search, q)"],
       ["/compat", "which features this model supports (nothing is hidden)"],
       ["/mode", "capability preset: /mode power|cost|speed|reset (model-compatible only)"],
       ["/god-prompt", "arm max-quality mode for your NEXT message only (gold border, auto-reverts)"],
@@ -3109,7 +3115,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       { title: "Send & edit", rows: [["Enter","send the message"],["Alt+Enter / Shift+Enter / Ctrl+J","insert a newline"],["Home / End","start / end of the line"],["Ctrl+A / Ctrl+E","start / end of the line"],["Ctrl+← / → · Alt+B / F","jump a word"],["Alt+Backspace · Ctrl+W","delete the word before the cursor"],["Ctrl+U / Ctrl+K","kill to start / end of line"],["Ctrl+Y","yank back what was killed"],["Ctrl+_","undo the last edit"]] },
       { title: "History", rows: [["Ctrl+P / Ctrl+N","previous / next command (your draft is kept)"],["Up / Down (while typing)","step through history"],["Ctrl+R","reverse-search history"]] },
       { title: "Session", rows: [["Shift+Tab","cycle mode: normal / accept edits / plan / bypass"],["Ctrl+O","expand or collapse tool detail"],["Esc","interrupt a running turn"],["Ctrl+X / Ctrl+S","send a typed/queued prompt now (interrupts the current turn)"],["Esc Esc","rewind: undo last turn's file changes + edit the prompt (/redo re-applies)"],["Esc Esc","clear the input (idle)"],["Ctrl+C","interrupt, then clear, then exit"],["Ctrl+D","exit on an empty line"],["Ctrl+G","edit the message in $EDITOR"],["Ctrl+L","redraw the screen"]] },
-      { title: "Scroll, select & copy", rows: [["Mouse wheel","scroll the transcript"],["Up / Down (empty input)","scroll line by line"],["PgUp / PgDn","scroll a page"],["Home","jump to the oldest"],["End","jump to the latest"],["Select with the mouse","just drag to select, then copy — the mouse is yours by default"],["/mouse on","re-enable click + wheel capture (selection then needs Shift+drag)"]] },
+      { title: "Scroll, select & copy", rows: [["Mouse wheel","scroll the transcript"],["Up / Down (empty input)","recall earlier prompts (the wheel scrolls)"],["PgUp / PgDn","scroll a page"],["Home","jump to the oldest"],["End","jump to the latest"],["Select with the mouse","just drag to select, then copy — the mouse is yours by default"],["/mouse on","re-enable click + wheel capture (selection then needs Shift+drag)"]] },
     ];
     // Custom project slash commands (Claude-Code style): each .md file in
     // .nexus/commands/ or .claude/commands/ becomes /<name>; its body is the prompt,
@@ -3149,9 +3155,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const mcpToolList = () => mcpServers.filter((s) => !s.error).flatMap((s) => (s.tools || []).map((t) => ({ full: "mcp__" + s.name + "__" + t.name, srv: s, name: t.name, desc: t.description || "" })));
     // saved prompt macros (.nexus/snippets.json) + a lightweight local codebase index (.nexus/index.json)
     let snippets = {}; try { snippets = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "snippets.json"), "utf8"))) || {}; } catch (_) {}
-    const saveSnippets = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "snippets.json"), JSON.stringify(snippets, null, 2)); } catch (_) {} };
+    const saveSnippets = () => { try { ensureNexusDir(cwd); fs.writeFileSync(path.join(cwd, ".nexus", "snippets.json"), JSON.stringify(snippets, null, 2)); } catch (_) {} };
     let plan = []; try { const pj = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "plan.json"), "utf8"))); if (Array.isArray(pj)) plan = pj; } catch (_) {}
-    const savePlan = () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "plan.json"), JSON.stringify(plan, null, 2)); } catch (_) {} };
+    const savePlan = () => { try { ensureNexusDir(cwd); fs.writeFileSync(path.join(cwd, ".nexus", "plan.json"), JSON.stringify(plan, null, 2)); } catch (_) {} };
     // .nexus/index.json: a BM25 index over ~60-line chunks (lib/nexus/bm25.js). An index from an
     // older Nexus (a per-file keyword list) is ignored until /index is run again.
     let index = null; try { const raw = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "index.json"), "utf8"))); if (raw && raw.version === bm25.VERSION && raw.docs) index = raw; } catch (_) {}
@@ -3184,7 +3190,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const detectVerify = () => { let entries = []; try { entries = fs.readdirSync(cwd); } catch (_) {} const files = {}; for (const n of ["package.json", "Makefile", "makefile", "GNUmakefile"]) if (entries.includes(n)) { try { files[n] = fs.readFileSync(path.join(cwd, n), "utf8"); } catch (_) {} } return detectProjectCommands(entries, files); };
     // ---- inline markdown / command coloring ----
     const paintCode = (c) => (/(^|\s)(node|npm|npx|git|python3?|pip3?|bash|sh|cd|ls|cat|make|cargo|go|docker|curl|grep|sed|rm|mkdir|chmod|sudo)\b/.test(c) || /\s--?\w/.test(c)) ? blue(c) : mag(c);
-    const colorMd = (line, inCode) => { if (inCode) return blue(line); const hm = line.match(/^(#{1,6})\s+(.*)/); if (hm) { const lvl = hm[1].length; const txt = hm[2].replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); return (lvl <= 2 ? bold(cyan("▍ ")) : "  ") + bold(cyan(txt)); } let s = line.replace(/\*\*([^*]+)\*\*/g, (_, c) => "\x1b[1m" + c.replace(/`([^`]+)`/g, (__, ic) => "\x1b[0m" + paintCode(ic) + "\x1b[1m") + "\x1b[0m").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); s = s.replace(/^(\s*)\d+\.\s/, (_, sp) => sp + cyan("• ")); return s.replace(/^(\s*[-*]\s)/, (_, b) => cyan(b.replace(/[-*]/, "•"))); };
+    const colorMd = (line, inCode) => { if (inCode) return blue(line); const hm = line.match(/^(#{1,6})\s+(.*)/); if (hm) { const lvl = hm[1].length; const txt = hm[2].replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); return (lvl <= 2 ? bold(cyan("▍ ")) : "  ") + bold(cyan(txt)); } let s = line.replace(/\*\*([^*]+)\*\*/g, (_, c) => "\x1b[1m" + c.replace(/`([^`]+)`/g, (__, ic) => "\x1b[0m" + paintCode(ic) + "\x1b[1m") + "\x1b[0m").replace(/`([^`]+)`/g, (_, c) => paintCode(c)); s = s.replace(/^(\s*)(\d+[.)])(\s)/, (_, sp, n, w) => sp + cyan(n) + w); return s.replace(/^(\s*[-*+]\s)/, (_, b) => cyan(b.replace(/[-*+]/, "•"))); }; // ordered lists keep their numbers
     // Rendered answer rows, memoised per text item: the frame redraws on every
     // keystroke and spinner tick, so re-highlighting unchanged answers is waste.
     const MDC = { inline: (l) => colorMd(l, false), gray, dim, mag, green, yellow, cyan, red, bold, italic: (x) => p("\x1b[3m", x), underline: (x) => p("\x1b[4m", x) };
@@ -3192,7 +3198,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const mdLines = (owner, text, w) => { const c = owner && _mdMemo.get(owner); if (c && c.w === w && c.text === text) return c.lines; const lines = renderMd(text, w, MDC); if (owner) _mdMemo.set(owner, { w, text, lines }); return lines; };
     const wrap = (text, pre = 2) => ansiWrap(text, Math.max(1, cols() - 2 - pre)); // pre = visible width of the row prefix; body rows hold cols()-2 cells. // ANSI-aware: measures visible width, never slices a color escape, carries color across lines
     // Rendered like Claude Code: gray ※, bold "recap:", italic body, then the disable hint.
-    const recapLines = (t) => { const it = (x) => "\x1b[3m" + gray(x) + "\x1b[23m"; return wrap("recap: " + t + " (disable recaps in /config)").map((ln, j) => j ? "  " + it(ln) : gray("※") + " " + bold(gray("recap:")) + it(ln.slice(6))); };
+    const recapLines = (t) => { const it = (x) => "\x1b[3m" + gray(x) + "\x1b[23m"; return wrap("recap: " + t + " (disable recaps in /config)", 3).map((ln, j) => j ? "  " + it(ln) : gray("※") + " " + bold(gray("recap:")) + it(ln.slice(6))); };
     // ---- tool-card labels (Claude-Code style) ----
     // ---- edit diff: a unified +/- preview for Write/Edit/MultiEdit, the way
     // Claude Code shows an Update card (line counts + red/green lines) instead of
@@ -3433,6 +3439,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             L.push(dim(gray("· thinking" + (expanded ? "" : "  ctrl+o to read"))));
             if (expanded) for (const ln of wrap(it.full).slice(0, 24)) L.push("  " + dim(gray(ln)));
             prevType = "thinking";
+          } else if (it.type === "note") { // a dim in-turn notice (loop guard)
+            if (prevType) L.push("");
+            for (const ln of wrap(it.text, 3)) L.push("  " + dim(gray(ln)));
+            prevType = "note";
           } else if (it.type === "tool") {
             if (prevType) L.push("");
             const dot = it.status === "run" || it.status === "wait" ? workGlyph() : it.status === "err" ? red("✗") : green("✓");
@@ -3509,9 +3519,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           for (let k = 0; k < Math.max(NEXUS_TIPS.length, et.length); k++) { if (et[k]) tips.push(et[k]); if (NEXUS_TIPS[k]) tips.push(NEXUS_TIPS[k]); } // interleave so an engine-specific tip shows first
           L.push("");
           L.push(workGlyph() + " " + cyan(clip(busyWord || activityLabel(m.items), Math.max(10, cols() - 34))) + gray("   " + fmtElapsed(el) + tok + "  ·  esc to stop"));
-          if (tips.length) L.push("  " + gray("╰─ ") + dim(gray("tip  " + tips[Math.floor(el / 6) % tips.length])));
+          if (tips.length) L.push("  " + gray("╰─ ") + dim(gray(fitWidth("tip  " + tips[Math.floor(el / 6) % tips.length], Math.max(8, cols() - 8)))));
         } else if (m.summary) {
-          wrap(m.summary, 5).forEach((x, k) => L.push((k ? "     " : "  " + cyan("╰─") + " ") + gray(x)));
+          wrap(m.summary, 6).forEach((x, k) => L.push((k ? "     " : "  " + cyan("╰─") + " ") + gray(x))); // 6, not 5: a column of air before the scroll rail
         }
         if (m.recap && !(busy && m === cur())) recapLines(m.recap).forEach((x) => L.push(x));
         L.push("");
@@ -3671,7 +3681,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       if (!gen) return [];
       const items = gen();
       if (!partial) return items;
-      return items.filter((it) => it[0].toLowerCase().startsWith(partial) || it[0].toLowerCase().includes(partial));
+      // Names that start with what you typed come first; a number ("/model 3" picks by
+      // number) never matches inside a name, where "3" pulled up llama3.1 and Enter took it.
+      const pre = items.filter((it) => it[0].toLowerCase().startsWith(partial));
+      if (/^\d+$/.test(partial)) return pre;
+      return pre.concat(items.filter((it) => !it[0].toLowerCase().startsWith(partial) && it[0].toLowerCase().includes(partial)));
     };
     const refreshArgCache = () => { if (Date.now() - argCacheTs > 10000) { argCacheTs = Date.now(); ollamaTags().then((ms) => { argCache = ms || []; }).catch(() => {}); } };
     // ---- input syntax highlighting ----
@@ -3822,9 +3836,10 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         } catch (err) { done("error: " + (err && err.message || err)); }
       })();
     };
+    const sessAllow = new Set(); // "Allow for this session" picks at the local engine's permission prompt (never saved)
     let perms = { allow: [], deny: [] }, heldAllow = []; try { const p = JSON.parse(stripBom(fs.readFileSync(path.join(cwd, ".nexus", "permissions.json"), "utf8"))); const strs = (v) => (Array.isArray(v) ? v : []).filter((r) => typeof r === "string" && r.trim()); perms = { allow: strs(p && p.allow), deny: strs(p && p.deny) }; } catch (_) {} // permission allowlist
     if (perms.allow.length && !isRepoTrusted(cwd)) { heldAllow = perms.allow; perms.allow = []; _untrustedRepoConfig = true; } // a cloned repo's allow rules would skip the guard - held until /trust (deny rules only restrict, so they load)
-    const savePerms = () => keepTrust(cwd, () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "permissions.json"), JSON.stringify({ allow: heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))), deny: perms.deny }, null, 2)); } catch (_) {} });
+    const savePerms = () => keepTrust(cwd, () => { try { ensureNexusDir(cwd); fs.writeFileSync(path.join(cwd, ".nexus", "permissions.json"), JSON.stringify({ allow: heldAllow.concat(perms.allow.filter((r) => !heldAllow.includes(r))), deny: perms.deny }, null, 2)); } catch (_) {} });
     let curBranch = "main"; // conversation branch (session branching)
     const imgPaths = new Map(); // [Image#N] -> the image file it stands for (dropped path or Ctrl+V capture), resolved at submit
     let nextQueue = []; // /next queue — prompts to run after the current turn (declared here so the status bar can show the count)
@@ -4016,7 +4031,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           case "/lean": return lean;
           case "/cache": return cacheOn;
           case "/offline": return offline;
-          case "/recap": return autoRecap;
+          case "/recap": return recapActive();
           case "/vim": return !!composer.vim;
           case "/mouse": return mouseOn;
           case "/tight": return tightEdits;
@@ -4053,8 +4068,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           frame.push(str);
         } else {
           const _sb = statusBar(), _room = C - 4 - strWidth(stripA(_sb)) - 5, _hl = hint(_room), _hw = strWidth(stripA(_hl));
-          // a mode that doesn't fit shortens the status side instead of being cut or dropped
-          frame.push(footerLine(_hl, (hintIsMode && _hw > _room ? clip(_sb, Math.max(0, C - 4 - _hw - 5 - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : _sb) + gray("  ···"), C));
+          // a mode (or a passing hint such as "Press Ctrl+C again to exit") that doesn't fit shortens the status side instead of being cut or dropped
+          frame.push(footerLine(_hl, ((hintIsMode || linkNotice) && _hw > _room ? clip(_sb, Math.max(0, C - 4 - _hw - 5 - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : _sb) + gray("  ···"), C));
           clickZones.push({ row, c0: C - 4, c1: C - 1, kind: "toggle" });
         }
       }
@@ -4138,7 +4153,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const b = ensureAskBridge(); if (!b) return null;
       try { return buildEngineMcpServers({ sockPath: b.sockPath, askMcpPath: ASK_MCP_PATH, userServers: loadMcpConfig(cwd) || {}, readonly: !!readonly }); } catch (_) { return null; }
     };
-    const engineMcpConfigPath = (readonly) => { const servers = engineMcpServers(readonly); if (!servers) return null; try { return writeMcpConfigFile(path.join(cwd, ".nexus"), servers); } catch (_) { return null; } };
+    const engineMcpConfigPath = (readonly) => { const servers = engineMcpServers(readonly); if (!servers) return null; try { return writeMcpConfigFile(ensureNexusDir(cwd), servers); } catch (_) { return null; } };
     // Per-engine injection of the ask bridge for the CLI engines (claude uses
     // --mcp-config directly). Returns the `extra` to hand runEngineTask: codex
     // takes -c overrides via mcpServers; opencode is pointed at a merged config
@@ -4155,7 +4170,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         } else { // claude-style { mcpServers } (gemini's system-overrides settings file — gemini merges it, so only 'nexus' is added)
           obj = { mcpServers: toGeminiServers(servers) }; fname = ".gemini-settings.json";
         }
-        const p = writeEngineConfigFile(path.join(cwd, ".nexus"), fname, obj);
+        try { ensureNexusDir(cwd); } catch (_) {} const p = writeEngineConfigFile(path.join(cwd, ".nexus"), fname, obj);
         return (p && m.mcpEnvVar) ? { env: { [m.mcpEnvVar]: p } } : undefined;
       }
       return { mcpServers: servers }; // cArgs (codex): -c overrides via args()
@@ -4399,7 +4414,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     };
     const onResize = () => { lastLines = null; if (!loading) render(); }; // geometry changed — force a full repaint
     let sizePoll = null; // re-reads the window size: a missed SIGWINCH otherwise leaves every row drawn for the old width, and the terminal wraps them
-    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; if (tick) { clearInterval(tick); tick = null; } if (_rsT) { clearTimeout(_rsT); _rsT = null; } if (sizePoll) { clearInterval(sizePoll); sizePoll = null; } if (_drainT) { clearTimeout(_drainT); _drainT = null; } if (_escTimer) { clearTimeout(_escTimer); _escTimer = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { askBridge && askBridge.close(); } catch (_) {} try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("SIGHUP", onHup); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
+    const cleanup = () => { if (cleaned) return; cleaned = true; tuiActive = false; try { saveChat(); } catch (_) {} /* notes since the last turn (settings, theme, rewinds) survive a resume */ if (tick) { clearInterval(tick); tick = null; } if (_rsT) { clearTimeout(_rsT); _rsT = null; } if (sizePoll) { clearInterval(sizePoll); sizePoll = null; } if (_drainT) { clearTimeout(_drainT); _drainT = null; } if (_escTimer) { clearTimeout(_escTimer); _escTimer = null; } if (compact.cur) { try { compact.cur.ctl.kill(); } catch (_) {} } if (ctl && ctl.kill) try { ctl.kill(); } catch (_) {} try { bgJobs.killAll(); } catch (_) {} try { if (dashServer) dashServer.close(); } catch (_) {} for (const s of mcpServers) { try { s.cp && s.cp.kill(); } catch (_) {} } try { askBridge && askBridge.close(); } catch (_) {} try { process.stdin.setRawMode(false); } catch (_) {} process.stdin.pause(); process.stdin.removeAllListeners("data"); out.removeListener("resize", onResize); process.removeListener("exit", cleanup); process.removeListener("SIGINT", onSigint); process.removeListener("SIGTERM", onSigterm); process.removeListener("SIGHUP", onHup); process.removeListener("uncaughtException", onFatal); process.removeListener("unhandledRejection", onRejection); try { term.teardown(); } catch (_) {} };
     tuiActive = true;
     const onFatal = (e) => { const sig = e === "SIGINT" || e === "SIGTERM"; try { term.teardown(); } catch (_) {} try { cleanup(); } catch (_) {} if (e && e instanceof Error) { try { process.stderr.write("\nNexus exited on error: " + e.message + "\n"); } catch (_) {} } try { resolve(); } catch (_) {} if (sig) process.exit(0); };
     const onSigint = () => onFatal("SIGINT"), onSigterm = () => onFatal("SIGTERM");
@@ -4507,7 +4522,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         try { const _cr = (sess.byModel && Object.values(sess.byModel).reduce((a, m) => a + (m.cacheRead || 0), 0)) || 0; turnLog.push({ t: Date.now(), inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), dt: +dt || 0, model: sess.model || engine, engine, label: oneline(text || "", 64), paid: !!PAID[engine], cacheRead: Math.max(0, _cr - (stat.cacheRead0 || 0)) }); if (turnLog.length > 300) turnLog.shift(); } catch (_) {}
         if (PAID[engine]) { impact.cloudTurns++; impact.cloudInTok += Math.max(0, din); impact.cloudOutTok += Math.max(0, dout); impact.cloudCost += Math.max(0, dcost); } else { impact.localTurns++; impact.localTok += Math.max(0, din + dout); }
         // Chargeback ledger: one non-sensitive metrics line per turn (no prompt text, no paths).
-        try { appendUsage(cwd, { ts: new Date().toISOString(), operator: ident.operator, team: ident.team, engine, model: sess.model || engine, mode: ["normal", "auto", "plan"][mode] || "normal", inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), seconds: +dt, files: stat.files.size, commands: stat.cmds, interrupted: !!(res && res.interrupted) }); } catch (_) {}
+        try { appendUsage(cwd, { ts: new Date().toISOString(), operator: ident.operator, team: ident.team, engine, model: sess.model || engine, mode: ["normal", "auto", "plan", "bypass"][mode] || "normal", inTok: Math.max(0, din), outTok: Math.max(0, dout), cost: Math.max(0, dcost), seconds: +dt, files: stat.files.size, commands: stat.cmds, interrupted: !!(res && res.interrupted) }); } catch (_) {}
         for (const p of stat.paths) if (p) sessFiles.add(p); // accumulate session-wide file + tool activity for the dashboard
         for (const it of block.items) if (it.type === "tool" && it.name) toolUse[it.name] = (toolUse[it.name] || 0) + 1;
         const bits = [];
@@ -4558,7 +4573,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             transcript.push({ role: "system", text: yellow("Claude Code ended its session while " + what + " " + (bgCut === 1 ? "was" : "were") + " still working, which stops them.") + gray(" Resuming them automatically (" + bgResumes + " of " + BG.RESUME_LIMIT + "). Esc stops it.") });
           } else transcript.push({ role: "system", text: yellow("Claude Code ended its session while " + what + " " + (bgCut === 1 ? "was" : "were") + " still working, which stops them.") + gray(" Nexus already resumed " + BG.RESUME_LIMIT + " times for this message; type continue to resume again.") });
         }
-        if (!(res && res.interrupted) && (stat.files.size || stat.cmds || +dt >= 20 || block.items.filter((i) => i.type === "tool").length >= 3)) maybeRecap(block, text, { files: [...stat.files], cmds: stat.cmds });
+        const _realReply = block.items.some((i) => i.type === "text" && i.full && i.full.trim() && !/^\((interrupted|no output)\)$/.test(i.full.trim()));
+        if (!(res && res.interrupted) && (_realReply || stat.files.size) && (stat.files.size || stat.cmds || +dt >= 20 || block.items.filter((i) => i.type === "tool").length >= 3)) maybeRecap(block, text, { files: [...stat.files], cmds: stat.cmds }); // nothing to recap from an empty or stopped turn: a model asked to recap nothing invents it
         maybeAutoCompact(); maybeAutoTitle(); idleTitle(); render(); refreshGit();
         if (engine === "claude" && cacheOn && tightEdits && cheapSide) Cheap.refreshUse(NHOME).catch(() => {}); // keeps the unused-skill list current (at most daily); it only ran when /cheap was typed
         if (nextQueue.length && !busy && !compact.on) scheduleDrain(300);
@@ -4670,7 +4686,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           let _tags = null;
           if (!mdl) { _tags = await ollamaTags(); mdl = pickCoderModel(_tags); }
           sess.model = mdl || engine;
-          if (!mdl) { textItem().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : _tags && _tags.unreachable ? "Can't reach Ollama at " + ollamaAddr().host + ":" + ollamaAddr().port + " — start it with `ollama serve` (or point OLLAMA_HOST at it), or use /engine claude." : "No local model found. Install Ollama and pull one, e.g. `ollama pull gpt-oss:20b`, or use /engine claude."; return finish({ output: "" }); }
+          if (!mdl) { textItem().full = apiConfigured() ? "An API is configured but no model is set — run /model <name> (e.g. /model gpt-4o-mini), or /api <url> <model>." : _tags && _tags.unreachable ? "Can't reach Ollama at " + ollamaAddr().host + ":" + ollamaAddr().port + " — start it with `ollama serve` (or point OLLAMA_HOST at it), or use /engine claude." : "No local model found. Install Ollama and pull one, e.g. `ollama pull qwen2.5-coder`, or use /engine claude."; return finish({ output: "" }); }
           // Greeting / trivial message → reply conversationally and NEVER enter the tool
           // loop (so "hi" can't make a weak model start probing the system).
           if (isChitchat(promptText) && !imgAttach.length) {
@@ -4682,7 +4698,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           // later turn either, not just within one turn. Safe because doCompact
           // clears it whenever it trims oMsgs — so we never tell the model a file
           // is "already in context" after that content was pruned away.
-          let didTool = false, nudges = 0, filesThisTurn = 0; const readCache = sess.readCache || (sess.readCache = {}); const fileSnap = sess.fileSnap || (sess.fileSnap = new Map()); const toolMemo = createToolMemo(); // per turn: the user may edit files between turns
+          let didTool = false, nudges = 0, noTools = LocalLoop.forbidsTools(text) ? 2 : 0, filesThisTurn = 0; const readCache = sess.readCache || (sess.readCache = {}); const fileSnap = sess.fileSnap || (sess.fileSnap = new Map()); const toolMemo = createToolMemo(); // per turn: the user may edit files between turns
           const loopGuard = makeLoopGuard(); // break the agent out of repeat/oscillation stalls
           const protoSt = { bad: 0 }; // consecutive replies Nexus could not use (see lib/nexus/proto-reply.js)
           const stepLimit = lean ? 12 : (stepCap ? 20 : 100000); // step cap is opt-in: off by default = run until the model stops (lean keeps its own 12 cap)
@@ -4711,11 +4727,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             // as context) so past chain-of-thought isn't resent on every step.
             const _ctx = { action: o.action }; if (o.tool) _ctx.tool = o.tool; if (o.args) _ctx.args = o.args; if (o.final) _ctx.final = o.final;
             oMsgs.push({ role: "assistant", content: JSON.stringify(_ctx) });
-            if (o.thought) { const t = textItem(); t.full += (t.full ? "\n" : "") + o.thought; renderSoon(); }
-            if (o.action === "final") { if (!didTool && !isChitchat(promptText) && nudges++ < 2) { oMsgs.push({ role: "tool", content: "Do the real work with tools first." }); continue; } if (o.final) { const t = textItem(); t.full += (t.full ? "\n\n" : "") + (typeof o.final === "string" ? o.final : JSON.stringify(o.final, null, 2)); } break; }
+            if (o.thought && !(o.action === "final" && LocalLoop.sameText(o.thought, o.final))) { const t = textItem(); t.full += (t.full ? "\n" : "") + o.thought; renderSoon(); } // small models often repeat the answer as the thought
+            if (o.action === "final") { if (!didTool && LocalLoop.wantsToolWork(text) && nudges++ < 1) { oMsgs.push({ role: "tool", content: LocalLoop.NUDGE }); continue; } if (o.final) { const t = textItem(); t.full += (t.full ? "\n\n" : "") + (typeof o.final === "string" ? o.final : JSON.stringify(o.final, null, 2)); } break; }
             const { name, a } = normalizeToolCall(o);
             if (!name) { if (PR.missingTool(o, oMsgs, protoSt).stop) { textItem().full += (textItem().full ? "\n" : "") + PR.GAVE_UP; break; } continue; } // action "tool" with no tool name
             protoSt.bad = 0;
+            if (noTools && name !== "ask_user") { noTools--; oMsgs.push({ role: "tool", content: LocalLoop.NO_TOOLS_REPLY }); continue; } // the user said not to use tools: the call is not run
             const card = { type: "tool", id: "o" + step, name, input: a, label: olbl(name, a), status: "run", start: Date.now(), detail: JSON.stringify(a).slice(0, 400) };
             if (a.path && name === "write_file") card.diff = editDiff("Write", { file_path: a.path, content: a.content });
             else if (a.path && name === "edit_file") card.diff = editDiff("Edit", { file_path: a.path, old_string: a.find, new_string: a.replace });
@@ -4723,7 +4740,6 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             block.items.push(card);
             if (name === "run_command") { runningShells++; stat.cmds++; }
             if (name === "spawn_agents") activeAgents += (a.tasks || []).length;
-            if (["write_file", "edit_file"].includes(name) && a.path) { stat.files.add(base(a.path)); const r = relOf(a.path); if (r) stat.paths.add(r); }
             render();
             let result, blocked = false;
             // Path jail BEFORE any permission/policy check: resolve the real (symlink-
@@ -4761,6 +4777,23 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               a.__act = act; // stash for post-exec audit
             }
             if (!blocked && hooks) { const hr = runHooks(hooks, "PreToolUse", { TOOL_NAME: name, TOOL_ARGS: JSON.stringify(a) }, cwd); if (hr.block) { result = { error: "blocked by PreToolUse hook" + (hr.out ? ": " + hr.out : "") }; blocked = true; } }
+            // Permission prompt: normal mode asks before any file change or command, accept-edits
+            // only before commands (and sub-agents, which run both unasked). An allow rule
+            // (/allow) or an earlier "Allow for this session" skips it; plan and bypass never ask.
+            if (!blocked && _perm !== "allow" && (mode === 0 || mode === 1)) {
+              const _act = a.__act, _isCmd = !!(_act && _act.type === "run"), _isFile = !!(_act && /^(write|edit|delete|move)$/.test(_act.type)), _isAg = name === "spawn_agents";
+              const _key = _isCmd ? "run:" + (_act.command || name) : _isFile ? "file:" + (_act.path || name) : _isAg ? "agents" : null;
+              if (_key && (mode === 0 || !_isFile) && !sessAllow.has(_key)) {
+                const _dg = _isCmd ? classifyDanger(_act.command || "") : null;
+                const _what = _isCmd ? "run: " + oneline(_act.command || name, 80) : _isAg ? "start " + (a.tasks || []).length + " sub-agent(s), which edit files and run commands without asking" : _act.type + " " + (_act.path ? relP(_act.path) : "files");
+                card.status = "wait"; render();
+                const _ans = await askUser("Allow Nexus to " + _what + "?" + (_dg && _dg.level !== "ok" ? "  (" + _dg.why + ")" : ""), ["Allow once", "Allow for this session", "Deny"]);
+                card.status = "run";
+                const _pick = _ans && !_ans.cancelled && !_ans.typed ? _ans.index : 2;
+                if (_pick === 1) sessAllow.add(_key);
+                else if (_pick !== 0) { result = { error: "denied at the permission prompt" + (_ans && _ans.typed && _ans.value ? " — the user said: " + oneline(String(_ans.value), 200) : "") + ". Don't retry it; carry on without it or ask the user how to proceed." }; blocked = true; card.status = "err"; }
+              }
+            }
             const _undoSnap = !blocked && a.__act && (a.__act.type === "write" || a.__act.type === "edit" || a.__act.type === "delete" || a.__act.type === "move") && name !== "undo_edit"
               ? editUndo.snapshot(a.__act.path ? (a.__act.type === "move" && a.__act.from ? [path.resolve(cwd, a.__act.from), require("./lib/nexus/fs-tools").destOf(path.resolve(cwd, a.__act.from), path.resolve(cwd, a.__act.path))] : [path.resolve(cwd, a.__act.path)]) : (() => { try { return parsePatch(a.patch || a.diff || a.content || a.input || "").filter((f) => f.file).map((f) => path.resolve(cwd, f.file)); } catch (_) { return []; } })())
               : null;
@@ -4817,7 +4850,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               else if (name === "repo_map" || name === "repomap" || name === "map") { const rm = getRepoMap({ fresh: !!a.fresh }); result = rm && rm.map ? { map: rm.text, files: rm.map.fileCount, symbols: rm.map.symbolCount } : { error: "could not build a repo map here" }; }
               else if (name === "find_symbol" || name === "symbol" || name === "goto") { const rm = getRepoMap(); const q = a.name || a.symbol || a.query || a.q || ""; const hits = rm && rm.map ? findSymbol(rm.map, q, { limit: 20 }) : []; result = hits.length ? { symbol: q, definitions: hits } : { symbol: q, definitions: [], note: "no definition found in the repo map — try search{pattern} for usages" }; }
               else if (name === "verify" || name === "run_tests" || name === "test_project") { const cmds = detectVerify(); const kind = (a.kind || "").toLowerCase(); const chosen = (kind && cmds[kind]) ? { kind, cmd: cmds[kind] } : (a.command ? { kind: "custom", cmd: String(a.command) } : pickVerify(cmds)); if (!chosen) { result = { error: "no test/build command detected for this project — pass command to run a specific one", detected: cmds }; } else { const r = await coderShell(chosen.cmd, cwd, { ctl, timeoutMs: (+a.timeout_s || 600) * 1000 }); const _vout = compactOutput(r.output, lean ? 2500 : (trimOutput ? 6000 : 1e9)); const _vd = r.code !== 0 ? diagnose(_vout, r.code, chosen.cmd) : null; result = { ran: chosen.cmd, kind: chosen.kind, code: r.code, ok: r.code === 0, output: _vout + diagAnnotate(_vd) }; if (_vd) result.diagnosis = _vd.category; } }
-              else if (name === "remember") { const note = a.text || a.note || a.content || a.fact || a.memory || ""; let md0 = ""; try { md0 = fs.readFileSync(path.join(cwd, ".nexus", "NEXUS.md"), "utf8"); } catch (_) {} const rr = mergeMemory(md0, note); if (rr.added) { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "NEXUS.md"), rr.md); result = { ok: true, remembered: true }; transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + oneline(note, 60) }); } else result = { ok: true, remembered: false, note: rr.reason || "already known" }; }
+              else if (name === "remember") { const note = a.text || a.note || a.content || a.fact || a.memory || ""; let md0 = ""; try { md0 = fs.readFileSync(path.join(cwd, ".nexus", "NEXUS.md"), "utf8"); } catch (_) {} const rr = mergeMemory(md0, note); if (rr.added) { ensureNexusDir(cwd); fs.writeFileSync(path.join(cwd, ".nexus", "NEXUS.md"), rr.md); result = { ok: true, remembered: true }; transcript.push({ role: "system", text: "remembered → .nexus/NEXUS.md: " + oneline(note, 60) }); } else result = { ok: true, remembered: false, note: rr.reason || "already known" }; }
               else if (name === "ask_user" || name === "ask_question" || name === "ask") {
                 // Pause the loop and ask the user a multiple-choice question,
                 // rendered exactly like the Claude-Code "pick one" prompt. The
@@ -4857,7 +4890,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               else if (name === "http_fetch" || name === "web_fetch" || name === "fetch_url" || name === "http") { // loopback only for a server one of OUR background jobs started; everything else local/private stays blocked
                 const _own = (href) => { try { const u = new URL(href); if (!/^(localhost|127(\.\d+){3}|\[::1\])$/i.test(u.hostname)) return false; return require("./lib/nexus/procs").portOwnedBy(+(u.port || (u.protocol === "https:" ? 443 : 80)), bgJobs.pids()); } catch (_) { return false; } };
                 result = await require("./lib/nexus/http-fetch").httpFetchTool(a, { isLocal: (href) => _ssrfLocal(href) && !_own(href) }); }
-              else { const dr = await deviceTool(name, a, cwd); result = dr !== null ? dr : { error: "unknown tool " + name }; if (dr !== null && ["move", "copy", "copy_file", "move_file", "rename", "make_dir", "mkdir", "delete", "delete_file", "rm"].includes(name) && (a.path || a.to || a.dest)) { const fp = a.to || a.dest || a.path; stat.files.add(base(fp)); const r = relOf(fp); if (r) stat.paths.add(r); invalidateRepoMap(); } }
+              else { const dr = await deviceTool(name, a, cwd); result = dr !== null ? dr : { error: "unknown tool " + name }; if (dr !== null && !(dr && dr.error) && ["move", "copy", "copy_file", "move_file", "rename", "make_dir", "mkdir", "delete", "delete_file", "rm"].includes(name) && (a.path || a.to || a.dest)) { const fp = a.to || a.dest || a.path; stat.files.add(base(fp)); const r = relOf(fp); if (r) stat.paths.add(r); invalidateRepoMap(); } }
             } catch (e) { result = { error: e.message }; }
             if (_syn.length && result && !result.error) { const _w = _syn.map((x) => SyntaxGate.afterEdit(x.cap, x.f)).filter(Boolean).join(" "); if (_w) { if (typeof result === "object") result.syntax = _w; else result = { result, syntax: _w }; } }
             if (_undoSnap) editUndo.commit(_undoSnap);
@@ -4867,9 +4900,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             if (result && result.__vision) { const v = result.__vision; if (apiConfigured()) oMsgs.push({ role: "user", content: [{ type: "text", text: "[image " + v.name + "]" }, v.openai] }); else oMsgs.push({ role: "user", content: "[image " + v.name + "]", images: [v.b64] }); transcript.push({ role: "system", text: "view_image → " + v.name + " attached for the vision model" }); delete result.__vision; }
             if (!(result && typeof result.error === "string" && result.error.startsWith("unknown tool"))) didTool = true;
             if (name === "run_command" && runningShells) runningShells--;
+            if (name === "run_command" && blocked && stat.cmds) stat.cmds--; // denied or blocked: it never ran, so the footer must not say "Ran 1 command"
             if (name === "spawn_agents") activeAgents = Math.max(0, activeAgents - (a.tasks || []).length);
             if (hooks && !blocked) try { runHooks(hooks, "PostToolUse", { TOOL_NAME: name, TOOL_ARGS: JSON.stringify(a), TOOL_RESULT: JSON.stringify(result).slice(0, 2000) }, cwd); } catch (_) {}
-            card.status = result.error ? "err" : "ok"; card.end = Date.now(); card.result = result; card.detail = oneline(resultText(JSON.stringify(result)), 260);
+            const _failed = !!(result && (result.error || (name === "run_command" && typeof result.code === "number" && result.code !== 0))); // a non-zero exit is a failed command, not a green card
+            card.status = _failed ? "err" : "ok"; if (ctl && ctl.stopped && isExecTool(name)) { card.status = "err"; card.interrupted = true; } card.end = Date.now(); card.result = result; card.detail = oneline(resultText(JSON.stringify(result)), 260);
+            if (!_failed && !blocked && ["write_file", "edit_file"].includes(name) && a.path && !(result && typeof result.note === "string" && /^no change/.test(result.note))) { stat.files.add(base(a.path)); const r = relOf(a.path); if (r) stat.paths.add(r); } // only a write that happened: a failed or blocked one is not "Wrote x", not undoable, not in the recap or the ledger
             if (a.__act && !blocked) { if (policy.audit) auditLog(cwd, { engine, tool: name, path: a.__act.path, cmd: a.__act.command, status: result && result.error ? "error" : "ok" }); if ((a.__act.type === "write" || a.__act.type === "edit") && result && !result.error) filesThisTurn++; }
             let _obsRes = result; // what the MODEL gets; the card keeps the full output for you
             if (!blocked && result && typeof result === "object") { const _c = Object.assign({}, result), _sv = collapseToolOutput(_c); if (_sv) { impact.repeatTok += _sv; _obsRes = _c; } } // identical lines → 1 + count, counting runs → first/last + exact step, node-internal frames → count (costsave.js)
@@ -4897,9 +4933,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             // going anyway, end the turn cleanly instead of burning the whole step budget.
             const _lg = loopGuard.note(loopGuard.signature(name, a), !(result && (result.error || result.code)), loopGuard.hashStr(JSON.stringify(result)));
             if (_lg) {
-              transcript.push({ role: "system", text: _lg.message });
               oMsgs.push({ role: "tool", content: "[loop guard] " + _lg.message });
               if (_lg.action === "break") { textItem().full += (textItem().full.trim() ? "\n" : "") + _lg.message; render(); break; }
+              const _nt = _lg.notice || _lg.message; if (!block.items.some((i) => i.type === "note" && i.text === _nt)) block.items.push({ type: "note", text: _nt }); // inside the running turn (a top-level block hid the spinner), shown once, worded for you
             }
             render();
           }
@@ -4907,7 +4943,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           // from cumulative inTok+outTok — otherwise doCompact's trim never sticks (ctxUsed would
           // bounce back to the ever-growing cumulative total next turn → perpetual re-compaction).
           sess.ctxUsed = oMsgs.reduce((n, m) => n + Math.ceil((typeof m.content === "string" ? m.content.length : JSON.stringify(m.content || "").length) / 4), 0);
-          finish({ output: "done" });
+          finish({ output: "", interrupted: !!(ctl && ctl.stopped) });
         })();
       }
     };
@@ -5311,7 +5347,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const sessPaths = () => { const sp = path.join(cwd, ".nexus", "session.json"); return { sp, lp: path.join(cwd, ".nexus", "session.log"), tmp: sp + ".tmp-" + process.pid }; };
     const statStamp = (f) => { try { const st = fs.statSync(f); return st.size + ":" + st.mtimeMs; } catch (_) { return ""; } };
     const saveSession = () => { const { sp, lp, tmp } = sessPaths(); try {
-      fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true });
+      ensureNexusDir(cwd);
       const { readCache: _rc, fileSnap: _fs, ...persistSess } = sess;
       const metaStr = JSON.stringify({ engine, model: sess.model, sess: persistSess, claudeSid });
       const list = transcript.filter((b) => !(b && b.ephemeral));
@@ -5336,6 +5372,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       secureNexus(cwd);
     } catch (_) { _disk.written = null; try { fs.unlinkSync(tmp); } catch (__) {} } finally { _fullSave = true; } };
+    // Save outside a turn (exit, setting changes) so a resume shows what was last on screen.
+    // A blank session that never chatted leaves the last saved chat alone.
+    const saveChat = () => { try { if (_disk.written || transcript.some((b) => b && (b.role === "user" || b.role === "nexus"))) saveSession(); } catch (_) {} };
     // Read the snapshot and replay its log. A torn last line (killed mid-append) ends the
     // replay; lines from another generation are skipped.
     const loadSessionFile = () => {
@@ -5427,7 +5466,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       cache: engine === "claude" ? { lastAt: cacheWarm.lastAt || 0, ttl: cacheWarm.ttl || 0 } : null,
       toolCalls: Object.keys(toolUse).reduce((a, k) => a + toolUse[k], 0),
       title: sessionTitle || "",
-      turns: transcript.filter((m) => m.role === "user" && m.text && String(m.text).trim()).length,
+      turns: clearedTurns + transcript.filter((m) => m.role === "user" && m.text && String(m.text).trim()).length,
       engine, model: sess.model || engine, paid: !!PAID[engine],
       inTok: sess.inTok || 0, outTok: sess.outTok || 0, cost: sess.cost || 0,
       ctxUsed: sess.ctxUsed || 0, ctxWindow: sess.ctxWindow || CTXW[engine] || 0,
@@ -5474,6 +5513,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       const cmd = (sp === -1 ? t : t.slice(0, sp)).toLowerCase();
       const argstr = sp === -1 ? "" : t.slice(sp + 1).trim();
       const arg = argstr.split(/\s+/)[0];
+      if (/^\/(settings|options|config|theme|color|recap)$/.test(cmd)) setTimeout(() => { if (!busy) saveChat(); }, 0); // keep the saved session in step with setting changes
       // Any command other than a repeated /clear cancels a pending clear confirmation.
       const clearWasPending = clearPending; if (cmd !== "/clear" && cmd !== "/new") clearPending = false;
       if (aliases[cmd] && !builtinNames().has(cmd)) { let body = String(aliases[cmd]).replace(/\$ARGUMENTS/g, argstr).replace(/\$(\d+)/g, (_, n) => argstr.split(/\s+/)[+n - 1] || ""); if (!/\$ARGUMENTS|\$\d/.test(aliases[cmd]) && argstr) body += " " + argstr; if (body.trim()[0] === "/") { if (_aliasDepth >= 5) { transcript.push({ role: "system", text: "alias " + cmd + " loops back on itself (aliases calling aliases more than 5 deep) — fix it with /alias" }); return; } _aliasDepth++; try { handleSlash(body.trim()); } finally { _aliasDepth--; } } else submit(body.trim()); return; }
@@ -5573,7 +5613,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       else if (cmd === "/mcp") {
         const ps = (argstr || "").trim().split(/\s+/).filter(Boolean); const sub = (ps[0] || "").toLowerCase();
-        const writeMcp = (cfg) => keepTrust(cwd, () => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(path.join(cwd, ".nexus", "mcp.json"), JSON.stringify(cfg, null, 2)); return true; } catch (_) { return false; } });
+        const writeMcp = (cfg) => keepTrust(cwd, () => { try { ensureNexusDir(cwd); fs.writeFileSync(path.join(cwd, ".nexus", "mcp.json"), JSON.stringify(cfg, null, 2)); return true; } catch (_) { return false; } });
         if (sub === "catalog" || sub === "list") transcript.push({ role: "system", text: "MCP catalog — one-command connect with /mcp add <name>  " + green("(★ = bundled, on by default)") + ":\n" + Object.keys(MCP_CATALOG).map((k) => "  " + (isBundled(k) ? green("★") : " ") + " " + cyan(k.padEnd(20)) + gray(MCP_CATALOG[k].desc) + (MCP_CATALOG[k].needsEnv ? yellow("  [needs " + MCP_CATALOG[k].needsEnv.join(", ") + "]") : "")).join("\n") + "\n  any model then uses them as mcp__<server>__<tool>.  Bundled ones auto-connect (DARKNODE_NO_DEFAULT_MCP=1 to disable)." });
         else if (sub === "add") {
           const name = (ps[1] || "").toLowerCase(); const e = catalogGet(name);
@@ -5585,7 +5625,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         else if (sub === "connect" || sub === "reconnect") { mcpServers = []; connectMcp().then(() => render()); transcript.push({ role: "system", text: "reconnecting MCP servers (bundled + .nexus/mcp.json)…" }); }
         else if (!mcpServers.length && !loadMcpConfig(cwd)) transcript.push({ role: "system", text: (process.env.DARKNODE_NO_DEFAULT_MCP ? "bundled MCP servers are disabled (DARKNODE_NO_DEFAULT_MCP).\n  " : "bundled MCP servers still connecting… (first launch npx/uvx-installs them). Run /mcp again in a moment.\n  ") + cyan("/mcp add github") + gray("   · or playwright · exa · notion · postgres · …  ·  /mcp catalog to browse") + "\n  The claude engine AND any local/API model get the tools." });
         else if (!mcpServers.length) transcript.push({ role: "system", text: "MCP servers are still connecting… run /mcp again in a moment" });
-        else transcript.push({ role: "system", text: "MCP servers " + green("(★ = bundled with Nexus)") + ":\n" + mcpServers.map((s) => s.error ? ("  " + red("×") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + s.error) : ("  " + green("●") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + (s.tools || []).length + " tool(s): " + (s.tools || []).map((t) => t.name).slice(0, 8).join(", "))).join("\n") + "\n  any model calls these as mcp__<server>__<tool>  ·  /mcp add <name> · /mcp catalog · /mcp remove <name>" + (mcpServers.some((s) => s.error) ? "  ·  /mcp reconnect retries the failed ones" : "") }); }
+        else transcript.push({ role: "system", text: "MCP servers " + green("(★ = bundled with Nexus)") + ":\n" + mcpServers.map((s) => s.error ? ("  " + red("×") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + s.error) : ("  " + green("●") + " " + s.name + (s.bundled ? green(" ★") : "") + "  — " + (s.tools || []).length + " tool(s): " + (s.tools || []).map((t) => t.name).slice(0, 8).join(", ") + ((s.tools || []).length > 8 ? gray(" +" + ((s.tools || []).length - 8) + " more") : ""))).join("\n") + "\n  any model calls these as mcp__<server>__<tool>  ·  /mcp add <name> · /mcp catalog · /mcp remove <name>" + (mcpServers.some((s) => s.error) ? "  ·  /mcp reconnect retries the failed ones" : "") }); }
       else if (cmd === "/agents" || cmd === "/parallel") { const tasks = argstr.split(/\s*;;\s*/).map((s) => s.trim()).filter(Boolean); if (tasks.length < 2) transcript.push({ role: "system", text: "usage: /agents <task 1> ;; <task 2> ;; …   — runs each task in parallel on the " + engine + " engine, each in its own isolated git worktree, then merges the changes back" }); else spawnAgents(tasks); }
       else if (cmd === "/hooks") { transcript.push({ role: "system", text: hooks ? ("hooks (.nexus/hooks.json) active for events: " + Object.keys(hooks).join(", ") + "\n  PreToolUse/PostToolUse run for the local engine; UserPromptSubmit & Stop run for every engine") : "no hooks configured. Create .nexus/hooks.json:\n  { \"PreToolUse\": [ { \"matcher\": \"run_command|write_file\", \"command\": \"echo $TOOL_NAME >> .nexus/audit.log\" } ] }\n  events: UserPromptSubmit · PreToolUse · PostToolUse · Stop  (non-zero exit on PreToolUse/UserPromptSubmit blocks the action)" }); }
       else if (cmd === "/status") transcript.push({ role: "system", text: "status:\n  engine   " + engine + "\n  model    " + (modelLabel(shownModel()) || "engine default") + "\n  dir      " + cwd + "\n  mode     " + MODES[mode].k + "\n  context  " + Math.round((sess.ctxUsed / (sess.ctxWindow || 1)) * 100) + "% of " + fmtK(sess.ctxWindow) + "\n  tokens   ↑" + fmtK(sess.inTok) + " ↓" + fmtK(sess.outTok) + (PAID[engine] ? (sess.cost ? " · $" + sess.cost.toFixed(4) : " · billed") : " · local · free") + "\n  budget   " + (costCap ? "$" + costCap.toFixed(2) + " cap" : "none") + "\n  undo     " + checkpoints.length + " checkpoint(s)" });
@@ -5628,7 +5668,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         blk.text += lines.join("\n"); render();
         ollamaTags().then((ms) => {
           if (ms.length) blk.text += "\n  " + ok(ms.length + " model(s): " + ms.slice(0, 6).join(", ") + (ms.length > 6 ? " …" : ""));
-          else blk.text += "\n  " + (apiConfigured() ? ok("API: " + API_BASE()) : no("no models — `ollama pull gpt-oss:20b`"));
+          else blk.text += "\n  " + (apiConfigured() ? ok("API: " + API_BASE()) : no("no models — `ollama pull qwen2.5-coder`"));
           blk.text += "\n\n  " + gray("all green? you're ready to go. fix ○ items to unlock that feature.");
           render();
         }).catch(() => { blk.text += "\n  " + no("Ollama unreachable"); render(); });
@@ -5657,12 +5697,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         transcript.push({ role: "system", text: L.join("\n") });
       }
       else if (cmd === "/resume") { try { const s = loadSessionFile(); restoreSession(s); scroll = 0; transcript.push({ role: "system", text: "resumed the saved session from " + new Date(s.ts).toLocaleString() + " (" + engine + ")" }); } catch (e) { transcript.push({ role: "system", text: e && e.code === "ENOENT" ? "no saved session to resume (sessions are saved to .nexus/session.json after each turn)" : "the saved session (.nexus/session.json) could not be read: " + String((e && e.message) || e).split("\n")[0] }); } }
-      else if (cmd === "/export") { try { const md = exportMarkdown(transcript, { date: new Date().toLocaleString(), engine, cwd }); const dir = path.join(cwd, ".nexus"); try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {} const fp = argstr ? path.resolve(cwd, argstr.replace(/^~(?=\/|$)/, require("os").homedir())) : path.join(dir, "export-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, md); /* argstr, not arg: a path with spaces is one path */ /* /export <file> writes there (its folder must exist) */ transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) + " (" + fp + ")" }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
+      else if (cmd === "/export") { try { const md = exportMarkdown(transcript, { date: new Date().toLocaleString(), engine, cwd }); const dir = path.join(cwd, ".nexus"); try { ensureNexusDir(cwd); } catch (_) {} const fp = argstr ? path.resolve(cwd, argstr.replace(/^~(?=\/|$)/, require("os").homedir())) : path.join(dir, "export-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".md"); fs.writeFileSync(fp, md); /* argstr, not arg: a path with spaces is one path */ /* /export <file> writes there (its folder must exist) */ transcript.push({ role: "system", text: "exported conversation → " + path.relative(cwd, fp) + " (" + fp + ")" }); } catch (e) { transcript.push({ role: "system", text: "export failed: " + e.message }); } }
       else if (cmd === "/copy") { let last = ""; for (let i = transcript.length - 1; i >= 0; i--) { const m = transcript[i]; if (m.role === "nexus") { last = (m.items || []).filter((it) => it.type === "text").map((it) => it.full).join("\n").trim(); if (last) break; } } if (last) { const via = copyToClipboard(last, out); transcript.push({ role: "system", text: "copied Nexus's last reply to the " + via }); } else transcript.push({ role: "system", text: "nothing to copy yet" }); }
       else if (cmd === "/rewind") { if (!checkpoints.length) transcript.push({ role: "system", text: "no checkpoints to rewind to" }); else { const n = parseInt(arg, 10); const idx = isNaN(n) ? checkpoints.length - 1 : n - 1; const ck = checkpoints[idx]; if (!ck) transcript.push({ role: "system", text: "no checkpoint #" + arg + " — /checkpoints to list them" }); else { const rwPaths = [...new Set(checkpoints.slice(idx).flatMap((c) => c.paths || []))]; /* every file a turn from here on changed, not just this turn's: otherwise later turns' files stay at their newest version */ const ok = nexusRestore(cwd, ck.tree, rwPaths); if (ok) checkpoints.length = idx; transcript.push({ role: "system", text: ok ? ("rewound to checkpoint #" + (idx + 1) + " (before \"" + ck.label + "\") — restored " + (rwPaths.length ? rwPaths.length + " file(s) Nexus changed since" : "nothing (no file Nexus tracked changed since)") + keptNote()) : "rewind failed (git error)" }); } } }
       else if (cmd === "/clear" || cmd === "/new") {
         const hasContent = oMsgs.length > 1 || transcript.some((m) => m.role === "user" || m.role === "nexus");
-        const doClear = () => { clearPending = false; transcript.length = 0; transcript.push({ role: "art" }); cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; cacheWarm.lastAt = 0; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); saveSession(); /* else quitting now restores the cleared chat on next launch */ render(); };
+        const doClear = () => { clearPending = false; titleEpoch++; if (!titleManual) { sessionTitle = ""; titleAt = 0; idleTitle(); } /* a new topic gets a new name; a title still being made for the old chat is dropped */ clearedTurns += transcript.filter((m) => m.role === "user" && m.text && String(m.text).trim()).length; transcript.length = 0; transcript.push({ role: "art" }); cont = false; claudeSid = ""; oneShotRan = false; carryNote = ""; cacheWarm.lastAt = 0; oMsgs.length = 1; sess.ctxUsed = 0; scroll = 0; sess.readCache = {}; if (sess.fileSnap) sess.fileSnap.clear(); saveSession(); /* else quitting now restores the cleared chat on next launch */ render(); };
         if (!hasContent) doClear(); // nothing to lose — just reset
         else askUser("Clear the whole conversation? This wipes the chat and the model's memory of it.", ["Keep it", "Clear everything"]).then((ans) => {
           if (!ans.cancelled && ans.index === 1) doClear();
@@ -5760,7 +5800,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         transcript.push({ role: "system", text: txt });
       }
       else if (cmd === "/savings" || cmd === "/impact") { const parts = argstr.split(/\s+/).filter(Boolean); const si = parts.indexOf("since"); const since = si >= 0 ? parts[si + 1] : null; if (si >= 0 && !isIsoSince(since)) { transcript.push({ role: "system", text: "usage: " + cmd + " since <date>  — an ISO date like 2026-08-01 (or 2026-08)" }); render(); return; } const recs = loadUsage(cwd, since ? { since } : {}); if (!recs.length) { transcript.push({ role: "system", text: "no usage recorded yet — the savings analysis needs some Nexus turns in .nexus/usage.jsonl first" }); } else { const a = analyzeSavings(recs); transcript.push({ role: "system", text: (parts[0] === "json" ? JSON.stringify(a, null, 2) : renderSavings(a, { project: path.basename(cwd) }) + "\n\n  headless: darknode savings") }); } }
-      else if (cmd === "/compliance") { try { const key = process.env.DARKNODE_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (DARKNODE_SIGNING_KEY)" : "\n  tip: set DARKNODE_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: darknode compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
+      else if (cmd === "/compliance") { try { const key = process.env.DARKNODE_SIGNING_KEY || ""; const b = buildBundle(cwd, { operator: ident.operator, team: ident.team, signingKey: key || undefined }); const stamp = new Date().toISOString().replace(/[:.]/g, "-"); const base = path.join(cwd, ".nexus", "compliance-" + stamp); ensureNexusDir(cwd); fs.writeFileSync(base + ".json", JSON.stringify(b, null, 2)); fs.writeFileSync(base + ".md", renderBundleMd(b)); transcript.push({ role: "system", text: "compliance bundle written (operator " + ident.operator + (ident.team ? " · team " + ident.team : "") + "):\n  " + base + ".json\n  " + base + ".md\n  audit chain: " + (b.auditChain.present ? (b.auditChain.verified ? "verified (" + b.auditChain.records + " records)" : "BROKEN — " + b.auditChain.reason) : "none yet") + "\n  integrity: sha256 " + b.integrity.hash.slice(0, 16) + "…" + (b.signature ? "\n  signed: hmac-sha256 (DARKNODE_SIGNING_KEY)" : "\n  tip: set DARKNODE_SIGNING_KEY to HMAC-sign the bundle") + "\n  verify: darknode compliance verify " + base + ".json" }); } catch (e) { transcript.push({ role: "system", text: "compliance export failed: " + (e && e.message || e) }); } }
       else if (cmd === "/undo") { if (!checkpoints.length) transcript.push({ role: "system", text: "nothing to undo (no checkpoints this session, or not a git repo)" }); else { const ck = checkpoints[checkpoints.length - 1]; const nowTree = nexusCheckpoint(cwd); const ok = nexusRestore(cwd, ck.tree, ck.paths); if (ok) checkpoints.pop(); if (ok && nowTree) redoStack.push({ tree: nowTree, before: ck.tree, label: ck.label, paths: ck.paths }); transcript.push({ role: "system", text: ok ? ("undid \"" + ck.label + "\" — restored " + ((ck.paths && ck.paths.length) ? ck.paths.length + " file(s) Nexus changed this turn (unrelated edits untouched)" : "nothing (that turn changed no file Nexus tracked)") + keptNote() + (nowTree ? " (/redo to reapply)" : " (no redo: the current state could not be snapshotted)")) : "undo failed (git error) — nothing changed; the checkpoint is kept, so /undo can be retried" }); } }
       else if (cmd === "/redo") { const r = redoStack[redoStack.length - 1]; if (!r) transcript.push({ role: "system", text: "nothing to redo" }); else { const ok = nexusRestore(cwd, r.tree, r.paths); if (ok) { redoStack.pop(); checkpoints.push({ tree: r.before || r.tree, label: r.label, ts: Date.now(), paths: r.paths }); } /* the checkpoint holds the state BEFORE the turn, so a later /undo reverts it again */ transcript.push({ role: "system", text: ok ? ("redid — reapplied the changes from \"" + r.label + "\"") : "redo failed (git error)" }); } }
       else if (cmd === "/race") { if (!argstr) transcript.push({ role: "system", text: "usage: /race <prompt>  — runs it on every available engine (claude/local/opencode) at once and shows all answers" }); else raceEngines(argstr); }
@@ -5916,8 +5956,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           else {
             let nv; const raw = (parts[1] || "").toLowerCase();
             if (key === "budgetCap") { const n = parseUsd(parts[1]); nv = (raw === "off" || n === 0 || isNaN(n)) ? 0 : n; costCap = nv; }
-            else { nv = raw === "on" ? true : raw === "off" ? false : key === "recap" ? !autoRecap : !settingsStore.get(key); }
-            if (key === "recap") autoRecap = nv; else if (key === "autoCompact") autoCompact = nv; else if (key === "minimizeCalls") minimizeCalls = nv; else if (key === "stepCap") stepCap = nv; else if (key === "trimOutput") trimOutput = nv; else if (key === "cache") cacheOn = nv; else if (key === "map") { repoMapOn = nv; if (nv) repoMapSent = false; } else if (key === "lean") lean = nv;
+            else { nv = raw === "on" ? true : raw === "off" ? false : key === "recap" ? !recapActive() : !settingsStore.get(key); }
+            if (key === "recap") { autoRecap = nv; recapChosen = true; } else if (key === "autoCompact") autoCompact = nv; else if (key === "minimizeCalls") minimizeCalls = nv; else if (key === "stepCap") stepCap = nv; else if (key === "trimOutput") trimOutput = nv; else if (key === "cache") cacheOn = nv; else if (key === "map") { repoMapOn = nv; if (nv) repoMapSent = false; } else if (key === "lean") lean = nv;
             saveSetting(key, nv);
             transcript.push({ role: "system", text: key + " = " + (key === "budgetCap" ? (nv ? "$" + Number(nv).toFixed(2) : "off (unlimited)") : (nv ? "ON" : "off")) + gray("  — saved to ~/.nexus/settings.json") });
           }
@@ -5927,18 +5967,24 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         // on/off values read green/red at a glance, matching the slash-menu toggle colours
         const onOff = (x) => /^on\b/i.test(x) ? green(x) : /^off$/i.test(x) ? red(x) : x;
         let text = bold("Settings") + gray("   change any option with the command shown");
-        for (const s of describeSettings(v)) { text += "\n\n" + bold(cyan(s.group)); for (const r of s.rows) { const gap = " ".repeat(Math.max(2, 20 - r.value.length)); text += "\n  " + r.label.padEnd(26) + bold(onOff(r.value)) + gap + gray(r.cmd); } }
+        const fitW = cols() - 4; // a row wider than this was hard-wrapped to column 3, breaking the columns
+        for (const s of describeSettings(v)) { text += "\n\n" + bold(cyan(s.group)); for (const r of s.rows) { const gap = " ".repeat(Math.max(2, 20 - r.value.length)), head = "  " + r.label.padEnd(26) + bold(onOff(r.value)); text += "\n" + head + (strWidth(head + gap + r.cmd) <= fitW ? gap : "\n    ") + gray(r.cmd); } }
         // Governed limits — all OFF by default; each shows its live value and where it came from.
         const liveGov = { budgetCap: costCap, autoCompact, minimizeCalls, stepCap, trimOutput, cache: cacheOn, map: repoMapOn, lean };
         text += "\n\n" + bold(cyan("Limits")) + gray("   off by default · saved to ~/.nexus/settings.json · an env var overrides one launch");
+        const envLater = [];
         for (const row of settingsStore.describe()) {
           if (!(row.key in liveGov)) continue;
           const val = liveGov[row.key];
           const shown = row.key === "budgetCap" ? (val ? "$" + Number(val).toFixed(2) : "off") : (val ? "on" : "off");
           const srcTxt = Ssrc[row.key] === "env" ? " env" : Ssrc[row.key] === "saved" ? " saved" : " default", src = gray(srcTxt) + " ".repeat(Math.max(2, 14 - shown.length - srcTxt.length));
           const envName = nexusSettings.ENV_NAME[row.key];
-          text += "\n  " + row.key.padEnd(16) + bold(onOff(shown)) + src + gray("/settings " + row.key + (row.key === "budgetCap" ? " <usd>|off" : " on|off") + (envName ? "  " + envName : ""));
+          const rowHead = "  " + row.key.padEnd(16) + bold(onOff(shown)) + src, rowCmd = "/settings " + row.key + (row.key === "budgetCap" ? " <usd>|off" : " on|off");
+          const rowTxt = rowHead + (strWidth(rowHead + rowCmd) <= fitW ? "" : "\n    ") + gray(rowCmd);
+          if (envName && strWidth(rowTxt + "  " + envName) > fitW) envLater.push(envName); // listed below instead of wrapping onto its own row
+          text += "\n" + rowTxt + (envName && !envLater.includes(envName) ? gray("  " + envName) : "");
         }
+        if (envLater.length) text += "\n" + ansiWrap("env vars: " + envLater.join(" · "), Math.max(20, fitW - 2)).map((l) => "  " + gray(l.trim())).join("\n");
         text += "\n  " + gray("colour: NO_COLOR=1 disables, FORCE_COLOR=1 forces (NO_COLOR wins).");
         transcript.push({ role: "system", text });
       }
@@ -5962,12 +6008,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         else pager = Pager.createPager(txt, q ? "find \"" + q + "\"" : "conversation", q ? { query: q, at: "last" } : { at: "last" });
       }
       else if (cmd === "/pager" || cmd === "/less") {
-        // Newest first: every finished tool result, plus Nexus answers for "/pager answer".
-        const a = (argstr || "").trim().toLowerCase(), want = a === "answer" ? "text" : "tool", n = Math.max(1, parseInt(a, 10) || 1);
+        // Bare /pager (and /pager answer) opens the last reply; /pager <n> the n-th newest tool result.
+        const a = (argstr || "").trim().toLowerCase(), hasReply = transcript.some((b) => (b.items || []).some((it) => it.type === "text" && it.full)), want = a === "answer" || (!a && hasReply) ? "text" : "tool", n = want === "text" ? 1 : Math.max(1, parseInt(a, 10) || 1);
         const found = [];
         for (let bi = transcript.length - 1; bi >= 0 && found.length < n; bi--) { const its = transcript[bi].items || []; for (let ii = its.length - 1; ii >= 0 && found.length < n; ii--) { const it = its[ii]; if (want === "text" ? it.type === "text" && it.full : it.type === "tool" && (it.result !== undefined || it.live)) found.push(it); } }
         const it = found[n - 1];
-        if (!it) transcript.push({ role: "system", text: want === "text" ? "no answer to page yet" : found.length ? "only " + found.length + " tool output" + (found.length > 1 ? "s" : "") + " so far — /pager 1 is the newest" : "no tool output yet — /pager opens the newest tool result (/pager 2 the one before, /pager answer the last answer)" });
+        if (!it) transcript.push({ role: "system", text: want === "text" ? "no answer to page yet" : found.length ? "only " + found.length + " tool output" + (found.length > 1 ? "s" : "") + " so far — /pager 1 is the newest" : "no reply or tool output yet — /pager opens the last reply, /pager 1 the newest tool result (/pager 2 the one before)" });
         else { const live = want === "tool" && it.result === undefined && it.live; const txt = want === "text" ? it.full : live ? Tail.tailText(it.live) : asText(it.result); pager = Pager.createPager(txt || "(empty)", want === "text" ? "answer" : (it.label || it.name || "output") + (live ? " · running, snapshot" : "")); }
       }
       else if (cmd === "/compat") {
@@ -6013,7 +6059,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       }
       else if (cmd === "/recap") {
         const a2 = (argstr || "").trim().toLowerCase();
-        if (a2 === "off" || a2 === "on") { autoRecap = a2 === "on"; saveSetting("recap", autoRecap); transcript.push({ role: "system", text: "task recaps " + (autoRecap ? green("ON") + " — a short ※ recap appears after each finished task (small off-ledger model call)" : red("OFF")) + gray("  ·  saved") }); }
+        if (a2 === "off" || a2 === "on") { autoRecap = a2 === "on"; recapChosen = true; saveSetting("recap", autoRecap); transcript.push({ role: "system", text: "task recaps " + (autoRecap ? green("ON") + " — a short ※ recap appears after each finished task (small off-ledger model call)" : red("OFF")) + gray("  ·  saved") }); }
         else {
           const users = transcript.filter((m) => m.role === "user" && m.text && m.text.trim());
           if (!users.length) transcript.push({ role: "system", text: "nothing to recap yet" });
@@ -6136,7 +6182,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         ollamaTags().then((ms) => {
           const lines = ENGINE_ORDER.map((e) => {
             const m = ENGINES[e], on = engineAvail(e), cur = e === engine ? "  " + cyan("(current)") : "";
-            const cat = e === "ollama" ? (ms.length ? ms.join(", ") : gray("none — `ollama pull gpt-oss:20b`"))
+            const cat = e === "ollama" ? (ms.length ? ms.join(", ") : gray("none — `ollama pull qwen2.5-coder`"))
               : (m.models && m.models.length) ? m.models.join(" · ") : gray("configured inside the tool itself");
             return "  " + (on ? green("●") : gray("○")) + " " + e + gray(" · " + m.label) + cur + "\n      " + cat;
           }).join("\n");
@@ -6158,7 +6204,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         let out = ""; try { out = cowork.on ? await weakChat(dreamPrompt) : await engineAnswer(offline ? "ollama" : engine, dreamPrompt); } catch (_) {}
         const bullets = (out || "").split("\n").map((l) => l.trim()).filter((l) => /^[-*]\s/.test(l)).map((l) => l.replace(/^[*]\s/, "- "));
         card.status = "ok"; card.end = Date.now();
-        if (bullets.length) { try { const md = path.join(cwd, ".nexus", "NEXUS.md"); fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; const lc = c.toLowerCase(); const added = []; for (const b of bullets) { const key = b.toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 28); if (key.length > 8 && !lc.includes(key)) { c += b + "\n"; added.push(b); } } fs.writeFileSync(md, c); ensureText(block).full = added.length ? ("consolidated " + added.length + " new fact(s) into .nexus/NEXUS.md:\n\n" + added.join("\n")) : "reviewed the session — everything's already in NEXUS.md"; } catch (e) { ensureText(block).full = "could not write memory: " + e.message; } } else ensureText(block).full = "no durable facts found to consolidate.";
+        if (bullets.length) { try { const md = path.join(cwd, ".nexus", "NEXUS.md"); ensureNexusDir(cwd); let c = ""; try { c = fs.readFileSync(md, "utf8"); } catch (_) {} if (!/\n##\s*Notes/.test(c)) c += (c && !c.endsWith("\n") ? "\n" : "") + "\n## Notes\n"; const lc = c.toLowerCase(); const added = []; for (const b of bullets) { const key = b.toLowerCase().replace(/[^a-z0-9 ]/g, "").slice(0, 28); if (key.length > 8 && !lc.includes(key)) { c += b + "\n"; added.push(b); } } fs.writeFileSync(md, c); ensureText(block).full = added.length ? ("consolidated " + added.length + " new fact(s) into .nexus/NEXUS.md:\n\n" + added.join("\n")) : "reviewed the session — everything's already in NEXUS.md"; } catch (e) { ensureText(block).full = "could not write memory: " + e.message; } } else ensureText(block).full = "no durable facts found to consolidate.";
         busy = false; ctl = null; try { saveSession(); } catch (_) {} render();
       })(); }
       else if (cmd === "/plan") { const s = arg;
@@ -6233,12 +6279,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       // attest: capability manifest from the hash-chained audit log (what this run touched + chain verdict).
       else if (cmd === "/attest") { deviceTool("attest", {}, cwd).then((r) => { transcript.push({ role: "system", text: formatToolLines("attest", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "attest failed: " + (e && e.message || e) }); render(); }); }
       // bisect: binary-search the per-turn checkpoint timeline to the exact turn that broke the test.
-      else if (cmd === "/bisect") { transcript.push({ role: "system", text: "bisecting the checkpoint timeline" + (argstr ? " with '" + argstr + "'" : " (auto-detecting the test command)") + "... (this re-runs the test at each probe; usage: /bisect [test command])" }); render(); deviceTool("bisect", { test: argstr || undefined }, cwd).then((r) => { transcript.push({ role: "system", text: formatToolLines("bisect", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "bisect failed: " + (e && e.message || e) }); render(); }); }
+      else if (cmd === "/bisect") { transcript.push({ role: "system", text: "bisecting the checkpoint timeline" + (argstr ? " with '" + argstr + "'" : " (auto-detecting the test command)") + "... (this re-runs the test at each probe; usage: /bisect [test command])" }); render(); deviceTool("bisect", { test: argstr || undefined }, cwd).then((r) => { if (r && typeof r.error === "string" && /^no test command/.test(r.error)) r = Object.assign({}, r, { error: "no test command to bisect with — run /bisect <test command> (e.g. /bisect npm test), or add a test script the project can detect" }); /* the tool's own message names the agent-tool syntax */ transcript.push({ role: "system", text: formatToolLines("bisect", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "bisect failed: " + (e && e.message || e) }); render(); }); }
       // whatbroke: instant static "git blame for the agent's turns" (no re-run); explain-break tool.
       else if (cmd === "/whatbroke") { transcript.push({ role: "system", text: "correlating the failing test to the turns that changed the implicated files" + (argstr ? " (running '" + argstr + "' to capture the failure)" : "") + "... (usage: /whatbroke [test command])" }); render(); deviceTool("explain_break", { test: argstr || undefined }, cwd).then((r) => { transcript.push({ role: "system", text: formatToolLines("whatbroke", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "whatbroke failed: " + (e && e.message || e) }); render(); }); }
       // shrink: delta-debug (ddmin) the agent's edits to the minimal subset of files that still breaks it.
       else if (cmd === "/shrink") { transcript.push({ role: "system", text: "delta-debugging the changed files to the minimal breaking set" + (argstr ? " with '" + argstr + "'" : " (auto-detecting the test command)") + "... (usage: /shrink [test command])" }); render(); deviceTool("shrink", { test: argstr || undefined }, cwd).then((r) => { transcript.push({ role: "system", text: formatToolLines("shrink", r).join("\n") }); render(); }).catch((e) => { transcript.push({ role: "system", text: "shrink failed: " + (e && e.message || e) }); render(); }); }
-      else if (cmd === "/init") { try { const dir = path.join(cwd, ".nexus"); fs.mkdirSync(dir, { recursive: true }); const md = path.join(dir, "NEXUS.md"), cfg = path.join(dir, "config.json"); const made = []; if (!fs.existsSync(md)) { fs.writeFileSync(md, "# Nexus project instructions\n\nNexus loads this file every session.\n\n## Project\n- (describe your project)\n\n## Conventions\n- (style, patterns to follow)\n\n## Build / run / test\n- (commands)\n"); made.push("NEXUS.md"); } if (!fs.existsSync(cfg)) { fs.writeFileSync(cfg, JSON.stringify({ engine, model: "" }, null, 2) + "\n"); made.push("config.json"); } secureNexus(cwd); if (gitignoreNexus(cwd)) made.push(".gitignore"); transcript.push({ role: "system", text: made.length ? "initialized .nexus/ (" + made.join(", ") + ") — edit NEXUS.md to give Nexus project context" : ".nexus/ already exists" }); } catch (e) { transcript.push({ role: "system", text: "init failed: " + e.message }); } }
+      else if (cmd === "/init") { try { const dir = ensureNexusDir(cwd); const md = path.join(dir, "NEXUS.md"), cfg = path.join(dir, "config.json"); const made = []; if (!fs.existsSync(md)) { fs.writeFileSync(md, "# Nexus project instructions\n\nNexus loads this file every session.\n\n## Project\n- (describe your project)\n\n## Conventions\n- (style, patterns to follow)\n\n## Build / run / test\n- (commands)\n"); made.push("NEXUS.md"); } if (!fs.existsSync(cfg)) { fs.writeFileSync(cfg, JSON.stringify({ engine, model: "" }, null, 2) + "\n"); made.push("config.json"); } secureNexus(cwd); if (gitignoreNexus(cwd)) made.push(".gitignore"); transcript.push({ role: "system", text: made.length ? "initialized .nexus/ (" + made.join(", ") + ") — edit NEXUS.md to give Nexus project context" : ".nexus/ already exists" }); } catch (e) { transcript.push({ role: "system", text: "init failed: " + e.message }); } }
       else if (cmd === "/login") {
         const a0 = (arg || "").trim();
         if (!a0) { const a = nexusAuth(); transcript.push({ role: "system", text: (a ? "signed in as " + (a.name || a.email || a.uid) + "\n" : "") + "paste your code from the website (Settings → Nexus CLI): type  /login <code>\n(advanced: /login google or /login github)" }); }
@@ -6273,6 +6319,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         // a number picks from the list /model shows; with no list yet, build the same one first
         const pickNth = (names) => { modelPick = names.slice(); if (names[+a - 1]) setModel(names[+a - 1]); else transcript.push({ role: "system", text: names.length ? "no model #" + a + " — /model lists " + names.length : "no numbered list for " + engine + " — use /model <name>" }); render(); };
         if (/^\d+$/.test(a)) { if (modelPick[+a - 1]) setModel(modelPick[+a - 1]); else if (engine === "ollama") ollamaTags().then((ms) => pickNth(ms || [])).catch(() => pickNth([])); else pickNth(eng.models || []); }
+        else if (a && engine === "ollama" && !apiConfigured()) ollamaTags().then((ms) => { ms = ms || []; if (!ms.length || ms.includes(a) || ms.includes(a + ":latest")) { setModel(a); render(); } else { transcript.push({ role: "system", text: "no local model '" + a + "' — nothing changed. Installed: " + ms.slice(0, 8).join(", ") + (ms.length > 8 ? " +" + (ms.length - 8) + " more" : "") + gray("  ·  get it with: ollama pull " + a) }); render(); } }).catch(() => { setModel(a); render(); }); // checked now, not on the next prompt; Ollama unreachable keeps the old behaviour
         else if (a) setModel(a);
         else if (engine === "ollama") { transcript.push({ role: "system", text: "listing local models…" }); render(); ollamaTags().then((ms) => show(ms, "(installed)")).catch(() => show([], "(Ollama unreachable)")); }
         else show(eng.models || [], (eng.models && eng.models.length) ? "" : "(configured inside the tool)");
@@ -6339,7 +6386,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       else if (cmd === "/cron") {
         const cronFile = path.join(cwd, ".nexus", "cron.json");
         const loadCron = () => { try { return JSON.parse(stripBom(fs.readFileSync(cronFile, "utf8"))); } catch (_) { return []; } };
-        const saveCron = (jobs) => { try { fs.mkdirSync(path.join(cwd, ".nexus"), { recursive: true }); fs.writeFileSync(cronFile, JSON.stringify(jobs, null, 2)); } catch (_) {} };
+        const saveCron = (jobs) => { try { ensureNexusDir(cwd); fs.writeFileSync(cronFile, JSON.stringify(jobs, null, 2)); } catch (_) {} };
         const sub = (arg || "").toLowerCase();
         const cronMatch = (expr) => { try { const parts = expr.split(/\s+/); if (parts.length !== 5) return false; return parts.every((p) => /^[\d*,\/-]+$/.test(p)); } catch (_) { return false; } };
         if (sub === "add" || sub === "new") {
@@ -6527,7 +6574,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         if (API_BASE()) opts.push({ name: (sess.model && sess.model !== engine && !/^claude/i.test(sess.model) ? sess.model : "api-model"), note: API_BASE() + " · likely billed", paid: true, apply: () => { engine = "ollama"; if (!sess.model || /^claude/i.test(sess.model) || sess.model === engine) sess.model = ""; reset(); } });
         const selArg = /^claude\s+\S/i.test(arg) ? "claude" : arg;
         if (!selArg) {
-          if (!opts.length) transcript.push({ role: "system", text: "No AIs connected yet — connect one:\n  local:  " + cyan("ollama pull gpt-oss:20b") + gray("   (then /connect)") + "\n  Claude: " + cyan("/connect claude <sk-ant-...>") + gray("   (or export ANTHROPIC_API_KEY)") + "\n  any:    " + cyan("/api <openai-compatible-url> [model]") });
+          if (!opts.length) transcript.push({ role: "system", text: "No AIs connected yet — connect one:\n  local:  " + cyan("ollama pull qwen2.5-coder") + gray("   (then /connect)") + "\n  Claude: " + cyan("/connect claude <sk-ant-...>") + gray("   (or export ANTHROPIC_API_KEY)") + "\n  any:    " + cyan("/api <openai-compatible-url> [model]") });
           else transcript.push({ role: "system", text: bold("Connect an AI") + gray("   /connect <n|name>") + "\n" + opts.map((o, i) => "  " + cyan((i + 1) + ")") + " " + bold(o.name) + gray("   " + o.note)).join("\n") + "\n  " + gray("current: ") + green(sess.model || engine) });
         } else {
           let sel = /^\d+$/.test(selArg) ? opts[+selArg - 1] : opts.find((o) => o.name.toLowerCase().includes(selArg.toLowerCase()));
@@ -6580,7 +6627,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // name every few turns so it tracks where the session actually goes. It never
     // shows the folder name. The call stays off the cost ledger (never touches
     // `sess`). A /title <name> pins a manual name (titleManual) and stops refresh.
-    let sessionTitle = "", titleAt = 0, titleManual = false, autoTitle = S.autoTitle !== false;
+    let sessionTitle = "", titleAt = 0, titleEpoch = 0, titleManual = false, autoTitle = S.autoTitle !== false;
     const titleClean = (s) => String(s || "").replace(/["'`*_#>]+/g, " ").replace(/^\s*(tab\s*name|title|name|session)\s*[:\-]\s*/i, "").replace(/\s+/g, " ").replace(/^[\s.:\-–—]+|[\s.:\-–—]+$/g, "").trim();
     // A compact brief of what this session is about: the opening request plus the
     // current focus — enough for the model to name the real subject, not guess.
@@ -6622,8 +6669,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       if (!users.length) return;
       const n = users.length;
       if (!force && sessionTitle && (n - titleAt) < 4) return; // refresh ~every 4 user turns as the topic evolves
-      titleAt = n;
-      genAiTitle(sessionDigest(users)).then((t) => { if (t) { sessionTitle = t; if (!busy) idleTitle(); } }).catch(() => {}); // the AI (re)names the tab in the background
+      titleAt = n; const ep = titleEpoch;
+      genAiTitle(sessionDigest(users)).then((t) => { if (t && ep === titleEpoch) { sessionTitle = t; if (!busy) idleTitle(); } }).catch(() => {}); // the AI (re)names the tab in the background
     };
     const idleTitle = () => setTitle(sessionTitle || "Nexus");
     // Claude Code-style recap: once a real task finishes (edits, commands, or a
@@ -6631,6 +6678,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     // what got done and what's next. Engines without a quiet one-shot path get
     // an extractive recap from the reply itself. /recap [on|off] toggles.
     let autoRecap = S.recap !== false;
+    let recapChosen = typeof S.recap === "boolean"; // never set: recaps stay off on a local model (a small one invents what got done); /recap on enables them there too
+    const recapActive = () => autoRecap && (recapChosen || engine !== "ollama" || apiConfigured());
     const recapClean = (s) => String(s || "").replace(/\x1b\[[0-9;]*m/g, "").replace(/[*`#>]+/g, "").replace(/^\s*(recap|summary)\s*[:\-]\s*/i, "").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/).filter((x) => !/\?["')]*$/.test(x)).join(" "); // a recap only reports - drop any question
     const extractRecap = (reply) => { const paras = String(reply || "").replace(/\x1b\[[0-9;]*m/g, "").split(/\n\s*\n/).map((x) => x.trim()).filter((x) => x && !/^[|`\-*#]/.test(x)); const p = paras[0] || ""; const m = p.match(/^.{20,240}?[.!?](\s|$)/); return recapClean(m ? m[0] : p.slice(0, 200)); };
     const genRecap = async (brief) => {
@@ -6650,7 +6699,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       } catch (_) { return ""; }
     };
     const maybeRecap = (blk, ask, info) => {
-      if (!autoRecap || !blk) return;
+      if (!recapActive() || !blk) return;
       const reply = (blk.items || []).filter((i) => i.type === "text").map((i) => i.full).join("\n").trim();
       const brief = "Request: " + String(ask || "").replace(/\s+/g, " ").slice(0, 600) +
         (info.files.length ? "\nFiles changed: " + info.files.slice(0, 12).join(", ") : "") + (info.cmds ? "\nCommands run: " + info.cmds : "") +
@@ -6802,6 +6851,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         _escHold = true; _escTimer = setTimeout(() => { _escHold = false; _escTimer = null; try { _escFlushing = true; process.stdin.emit("data", "\x1b"); } finally { _escFlushing = false; } }, 40);
         return;
       }
+      if (s.length > 1 && /^\x1b+$/.test(s)) { try { _escFlushing = true; for (let k = 0; k < s.length; k++) process.stdin.emit("data", "\x1b"); } finally { _escFlushing = false; } return; } // a fast Esc Esc lands in one read: deliver it as two Escs
       // Bracketed paste split across reads: a big paste arrives as "\x1b[200~part1",
       // "part2", … "partN\x1b[201~" (the end marker itself can be split). Without
       // buffering, each piece was handled on its own — several paste markers, and
@@ -6972,7 +7022,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       if (s === "\x16" && !isMouse) {
         const cb = readClipboard();
         if (cb.image) {
-          try { const dir = path.join(cwd, ".nexus", "pastes"); fs.mkdirSync(dir, { recursive: true }); const fp = path.join(dir, "paste-" + Date.now() + ".png"); fs.writeFileSync(fp, cb.image); composer.insert("[Image#" + imgKey(fp) + "]"); flush(); }
+          try { const dir = ensureNexusDir(cwd, "pastes"); const fp = path.join(dir, "paste-" + Date.now() + ".png"); fs.writeFileSync(fp, cb.image); composer.insert("[Image#" + imgKey(fp) + "]"); flush(); }
           catch (e) { pasteNotice = "could not save the pasted image: " + e.message; }
         } else if (cb.text) { const pr = composer.paste(cb.text.replace(/[ \t\r\n]+$/, "")); flush(); const rep = pr && pr.report; pasteNotice = rep && rep.flagged ? rep.reasons.join(" · ") : ""; }
         else transcript.push({ role: "system", dismissable: true, text: cb.error }); // too long for the hint bar, which clips it
@@ -6990,13 +7040,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       // ---- Esc dismisses an open popup before the composer's own Esc handling ----
       if (s === "\x1b" && navOpen) { navOpen = false; render(); return; }
       if (s === "\x1b" && argMatches().length) { const sp = input.indexOf(" "); if (sp > 0) { input = input.slice(0, sp) + " "; curPos = input.length; } menuSel = 0; render(); return; }
-      // Esc on an idle empty buffer closes the last pop-up info panel — any
-      // trailing system panel (/mcp, /status, /doctor, /cost, /pricing, /help,
-      // /keys, /settings…), like closing an overlay in Claude Code. (Streaming
-      // output and real conversation turns are not system panels, so they stay.)
+      // Esc on an idle empty buffer closes the last pop-up info panel — one flagged
+      // dismissable (/help, /keys, /settings…), like closing an overlay in Claude Code.
+      // Other command output stays in the transcript, /export and the saved session.
       if (s === "\x1b" && !busy && !input.length && !slashMatches().length) {
         const now = Date.now(); const _last = transcript[transcript.length - 1];
-        if (_last && (_last.dismissable || _last.role === "system")) { transcript.pop(); clearPending = false; scroll = 0; _lastEscTs = now; render(); return; }
+        if (_last && _last.dismissable) { transcript.pop(); clearPending = false; scroll = 0; _lastEscTs = 0; render(); return; } // a dismiss is not the first half of a rewind
         // double-Esc = rewind (Claude Code): undo the last turn's file changes
         // (reversible with /redo) and put that prompt back in the box to edit.
         if (now - _lastEscTs < 650 && checkpoints.length) {
@@ -7005,6 +7054,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           let ui = -1; for (let i = transcript.length - 1; i >= 0; i--) { if (transcript[i].role === "user" && transcript[i].text) { ui = i; break; } }
           if (ui >= 0) { input = transcript[ui].text; curPos = input.length; composer.text = input; composer.cursor = curPos; composer.histIndex = history.length; }
           transcript.push({ role: "system", dismissable: true, text: ok ? gray("rewound — restored files from before \"" + (ck.label || "last turn") + "\"" + keptNote() + "; prompt is back in the box to edit · /redo re-applies") : gray("rewound the prompt; the files could not be restored (git error), the checkpoint is kept for /undo") });
+          try { saveSession(); } catch (_) {} // a resume must show the rewound state, not the turn that was undone
           scroll = 0; render(); return;
         }
         _lastEscTs = now; render(); return;
@@ -7103,12 +7153,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         case "history-down": { composer.text = input; composer.cursor = curPos; composer.historyNext(); flush(); hIdx = composer.histIndex; menuSel = 0; render(); return; }                                                  // Down walks input history back toward the live draft (Claude Code). Transcript scroll is the wheel / PageDown.
         case "interrupt": if (ctl && ctl.kill) { ctl.kill(); transcript.push({ role: "system", text: "interrupting current turn…" }); } render(); return;
         case "exit": cleanup(); resolve(); return;                       // ctrl+d empty / 2nd ctrl+c
-        case "exit-confirm": transcript.push({ role: "system", text: "Press Ctrl+C again to exit" }); render(); return;
+        case "exit-confirm": { const _n = { text: "Press Ctrl+C again to exit", ok: false }; linkNotice = _n; setTimeout(() => { if (linkNotice === _n) { linkNotice = null; render(); } }, 2000); render(); return; } // a hint, not a transcript line (it ended up in /export and the dashboard)
         case "confirm-submit": pasteNotice = "shell-looking paste — press Enter again to send"; render(); return;
         case "submit": {
           const _am = argMatches(), _part = input.indexOf(" ") > 0 ? input.slice(input.indexOf(" ") + 1).trim() : ""; // the argument menu as the user saw it
           let t = (eff.text || "").trim(); input = ""; curPos = 0; composer.text = ""; composer.cursor = 0; const pick = menuSel; menuSel = 0;
-          if (_am.length && !/\s/.test(_part) && (pick > 0 || (_part && !_am.some((it) => it[0].toLowerCase() === _part.toLowerCase())))) t = t.slice(0, t.indexOf(" ")) + " " + (_am[pick] || _am[0])[0]; // Enter takes the highlighted argument (typed "/engine gem" runs gemini), unless what you typed is already exact
+          if (_am.length && !/\s/.test(_part) && (pick > 0 || (_part && !/^\d+$/.test(_part) && !_am.some((it) => it[0].toLowerCase() === _part.toLowerCase())))) t = t.slice(0, t.indexOf(" ")) + " " + (_am[pick] || _am[0])[0]; // Enter takes the highlighted argument (typed "/engine gem" runs gemini), unless what you typed is already exact or a number
           curTurnFromQueue = false; // a directly-typed action is never a drained queued prompt (keeps Ctrl+X able to interrupt it)
           if (/^\/(exit|quit|q)$/i.test(t)) { cleanup(); resolve(); return; }
           if (t.startsWith("/")) { let cmd = t; if (!/\s/.test(t)) { const mm = fuzzyCmds(t); if (mm.length) cmd = (mm[pick] || mm[0])[0]; } handleSlash(cmd); render(); return; }
@@ -7169,7 +7219,7 @@ function nexusInit() {
   const fs = require("fs"), path = require("path");
   const cwd = process.cwd(), NEXUS = path.join(cwd, ".nexus");
   gitignoreNexus(cwd);
-  fs.mkdirSync(NEXUS, { recursive: true });
+  ensureNexusDir(cwd);
   const mdPath = path.join(NEXUS, "NEXUS.md"), cfgPath = path.join(NEXUS, "config.json");
   const detected = [];
   try { if (fs.existsSync("package.json")) { const p = JSON.parse(stripBom(fs.readFileSync("package.json", "utf8"))); detected.push("Node project" + (p.name ? " (" + p.name + ")" : "")); if (p.scripts) detected.push("npm scripts: " + Object.keys(p.scripts).slice(0, 8).join(", ")); } } catch (_) {}
@@ -7192,7 +7242,7 @@ function nexusInit() {
 }
 function usage() {
   banner();
-  console.log(`  ${bold("USAGE")}
+  console.log(wrapHelp(`  ${bold("USAGE")}
     darknode [command] [args]         run a command, or just ${cyan("darknode")} for the interactive menu
 
   ${bold("QUICK START")} ${gray("— new here? try one of these")}
@@ -7201,7 +7251,7 @@ function usage() {
     ${cyan("darknode")}                          ${gray("browse every tool from an interactive menu")}
     ${cyan("darknode docs quickstart")}          ${gray("the full getting-started guide")}
 ${gray("    No AI engine yet? Free & private, runs on your machine:")}
-    ${gray("$")} curl -fsSL https://ollama.com/install.sh | sh  ${gray("&&")}  ollama pull gpt-oss:20b
+    ${gray("$")} curl -fsSL https://ollama.com/install.sh | sh  ${gray("&&")}  ollama pull qwen2.5-coder
 
   ${bold("COMMANDS")}
 ${renderCommands(COMMAND_GROUPS, { color: cyan, cheats: Object.keys(CHEATS).join(", ") })}
@@ -7221,7 +7271,7 @@ ${renderCommands(COMMAND_GROUPS, { color: cyan, cheats: Object.keys(CHEATS).join
     ${gray("$")} darknode revshell bash 10.10.14.7 4444    ${gray("# reverse-shell one-liner")}
 
   ${gray("Use only on systems you are authorized to test.")}
-`);
+`, process.stdout.columns || 80)); // wrapped to the terminal: a long row hard-wrapped mid-word into column 0
 }
 
 // ---------- entry ----------
