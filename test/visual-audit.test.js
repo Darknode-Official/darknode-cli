@@ -178,7 +178,12 @@ async function printTurn(prompt, replies) {
     ok("F18: /model <name> on Ollama is checked against the installed models", /no local model '" \+ a \+ "' — nothing changed/.test(src));
     ok("F18: /bisect's missing-test message uses the slash form", /run \/bisect <test command> \(e\.g\. \/bisect npm test\)/.test(src));
     ok("F18: Ctrl+C on an empty prompt shows a passing hint, not a transcript line", /case "exit-confirm": \{ const _n = \{ text: "Press Ctrl\+C again to exit", ok: false \}; linkNotice = _n;/.test(src));
-    ok("F18: rotating tips end with an ellipsis instead of being cut mid-word", /fitWidth\("tip  " \+ tips\[/.test(src));
+    ok("F18: rotating tips wrap onto a second row instead of being cut on a narrow window", /wrap\("tip  " \+ tips\[/.test(src));
+    // narrow windows (a monitor turned vertical): rows wrap, nothing is cut at the edge
+    ok("narrow: every message's rows are fitted to the window before they are cached", /const fitRows = \(L, from\) =>/.test(src) && /_fit\(\); \/\/ the previous message's rows, before they are cached/.test(src));
+    ok("narrow: a long diff-card code line wraps under the gutter instead of clip(body, dw)", !/clip\(body, dw\)/.test(src) && /ansiWrap\(txt, Math\.max\(4, dw - head\.length\)\)/.test(src));
+    ok("narrow: the footer splits onto extra rows (taken from the transcript) instead of cutting the status", /const footExtra = footRows \? footRows\.length - 1 : 0;/.test(src) && /\+ bottomMargin \+ footExtra;/.test(src));
+    ok("narrow: the command approval shows the whole command, not its first 80 characters", /"run: " \+ oneline\(_act\.command \|\| name, 2000\)/.test(src));
     ok("F18: /settings rows keep their columns on a narrow terminal", /const fitW = cols\(\) - 4;/.test(src) && /"env vars: " \+ envLater\.join/.test(src));
   }
 

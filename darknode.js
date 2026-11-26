@@ -3196,6 +3196,22 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const MDC = { inline: (l) => colorMd(l, false), gray, dim, mag, green, yellow, cyan, red, bold, italic: (x) => p("\x1b[3m", x), underline: (x) => p("\x1b[4m", x) };
     const _mdMemo = new WeakMap();
     const mdLines = (owner, text, w) => { const c = owner && _mdMemo.get(owner); if (c && c.w === w && c.text === text) return c.lines; const lines = renderMd(text, w, MDC); if (owner) _mdMemo.set(owner, { w, text, lines }); return lines; };
+    // A body row wider than the window is wrapped, never cut at the edge: continuation rows
+    // hang under the row's text (past its indent, ╰─ connector, status glyph or diff gutter).
+    const FIT_PRE = /^\s*(?:(?:[╰└├│]─*|\d+ [+\- ]|[^\w\s"'`([{<]\s)\s*)*/; // indent, connectors, a diff gutter, or one leading glyph (✓ ✗ ▪ a spinner frame, a bullet)
+    const fitRows = (L, from) => {
+      const W = Math.max(8, cols() - 2);
+      for (let i = from; i < L.length; i++) {
+        const s = L[i];
+        if (typeof s !== "string" || s.length <= W >> 1) continue; // too short to be wider than W even at 2 cells a char
+        const plain = stripA(s);
+        if (strWidth(plain) <= W) continue;
+        const ind = Math.min(strWidth((plain.match(FIT_PRE) || [""])[0]), W >> 1);
+        const rows = ansiWrap(s, W - ind).map((x, k) => (k ? " ".repeat(ind) : "") + x);
+        L.splice(i, 1, ...rows);
+        i += rows.length - 1;
+      }
+    };
     const wrap = (text, pre = 2) => ansiWrap(text, Math.max(1, cols() - 2 - pre)); // pre = visible width of the row prefix; body rows hold cols()-2 cells. // ANSI-aware: measures visible width, never slices a color escape, carries color across lines
     // Rendered like Claude Code: gray ※, bold "recap:", italic body, then the disable hint.
     const recapLines = (t) => { const it = (x) => "\x1b[3m" + gray(x) + "\x1b[23m"; return wrap("recap: " + t + " (disable recaps in /config)", 3).map((ln, j) => j ? "  " + it(ln) : gray("※") + " " + bold(gray("recap:")) + it(ln.slice(6))); };
@@ -3345,6 +3361,8 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       if (_sig !== null && _blCache && _sig === _blSig) return _blCache;
       const _g = cols() + "|" + (expanded ? 1 : 0) + "|" + (useColor ? 1 : 0) + "|" + A.cyan + "|" + GRAD.join(",") + "|" + effort + "|" + engine + "|" + guard;
       let _pend = null; // the message rendered last iteration: store its lines once we know where they end (branches `continue`)
+      let _fitFrom = 0; // rows before this index are already fitted to the window (fitRows)
+      const _fit = () => { fitRows(L, _fitFrom); _fitFrom = L.length; };
       const _flush = () => { if (_pend) { _msgCache.set(_pend.m, { sig: _pend.sig, lines: L.slice(_pend.from) }); _pend = null; } };
       // A running turn re-renders ~20x a second, and re-signing every message of a
       // long (restored) session each frame starved the key handler: typing and
@@ -3355,15 +3373,17 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       if (_reuse && _now - _pre.at >= 1000) { for (let i = 0; i < _pre.n && _reuse; i++) if (_src[i] !== _pre.msgs[i] || _msgSig(_src[i], _g) !== _pre.sigs[i]) _reuse = false; if (_reuse) _pre.at = _now; }
       else if (_reuse && _src[_pre.n - 1] !== _pre.msgs[_pre.n - 1]) _reuse = false;
       const L = _reuse ? _pre.lines.slice() : [];
+      _fitFrom = L.length; // a reused prefix was fitted when it was built
       let _preOk = !_reuse; // a full pass may save the prefix only if every message in it was cacheable (nothing live)
       const _pms = [], _psg = [];
       for (let _mi = _reuse ? _pre.n : 0; _mi < _src.length; _mi++) {
         const m = _src[_mi];
+        _fit(); // the previous message's rows, before they are cached
         _flush();
         if (_preOk && busy && !list && _mi === _hot) _pre = { g: _g, n: _mi, msgs: _pms, sigs: _psg, lines: L.slice(), at: _now };
         const _ms = _msgSig(m, _g);
         if (_mi < _hot) { if (_ms === null) _preOk = false; else { _pms.push(m); _psg.push(_ms); } }
-        if (_ms !== null) { const c = _msgCache.get(m); if (c && c.sig === _ms) { for (const x of c.lines) L.push(x); continue; } _pend = { m, sig: _ms, from: L.length }; }
+        if (_ms !== null) { const c = _msgCache.get(m); if (c && c.sig === _ms) { for (const x of c.lines) L.push(x); _fitFrom = L.length; continue; } _pend = { m, sig: _ms, from: L.length }; }
         if (m.role === "art") {
           // Welcome card: product + tagline + version, a labelled session summary
           // (model/engine/project/context), and a two-column quick-start grid that
@@ -3383,25 +3403,24 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           continue;
         }
         if (m.role === "diff") {
-          const W = cols() - 3;
           const raw = sanitizeTerm(String(m.text).replace(/\r/g, ""), true).split("\n"); // repo file text: escapes would also throw off the width math
           let k = 0;
           while (k < raw.length) {
             const ln = raw[k];
-            if (/^diff --git /.test(ln)) { const f = ln.replace(/^diff --git a\/(\S+).*$/, "$1"); L.push(""); L.push(bold(cyan("╭─ " + clip(f, W - 3)))); k++; continue; }
-            if (/^(index |new file|deleted file|similarity|rename |old mode|new mode|Binary )/.test(ln)) { L.push(dim(gray(clip(ln, W)))); k++; continue; }
+            if (/^diff --git /.test(ln)) { const f = ln.replace(/^diff --git a\/(\S+).*$/, "$1"); L.push(""); L.push(bold(cyan("╭─ " + f))); k++; continue; }
+            if (/^(index |new file|deleted file|similarity|rename |old mode|new mode|Binary )/.test(ln)) { L.push(dim(gray(ln))); k++; continue; }
             if (/^\+\+\+ |^--- /.test(ln)) { k++; continue; }          // file markers folded into the header above
-            if (/^@@/.test(ln)) { L.push(bold(cyan(clip(ln, W)))); k++; continue; }
+            if (/^@@/.test(ln)) { L.push(bold(cyan(ln))); k++; continue; }
             if (/^-/.test(ln)) {
               const dels = []; while (k < raw.length && /^-/.test(raw[k]) && !/^--- /.test(raw[k])) dels.push(raw[k++]);
               const adds = []; while (k < raw.length && /^\+/.test(raw[k]) && !/^\+\+\+ /.test(raw[k])) adds.push(raw[k++]);
               if (dels.length && adds.length && dels.length === adds.length) {
-                for (let p = 0; p < dels.length; p++) { const [ms, ps] = wordHi(dels[p].slice(1), adds[p].slice(1)); L.push(clip(red("-") + ms, W)); L.push(clip(green("+") + ps, W)); } // paired edit: highlight the changed words
-              } else { for (const d of dels) L.push(red(clip(d, W))); for (const a of adds) L.push(green(clip(a, W))); }
+                for (let p = 0; p < dels.length; p++) { const [ms, ps] = wordHi(dels[p].slice(1), adds[p].slice(1)); L.push(red("-") + ms); L.push(green("+") + ps); } // paired edit: highlight the changed words
+              } else { for (const d of dels) L.push(red(d)); for (const a of adds) L.push(green(a)); }
               continue;
             }
-            if (/^\+/.test(ln)) { L.push(green(clip(ln, W))); k++; continue; }
-            L.push(dim(gray(clip(ln, W)))); k++;                        // context: dimmed so +/- pop
+            if (/^\+/.test(ln)) { L.push(green(ln)); k++; continue; }
+            L.push(dim(gray(ln))); k++;                        // context: dimmed so +/- pop
           }
           L.push(""); continue;
         }
@@ -3476,12 +3495,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
                 const head = (gw ? (r.ln ? String(r.ln) : "").padStart(gw) + " " : "") + r.t + " ";
                 const base = r.t === "+" ? CC_DIFF.add : CC_DIFF.del, word = r.t === "+" ? CC_DIFF.addWord : CC_DIFF.delWord;
                 const hw = hiw.get(ri);
-                const body = hw ? head + hw[0].map((tok, k) => hw[1][k] ? base + tok : word + tok).join("") + base : head + tx(r);
-                const vis = head.length + tx(r).length;
-                const padded = clip(body, dw) + (useColor && r.t !== " " ? base : "") + " ".repeat(Math.max(0, dw - vis));
-                if (!useColor) { L.push("     " + padded); return; }
-                if (r.t === "+" || r.t === "-") L.push("     " + base + padded + "\x1b[0m");
-                else L.push("     " + gray(padded));
+                const txt = hw ? hw[0].map((tok, k) => hw[1][k] ? base + tok : word + tok).join("") + base : tx(r);
+                // a code line longer than the card wraps under the gutter instead of being cut at the edge
+                const segs = head.length + strWidth(tx(r)) > dw ? ansiWrap(txt, Math.max(4, dw - head.length)) : [txt];
+                segs.forEach((sg, k) => {
+                  const vis = head.length + strWidth(stripA(sg));
+                  const padded = (k ? " ".repeat(head.length) : head) + sg + (useColor && r.t !== " " ? base : "") + " ".repeat(Math.max(0, dw - vis));
+                  if (!useColor) { L.push("     " + padded); return; }
+                  if (r.t === "+" || r.t === "-") L.push("     " + base + padded + "\x1b[0m");
+                  else L.push("     " + gray(padded));
+                });
               });
               if (d.rows.length > cap) L.push(gray("     … +" + (d.rows.length - cap) + " more line" + (d.rows.length - cap > 1 ? "s" : "") + " (ctrl+o to expand)"));
             } else if (done && (it.result !== undefined || it.input || it.interrupted)) {
@@ -3492,14 +3515,16 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               const pre = () => { const p = first ? "  " + gray("╰─") + " " : "     "; first = false; return p; };
               for (const ln of v.lines) {
                 if (ln.k === "todo") { L.push(pre() + (ln.s === "done" ? gray("☒ ") + dim(strike(ln.text)) : ln.s === "active" ? bold("☐ " + ln.text) : "☐ " + ln.text)); continue; }
-                for (const w of wrap(stripA(ln.text), 5).slice(0, expanded ? 40 : ln.k === "err" ? 4 : 2)) L.push(pre() + (ln.k === "err" ? red(w) : ln.k === "out" ? w : gray(w)));
+                const _ws = wrap(stripA(ln.text), 5), _cap = expanded ? 40 : ln.k === "err" ? 4 : 2, _shown = _ws.slice(0, _cap);
+                if (_ws.length > _cap) { const _l = _shown[_cap - 1]; _shown[_cap - 1] = (strWidth(_l) + 2 <= Math.max(1, cols() - 7) ? _l : _l.slice(0, -2)) + " …"; } // a line cut by the collapsed view says so (ctrl+o shows it all)
+                for (const w of _shown) L.push(pre() + (ln.k === "err" ? red(w) : ln.k === "out" ? w : gray(w)));
               }
               if (v.more) L.push(gray("     … +" + v.more + " line" + (v.more > 1 ? "s" : "") + " (ctrl+o to expand · /pager to read all)"));
             } else if (it.status === "run" && (it.name === "Bash" || it.name === "run_command")) {
               // live tail: the last lines the command printed, so you can see what it is doing right now
               const tl = it.live ? Tail.tailLines(it.live, expanded ? 12 : 3) : [];
               if (!tl.length) L.push("  " + gray("╰─") + " " + gray("Running…"));
-              tl.forEach((x, k) => L.push((k ? "     " : "  " + gray("╰─") + " ") + dim(clip(x, Math.max(8, cols() - 9)))));
+              tl.forEach((x, k) => wrap(x, 5).slice(0, expanded ? 6 : 2).forEach((w, j) => L.push((k || j ? "     " : "  " + gray("╰─") + " ") + dim(w)))); // a long output line wraps (2 rows; ctrl+o shows more)
               const seen = it.live ? Tail.lineCount(it.live) : 0;
               if (seen > tl.length) L.push(gray("     " + seen.toLocaleString("en-US") + " lines so far · /pager to read all"));
             } else if (it.detail && (done || expanded)) {
@@ -3518,14 +3543,15 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           const et = ENGINE_TIPS[engine] || [], tips = [];
           for (let k = 0; k < Math.max(NEXUS_TIPS.length, et.length); k++) { if (et[k]) tips.push(et[k]); if (NEXUS_TIPS[k]) tips.push(NEXUS_TIPS[k]); } // interleave so an engine-specific tip shows first
           L.push("");
-          L.push(workGlyph() + " " + cyan(clip(busyWord || activityLabel(m.items), Math.max(10, cols() - 34))) + gray("   " + fmtElapsed(el) + tok + "  ·  esc to stop"));
-          if (tips.length) L.push("  " + gray("╰─ ") + dim(gray(fitWidth("tip  " + tips[Math.floor(el / 6) % tips.length], Math.max(8, cols() - 8)))));
+          L.push(workGlyph() + " " + cyan(fitWidth(busyWord || activityLabel(m.items), 160)) + gray("   " + fmtElapsed(el) + tok + "  ·  esc to stop"));
+          if (tips.length) wrap("tip  " + tips[Math.floor(el / 6) % tips.length], 5).forEach((x, k) => L.push((k ? "     " : "  " + gray("╰─ ")) + dim(gray(x)))); // wrapped, not cut, on a narrow window
         } else if (m.summary) {
           wrap(m.summary, 6).forEach((x, k) => L.push((k ? "     " : "  " + cyan("╰─") + " ") + gray(x))); // 6, not 5: a column of air before the scroll rail
         }
         if (m.recap && !(busy && m === cur())) recapLines(m.recap).forEach((x) => L.push(x));
         L.push("");
       }
+      _fit();
       _flush();
       if (list) return L; // an agent's conversation: just its messages, no live turn status
       // Idle home: while the chat is still empty (only the welcome card), fill the
@@ -3575,11 +3601,12 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         L.push("");
         for (const r of CompactAnim.compactRows({ now: Date.now(), start: compact.start, tok: compact.tok, before: compact.cur && compact.cur.before, width: cols() - 2, colors: { cyan, gray, bold, dim, mag } })) L.push(r);
       }
+      _fit();
       if (_sig !== null) { _blCache = L; _blSig = _sig; }
       return L;
     };
     // ---- status + hint bars ----
-    const statusBar = () => {
+    const statusBar = (asParts) => {
       const ctxW = sess.ctxWindow || 200000;
       const pct = Math.min(100, Math.round((sess.ctxUsed / ctxW) * 100));
       const pc = pct >= 80 ? red : pct >= 50 ? yellow : gray;
@@ -3609,7 +3636,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       if (style && style !== "default") parts.push(cyan("style:" + style));
       if (hack) parts.push(red("HACK"));
       if (fallback) parts.push(gray("fb:" + fallback.replace(/^claude-|-\d.*$/g, "")));
-      return parts.join(gray("  ·  "));
+      return asParts ? parts : parts.join(gray("  ·  "));
     };
     let hintIsMode = false; // set by hint() when the left footer is showing the permission mode
     const hint = (room) => {
@@ -3921,7 +3948,24 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       // the footer (Claude-Code layout). Hidden while a full-width card owns the
       // bottom. Capped so a long list never crowds out the transcript.
       const agentPanelRows = (!cardRows && agents.length) ? Agents.panelRows(agents, { now: Date.now(), sel: agentSel, width: C, max: Math.min(6, Math.max(2, (R >> 2))), colors: { cyan, gray, bold, dim, green, red, yellow, mag } }) : [];
-      const chrome = (cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows + agentPanelRows.length)) + bottomMargin; // spacer + composer + reserved menu + agents panel + footer + bottom margin
+      // Footer: one row when the hint and the status fit side by side. On a narrow window (a monitor
+      // turned vertical) they split instead of the status being cut: the hint on its own row, then the
+      // status parts packed onto up to 3 right-aligned rows, with the ··· toggle on the last.
+      const footRows = (() => {
+        if (navOpen) return null; // the nav chip row is built in place below
+        const _sb = statusBar(), _room = C - 4 - strWidth(stripA(_sb)) - 5, _hl = hint(_room), _hw = strWidth(stripA(_hl));
+        if (_hw <= _room || R < 20) return [footerLine(_hl, ((hintIsMode || linkNotice) && _hw > _room ? clip(_sb, Math.max(0, C - 4 - _hw - 5 - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : _sb) + gray("  ···"), C)];
+        const out = [footerLine(hint(C - 4), "", C)], sep = gray("  ·  "), max = C - 4 - 5, rows = [];
+        for (const p of statusBar(true)) {
+          const last = rows[rows.length - 1];
+          if (last != null && strWidth(stripA(last + sep + p)) <= max) rows[rows.length - 1] = last + sep + p; else rows.push(p);
+        }
+        if (rows.length > 3) rows.splice(2, rows.length - 2, rows.slice(2).join(sep));
+        rows.forEach((r, k) => out.push(footerLine("", (strWidth(stripA(r)) > max ? fitWidth(r, max) : r) + (k === rows.length - 1 ? gray("  ···") : ""), C)));
+        return out;
+      })();
+      const footExtra = footRows ? footRows.length - 1 : 0;
+      const chrome = (cardRows ? (1 + cardRows.length + 1) : (fixedChrome + menuReserve + inRows + agentPanelRows.length)) + bottomMargin + footExtra; // spacer + composer + reserved menu + agents panel + footer + bottom margin
       const bodyRows = Math.max(0, R - chrome);
       const lines = _av ? bodyLines(agentMsgs(_av)) : bodyLines();
       const maxScroll = Math.max(0, lines.length - bodyRows);
@@ -4067,10 +4111,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
           for (const [label, cmd] of NAV_BUTTONS) chip(label, { kind: "run", cmd });
           frame.push(str);
         } else {
-          const _sb = statusBar(), _room = C - 4 - strWidth(stripA(_sb)) - 5, _hl = hint(_room), _hw = strWidth(stripA(_hl));
-          // a mode (or a passing hint such as "Press Ctrl+C again to exit") that doesn't fit shortens the status side instead of being cut or dropped
-          frame.push(footerLine(_hl, ((hintIsMode || linkNotice) && _hw > _room ? clip(_sb, Math.max(0, C - 4 - _hw - 5 - 1)) + (useColor ? "\x1b[0m" : "") + gray("…") : _sb) + gray("  ···"), C));
-          clickZones.push({ row, c0: C - 4, c1: C - 1, kind: "toggle" });
+          // (built above, before the layout) a mode or passing hint that doesn't fit on a short window still shortens the status side
+          for (const r of footRows) frame.push(r);
+          clickZones.push({ row: row + footRows.length - 1, c0: C - 4, c1: C - 1, kind: "toggle" }); // the ··· sits on the last footer row
         }
       }
       for (let i = 0; i < bottomMargin; i++) frame.push(""); // float the footer up off the terminal floor
@@ -4785,7 +4828,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
               const _key = _isCmd ? "run:" + (_act.command || name) : _isFile ? "file:" + (_act.path || name) : _isAg ? "agents" : null;
               if (_key && (mode === 0 || !_isFile) && !sessAllow.has(_key)) {
                 const _dg = _isCmd ? classifyDanger(_act.command || "") : null;
-                const _what = _isCmd ? "run: " + oneline(_act.command || name, 80) : _isAg ? "start " + (a.tasks || []).length + " sub-agent(s), which edit files and run commands without asking" : _act.type + " " + (_act.path ? relP(_act.path) : "files");
+                const _what = _isCmd ? "run: " + oneline(_act.command || name, 2000) : _isAg ? "start " + (a.tasks || []).length + " sub-agent(s), which edit files and run commands without asking" : _act.type + " " + (_act.path ? relP(_act.path) : "files");
                 card.status = "wait"; render();
                 const _ans = await askUser("Allow Nexus to " + _what + "?" + (_dg && _dg.level !== "ok" ? "  (" + _dg.why + ")" : ""), ["Allow once", "Allow for this session", "Deny"]);
                 card.status = "run";
