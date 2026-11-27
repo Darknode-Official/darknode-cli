@@ -4570,11 +4570,11 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
         for (const it of block.items) if (it.type === "tool" && it.name) toolUse[it.name] = (toolUse[it.name] || 0) + 1;
         const bits = [];
         const recap = [];
-        if (stat.files.size) { bits.push(stat.files.size + " file" + (stat.files.size > 1 ? "s" : "")); recap.push((res && res.interrupted ? "Touched" : "Wrote") + " " + [...stat.files].slice(0, 4).join(", ") + (stat.files.size > 4 ? " +" + (stat.files.size - 4) + " more" : "")); }
-        if (stat.cmds) { bits.push(stat.cmds + " cmd" + (stat.cmds > 1 ? "s" : "")); recap.push("Ran " + stat.cmds + " command" + (stat.cmds > 1 ? "s" : "")); }
+        if (stat.files.size) { recap.push((res && res.interrupted ? "Touched" : "Wrote") + " " + [...stat.files].slice(0, 4).join(", ") + (stat.files.size > 4 ? " +" + (stat.files.size - 4) + " more" : "")); }
+        if (stat.cmds) { recap.push("Ran " + stat.cmds + " command" + (stat.cmds > 1 ? "s" : "")); }
         bits.push("↑" + fmtK(din) + " ↓" + fmtK(dout) + " tok");
         if (+dt > 0 && dout > 0) bits.push(fmtK(Math.round(dout / +dt)) + " tok/s");
-        if (PAID[engine] && dcost > 0) bits.push("$" + dcost.toFixed(4));
+        if (PAID[engine] && !onPlan(engine) && dcost > 0) bits.push("$" + dcost.toFixed(dcost >= 1 ? 2 : 4)); // a subscription is not billed per turn (the status bar shows no cost either); /cost has the list-price equivalent
         bits.push(fmtDur(+dt));
         { const cw = sess.ctxWindow || 200000; bits.push(Math.min(100, Math.round((sess.ctxUsed / cw) * 100)) + "% ctx"); }
         if (ckObj) { ckObj.paths = [...stat.paths].filter(Boolean); if (ckObj.paths.length) bits.push("undo #" + checkpoints.length); else { const _i = checkpoints.indexOf(ckObj); if (_i >= 0) checkpoints.splice(_i, 1); } try { bisectPersist(cwd, ckObj); } catch (_) {} } // a turn that changed no file leaves nothing to undo: keep it off the stack so /undo reverts the last real change // persist the turn snapshot so `bisect` can search the timeline later
@@ -4667,9 +4667,9 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
             sess.inTok += newIn;
             sess.outTok += u.output_tokens || 0;
             sess.ctxUsed = lastCtx || (newIn + cacheIn + (u.output_tokens || 0)); // result usage is SUMMED over every call in the turn (30 tool calls = 30x the context), so prefer the last call's
-            if (typeof ev.total_cost_usd === "number") { const sid = ev.session_id || claudeSid; if (sid !== claudeCostSid) { claudeCostSid = sid; claudeCostBase = 0; } sess.cost += Math.max(0, ev.total_cost_usd - claudeCostBase); claudeCostBase = ev.total_cost_usd; } // total_cost_usd is the session's running total; add only what this turn added
+            if (typeof ev.total_cost_usd === "number") { const sid = ev.session_id || claudeSid; if (sid !== claudeCostSid) { claudeCostSid = sid; claudeCostBase = _resumeSid ? null : 0; } sess.cost += claudeCostBase == null ? Math.min(ev.total_cost_usd, costOf(sess.resolvedModel || sess.model, usageBuckets(u))) : Math.max(0, ev.total_cost_usd - claudeCostBase); claudeCostBase = ev.total_cost_usd; } // a RESUMED session with no saved baseline (first turn after a restart, or a session saved before baselines were kept): price this run's own usage, never the session's whole running total // total_cost_usd is the session's running total; add only what this turn added
             let _mu = ev.modelUsage;
-            if (_mu && typeof _mu === "object") { const sid = ev.session_id || claudeSid; if (sid !== claudeMuSid) { claudeMuSid = sid; claudeMuBase = {}; } const d = {}; for (const n of Object.keys(_mu)) { const m = _mu[n] || {}, b = claudeMuBase[n] || {}; d[n] = {}; for (const k of ["inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"]) d[n][k] = Math.max(0, (m[k] || 0) - (b[k] || 0)); claudeMuBase[n] = Object.assign({}, m); } _mu = d; }
+            if (_mu && typeof _mu === "object") { const sid = ev.session_id || claudeSid; if (sid !== claudeMuSid) { claudeMuSid = sid; claudeMuBase = _resumeSid ? null : {}; } if (!claudeMuBase) { claudeMuBase = JSON.parse(JSON.stringify(_mu)); _mu = null; /* no baseline: count this run's own usage (u) below */ } else { const d = {}; for (const n of Object.keys(_mu)) { const m = _mu[n] || {}, b = claudeMuBase[n] || {}; d[n] = {}; for (const k of ["inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"]) d[n][k] = Math.max(0, (m[k] || 0) - (b[k] || 0)); claudeMuBase[n] = Object.assign({}, m); } _mu = d; } }
             addUsage(_mu, u, sess.resolvedModel || sess.model);
             const mu = ev.modelUsage && ev.modelUsage[sess.model]; if (mu && mu.contextWindow) sess.ctxWindow = mu.contextWindow;
           },
@@ -5374,7 +5374,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
       if (engine === "claude") {
         // resume the exact saved session; without an id, --continue could grab an unrelated
         // claude session in this folder, so seed a summary instead
-        if (s.claudeSid) { claudeSid = s.claudeSid; oneShotRan = true; } else { cont = false; carryNote = buildCarryNote(transcript); }
+        if (s.claudeSid) { claudeSid = s.claudeSid; oneShotRan = true; const _cc = s.claudeCost, _cm = s.claudeMu; if (_cc && _cc.sid && typeof _cc.base === "number") { claudeCostSid = _cc.sid; claudeCostBase = _cc.base; } if (_cm && _cm.sid && _cm.base && typeof _cm.base === "object") { claudeMuSid = _cm.sid; claudeMuBase = _cm.base; } } else { cont = false; carryNote = buildCarryNote(transcript); }
       } else if (ENGINES[engine] && ENGINES[engine].kind === "local") {
         for (const b of transcript.slice(-12)) {
           if (b.role === "user" && b.text) localReplay.push({ role: "user", content: b.text });
@@ -5392,7 +5392,7 @@ function nexusTui(engine, cwd, nexusMd, autoResume, launch) {
     const saveSession = () => { const { sp, lp, tmp } = sessPaths(); try {
       ensureNexusDir(cwd);
       const { readCache: _rc, fileSnap: _fs, ...persistSess } = sess;
-      const metaStr = JSON.stringify({ engine, model: sess.model, sess: persistSess, claudeSid });
+      const metaStr = JSON.stringify({ engine, model: sess.model, sess: persistSess, claudeSid, claudeCost: { sid: claudeCostSid, base: claudeCostBase }, claudeMu: { sid: claudeMuSid, base: claudeMuBase } }); // the running-total baselines go with the session id, so a restart charges only new turns
       const list = transcript.filter((b) => !(b && b.ephemeral));
       // another Nexus in this folder rewrote the snapshot: our log lines would no longer apply
       if (_disk.written && statStamp(sp) !== _disk.stamp) _disk.written = null;
