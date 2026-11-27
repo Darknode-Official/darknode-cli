@@ -44,8 +44,8 @@ ok("null result stays null", capResult(null) === null && capResult(undefined) ==
   ok("found the incremental save code", d0 > 0 && d1 > d0);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nx-sess-"));
   const T = [], S = { model: "m" };
-  const api = new Function("Redact", "asText", "fs", "path", "cwd", "stripBom", "secureNexus", "transcript", "sess", "engine", "claudeSid", "ensureNexusDir",
-    src.slice(a, b) + src.slice(d0, d1) + "\nreturn { saveSession, loadSessionFile, blockJson, _disk };")(Redact, asText, fs, path, dir, (x) => x, () => {}, T, S, "claude", null, require("../lib/nexus/nexus-dir").ensureNexusDir);
+  const api = new Function("Redact", "asText", "fs", "path", "cwd", "stripBom", "secureNexus", "transcript", "sess", "engine", "claudeSid", "ensureNexusDir", "claudeCostSid", "claudeCostBase", "claudeMuSid", "claudeMuBase",
+    src.slice(a, b) + src.slice(d0, d1) + "\nreturn { saveSession, loadSessionFile, blockJson, _disk };")(Redact, asText, fs, path, dir, (x) => x, () => {}, T, S, "claude", null, require("../lib/nexus/nexus-dir").ensureNexusDir, "sid-1", 12.5, "sid-1", { m: { inputTokens: 5 } });
   const sp = path.join(dir, ".nexus", "session.json"), lp = path.join(dir, ".nexus", "session.log");
   const expect = () => JSON.stringify(JSON.parse("[" + T.filter((x) => !x.ephemeral).map(api.blockJson).join(",") + "]"));
   const loaded = () => JSON.stringify(api.loadSessionFile().transcript);
@@ -55,6 +55,7 @@ ok("null result stays null", capResult(null) === null && capResult(undefined) ==
 
   api.saveSession();
   ok("first save writes a snapshot and no log", fs.existsSync(sp) && logLines().length === 0 && loaded() === expect());
+  ok("the claude running-total baselines are saved with the session id (a restart must not charge the whole history again)", /"claudeCost":\{"sid":"sid-1","base":12\.5\},"claudeMu":\{"sid":"sid-1","base":\{"m":\{"inputTokens":5\}\}\}/.test(fs.readFileSync(sp, "utf8")));
   const base = fs.statSync(sp).size;
 
   T.push({ role: "user", text: "next" }); T.push({ role: "nexus", items: [tool(99)] }); api.saveSession();
